@@ -14,7 +14,7 @@ QuickOffice engine.
 | **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto all four services (Dropbox/Box/OneDrive/Drive); dead MX proxy bypassed; patches fit both the Office and PDF apps | ✅ patched (2 patches, JS-only) |
 | **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
 | **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
-| **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC** — text/image render now; PDF/docx/xlsx need vendored libs |
+| **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC — deployed on device**; PDF.js/mammoth/SheetJS vendored (view-only). On-device open of a real PDF still to be exercised |
 | **Google Drive** | DOCUMENTS — sign-in (OAuth2 + PKCE), file browse/upload/download, native-doc export, auth + file-picker apps | 🟡 **code-complete (personal/≤100-user)** — untested pending a Google client_id+secret; [recon](recon/google-drive.md) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |

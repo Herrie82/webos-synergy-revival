@@ -14,13 +14,23 @@ add the ones whose formats you want. All three are **view-only** renderers (no e
 ## Which build / version
 
 The card's own webview is WebKit ~2009 and is **not** used for these — the harness runs in
-**Atlas (WPE WebKit, modern)**, so use the current standard browser builds:
+**Atlas (WPE WebKit, modern)**, so use the current standard browser builds.
 
-- **PDF.js** — the "legacy"/ES5 prebuilt (`pdfjs-dist` *legacy* build) is the safest match
-  for WPE; take `build/pdf.js` + `build/pdf.worker.js` from a recent `pdfjs-dist` release.
-  Keep the two files together in `pdfjs/`; the harness sets `workerSrc` to `pdf.worker.js`.
-- **mammoth** — `mammoth.browser.min.js` from a current `mammoth` npm release.
-- **SheetJS** — `xlsx.full.min.js` from the SheetJS CE distribution.
+**Pinned versions actually deployed + verified on device (2026-07-15):**
+
+| Lib | npm | File(s) taken from the tarball |
+|---|---|---|
+| PDF.js  | `pdfjs-dist@3.11.174` | `legacy/build/pdf.js`, `legacy/build/pdf.worker.js` → `pdfjs/` |
+| mammoth | `mammoth@1.6.0`       | `mammoth.browser.min.js` → `mammoth/` |
+| SheetJS | `xlsx@0.18.5`         | `dist/xlsx.full.min.js` → `sheetjs/` |
+
+Reproduce with `npm pack <pkg>@<ver>` and copy the files above. Notes:
+
+- **PDF.js** — the v3 **legacy** (ES5-transpiled) build is the safest match for an older WPE;
+  v4+ needs more modern JS. Keep `pdf.js` + `pdf.worker.js` together in `pdfjs/`; the harness
+  sets `workerSrc` to `pdf.worker.js`.
+- **mammoth** — `mammoth.browser.min.js` exposes `window.mammoth`.
+- **SheetJS** — `xlsx.full.min.js` (CE) exposes `window.XLSX`.
 
 Place the files exactly at the paths in the table (relative to this `lib/` dir). On device
 that resolves under the app install dir, e.g.
