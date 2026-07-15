@@ -11,6 +11,7 @@ QuickOffice engine.
 | Connector | What works | State |
 |---|---|---|
 | **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
+| **QuickOffice** | Remote file **list + open** rerouted onto our Dropbox service (dead MX proxy bypassed) | ✅ patched (patch, JS-only) |
 | **Box** | Service scaffold (OAuth2 + REST v2, refresh-on-401) | 🚧 scaffold — needs the Dropbox stack applied (auth app, PKCE, photos) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
@@ -45,6 +46,9 @@ dropbox/
 photos-integration/
   patches/                            2 patches to the stock com.palm.service.photos
   README.md                           the 4-point recipe to add any cloud photo source
+quickoffice-integration/
+  patches/RemoteFileService.js.patch  reroute QuickOffice's remote-file layer onto our service
+  README.md
 box/
   service/com.palm.service.boxnet/    Box scaffold (mirror the Dropbox stack to finish)
   account/com.palm.boxnet.json

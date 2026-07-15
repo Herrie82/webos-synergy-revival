@@ -56,7 +56,7 @@ var HttpCurl = {
 		// curl streams to disk, so big files don't hit node's maxBuffer; stdout keeps only the
 		// -w "\n<http_code>" line.
 		if (opts.outFile) {
-			args.push("-o", opts.outFile);
+			args.push("--create-dirs", "-o", opts.outFile);
 		}
 		if (opts.form) {
 			Object.keys(opts.form).forEach(function (k) {

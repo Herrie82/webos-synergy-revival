@@ -6,7 +6,9 @@
 function ListFolderCommandAssistant() {}
 
 ListFolderCommandAssistant.prototype = {
-	allowedAppIds: ["com.palm.app.dropbox-files", "com.palm.app.photos"],  // new consumers
+	// new consumers + QuickOffice (rerouted off its dead MX proxy onto this service)
+	allowedAppIds: ["com.palm.app.dropbox-files", "com.palm.app.photos",
+		"com.quickoffice.webos", "com.quickoffice.ar"],
 
 	run: function (future) {
 		if (!Acl.enforce(this, future)) { return; }

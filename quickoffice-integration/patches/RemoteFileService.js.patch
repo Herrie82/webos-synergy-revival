@@ -1,0 +1,143 @@
+--- a/source/RemoteFileService.js
++++ b/source/RemoteFileService.js
+@@ -202,6 +202,10 @@
+         kind:      "PalmService",
+         service:   "palm://com.palm.downloadmanager/",
+         subscribe: true
++    }, {
++        name:      "modernDbx",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.dropbox/"
+     }],
+ 
+     /**
+@@ -672,12 +676,49 @@
+         this.uri         = inUri;
+         this.accountInfo = inAccountInfo;
+ 
++        // MODERN REROUTE: Dropbox downloads go through com.palm.service.dropbox/downloadFile
++        // (modern TLS via bundled curl) instead of getDownloadUrl + the dead downloadmanager path.
++        if (inAccountInfo && inAccountInfo.mxId === "drop" && inAccountInfo._id) {
++            this._modernDownload(inUri, inAccountInfo, inSuccess, inFailure);
++            return;
++        }
++
+         QOWT.EVT.addListener(window.document, 'qowt:mxgetremotefileinfo', this.gotRemoteFileInfoHandler);
+         QOWT.EVT.addListener(window.document, 'qowt:error',               this.mxFailureHandler);
+ 
+         QOWT.mxe.GetRemoteItemInfo(this, this.accountInfo, this.uri);
+     },
+ 
++    // MODERN REROUTE: download one Dropbox file to the SAME local cache path QuickOffice's
++    // native viewer reads from, then fire the existing successCb(unique, name, account, mime).
++    _modernDownload: function(inUri, inAccountInfo, inSuccess, inFailure) {
++        var name = inUri, slash = inUri.lastIndexOf("/");
++        if (slash >= 0) { name = inUri.substring(slash + 1); }
++        var unique = QOWT.MX.createUniqueTargetFilename(name);
++        var dot = name.lastIndexOf("."), ext = (dot >= 0) ? name.substring(dot + 1) : "";
++        this._mdName    = name;
++        this._mdUnique  = unique;
++        this._mdMime    = QOWT.MX.getMimeType(ext) || "application/octet-stream";
++        this._mdAccount = inAccountInfo;
++        this._mdSuccess = inSuccess;
++        this._mdFailure = inFailure;
++        this.$.modernDbx.call(
++            { accountId: inAccountInfo._id, dropboxPath: inUri,
++              localPath: QOWT.MXConfig.downloadFolder + unique },
++            { method: "downloadFile", onSuccess: "_modernDownloadOk", onFailure: "_modernDownloadFail" });
++    },
++
++    _modernDownloadOk: function(inSender, inResponse) {
++        QOWT.utils.log("RemoteFileCacheService _modernDownloadOk " + this._mdUnique);
++        this.doProgress(1, this.uri);
++        this._mdSuccess(this._mdUnique, this._mdName, this._mdAccount, this._mdMime);
++    },
++
++    _modernDownloadFail: function(inSender, inError) {
++        QOWT.utils.log("RemoteFileCacheService _modernDownloadFail " + JSON.stringify(inError));
++        if (this._mdFailure) { this._mdFailure(); }
++    },
++
+     /**
+      *
+      * @param {Object} inEvent
+@@ -863,6 +904,15 @@
+         onOtherListError: ""
+     },
+ 
++    // MODERN REROUTE (webos-synergy-revival): Dropbox listing goes through
++    // com.palm.service.dropbox (modern TLS via bundled curl) instead of the dead
++    // g1.quickofficeconnect.com MX proxy.
++    components: [{
++        name:    "modernDbx",
++        kind:    "PalmService",
++        service: "palm://com.palm.service.dropbox/"
++    }],
++
+     /**
+      * Called when the component is first made.
+      */
+@@ -912,6 +962,49 @@
+      * @param {Object} inCallback
+      * @param {Boolean} inJustFolders - if true, returns only folders
+      */
++    // MODERN REROUTE: list a Dropbox folder via com.palm.service.dropbox/listFolder and
++    // feed the existing _processFiles(), so the browser UI is unchanged.
++    _modernList: function(inSource, inCallback) {
++        var path = inSource.folderUri || "";
++        this.callback    = inCallback;
++        this.locationUri = path;
++        if (this.rootUri === undefined) { this.rootUri = ""; }
++        this._mlParent   = path;
++        this.$.modernDbx.call(
++            { accountId: inSource._id, path: path },
++            { method: "listFolder", onSuccess: "_modernListOk", onFailure: "_modernListFail" });
++    },
++
++    _modernListOk: function(inSender, inResponse) {
++        var entries = (inResponse && inResponse.entries) || [];
++        var mapped = [], i, e, isDir, mime, dot, ext;
++        for (i = 0; i < entries.length; i++) {
++            e = entries[i];
++            isDir = (e.type === "folder");
++            if (isDir) {
++                mime = "application/directory";
++            } else {
++                dot = e.name.lastIndexOf(".");
++                ext = (dot >= 0) ? e.name.substring(dot + 1) : "";
++                mime = QOWT.MX.getMimeType(ext) || "application/octet-stream";
++            }
++            mapped.push({
++                type:         mime,
++                name:         e.name,
++                uri:          e.path,          // Dropbox path - reused as dropboxPath on download
++                size:         e.size,
++                lastmodified: e.modified,
++                parent:       this._mlParent
++            });
++        }
++        this._processFiles(mapped);
++    },
++
++    _modernListFail: function(inSender, inError) {
++        QOWT.utils.log("RemoteFileService _modernList FAILED: " + JSON.stringify(inError));
++        if (this.callback) { this.callback([], this.locationUri); }
++    },
++
+     getFiles: function(inSource, inCallback, inJustFolders) {
+         QOWT.utils.log("RemoteFileService getFiles");
+ 
+@@ -919,6 +1012,13 @@
+         this.callback = inCallback;
+         this.justFolders = inJustFolders;
+ 
++        // MODERN REROUTE: Dropbox ("drop" = Account.kMXID_DROP_BOX) no longer uses the dead
++        // MX proxy - list via com.palm.service.dropbox.
++        if (inSource && inSource.mxId === "drop") {
++            this._modernList(inSource, inCallback);
++            return;
++        }
++
+         QOWT.mxe.CancelRequestFromGroup(this);
+         QOWT.EVT.addListener(window.document, 'qowt:error', this.errorHandler);
+ 

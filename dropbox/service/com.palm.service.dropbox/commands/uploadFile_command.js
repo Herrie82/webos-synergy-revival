@@ -11,7 +11,8 @@
 function UploadFileCommandAssistant() {}
 
 UploadFileCommandAssistant.prototype = {
-	allowedAppIds: ["com.palm.app.dropbox-files", "com.palm.app.photos"],
+	allowedAppIds: ["com.palm.app.dropbox-files", "com.palm.app.photos",
+		"com.quickoffice.webos", "com.quickoffice.ar"],
 
 	run: function (future) {
 		if (!Acl.enforce(this, future)) { return; }
