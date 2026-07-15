@@ -1,29 +1,40 @@
 /* config.js - Box (box.com) OAuth2 + REST v2 endpoints for the modern connector.
+ * Mirrors com.palm.service.dropbox/config.js. Box differs from Dropbox in two ways:
+ * it is REST (GET /folders/{id}/items) not RPC, and it addresses everything by
+ * numeric ID (root folder id = "0") rather than by path.
  *
- * SCAFFOLD: the three CLIENT_* values below are placeholders. To go live you must
- * register a free Box app at https://app.box.com/developers/console (type:
- * "Custom App" -> "User Authentication (OAuth 2.0)"), then paste its values here
- * (or, better, wrap CLIENT_SECRET with com.palm.keymanager like the stock services
- * did with api_key, and load it at runtime - see oauth2.js:getClientSecret()).
+ * SCAFFOLD: register a free Box app at https://app.box.com/developers/console
+ * (Custom App -> "User Authentication (OAuth 2.0)") and paste CLIENT_ID below. Add
+ * REDIRECT_URI verbatim to the app's "OAuth 2.0 Redirect URIs" list.
  *
- * REDIRECT_URI must be added verbatim to the app's "OAuth 2.0 Redirect URIs" list.
- * On-device we intercept it in the auth webview (see accounts/com.palm.boxnet.json).
+ * PKCE (public client) is preferred, exactly like Dropbox - see oauth2.js. If your
+ * Box app type still requires a confidential secret, set CLIENT_SECRET and oauth2.js
+ * will include it; leave it as the placeholder to run as a pure PKCE public client.
  */
 var Config = {
+	// Modern-TLS HTTP: device node is OpenSSL 0.9.8k, so ALL Box HTTPS shells out to
+	// the bundled modern curl (same binary + system CA store the Dropbox connector uses).
+	CURL:                 "/var/dropbox-tls/curl",
+	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
+
 	CLIENT_ID:     "PLACEHOLDER_BOX_CLIENT_ID",       // TODO: from Box dev console
-	CLIENT_SECRET: "PLACEHOLDER_BOX_CLIENT_SECRET",   // TODO: prefer keymanager-wrapped
-	REDIRECT_URI:  "https://webos.local/boxnet/oauth2callback",
+	// Leave as the placeholder for a PKCE public client (no secret shipped). Only set
+	// this if your Box app mandates a confidential secret; prefer keymanager-wrapping.
+	CLIENT_SECRET: "PLACEHOLDER_BOX_CLIENT_SECRET",
+	REDIRECT_URI:  "http://localhost/boxnet/oauth2callback",
 
 	// OAuth2 (confirmed present in com.box.android 7.1.515)
 	AUTHORIZE_URL: "https://account.box.com/api/oauth2/authorize",
 	TOKEN_URL:     "https://api.box.com/oauth2/token",
 	REVOKE_URL:    "https://api.box.com/oauth2/revoke",
 
-	// REST v2 (confirmed: api.box.com/2.0/files/, folders, users/me)
-	API_BASE:      "https://api.box.com/2.0",
-	UPLOAD_BASE:   "https://upload.box.com/api/2.0",
+	// REST v2
+	API_BASE:      "https://api.box.com/2.0",          // /folders/{id}/items, /files/{id}, /users/me
+	UPLOAD_BASE:   "https://upload.box.com/api/2.0",    // /files/content
+	ROOT_FOLDER:   "0",                                 // Box root folder id
 
-	// "root" scope grants full read/write to the user's own content.
+	// "root" scope = full read/write to the user's own content.
 	SCOPE:         "root_readwrite"
 };
 

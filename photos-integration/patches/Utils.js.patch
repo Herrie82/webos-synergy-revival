@@ -1,13 +1,9 @@
 --- a/photos-src/base/Utils.js
 +++ b/photos-src/base/Utils.js
-@@ -412,9 +412,21 @@
- 								accountsCapability[account.templateId].videoDownload    =false;
- 								accountsCapability[account.templateId].serviceName      ="com.palm.service.photos.snapfish";
+@@ -414,6 +414,32 @@
  								accountsCapability[account.templateId].computeNumFiles  =true;
--		
-+
+ 
  							break;
--							
 +
 +							case "com.palm.dropbox":
 +								// Synergy-revival Dropbox photo source. listAlbums/listPhotos live in
@@ -18,6 +14,19 @@
 +								accountsCapability[account.templateId].getUserInfo      =false;
 +								accountsCapability[account.templateId].videoDownload    =false;
 +								accountsCapability[account.templateId].serviceName      ="com.palm.service.dropbox";
++
++							break;
++
++							case "com.palm.boxnet":
++								// Synergy-revival Box photo source. Mirrors Dropbox: listAlbums/
++								// listPhotos live in the main Box service (already bus-registered),
++								// so no separate com.palm.service.photos.boxnet role. Box photo URLs
++								// carry ?access_token= (no unauthenticated pre-signed links).
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.boxnet";
 +
 +							break;
 +

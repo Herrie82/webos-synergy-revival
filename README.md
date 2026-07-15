@@ -12,7 +12,7 @@ QuickOffice engine.
 |---|---|---|
 | **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
 | **QuickOffice** | Remote file **list + open** rerouted onto our Dropbox service (dead MX proxy bypassed) | ✅ patched (patch, JS-only) |
-| **Box** | Service scaffold (OAuth2 + REST v2, refresh-on-401) | 🚧 scaffold — needs the Dropbox stack applied (auth app, PKCE, photos) |
+| **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
 
@@ -50,8 +50,10 @@ quickoffice-integration/
   patches/RemoteFileService.js.patch  reroute QuickOffice's remote-file layer onto our service
   README.md
 box/
-  service/com.palm.service.boxnet/    Box scaffold (mirror the Dropbox stack to finish)
-  account/com.palm.boxnet.json
+  service/com.palm.service.boxnet/    Box service (OAuth2/PKCE + REST v2, files + photos)
+  apps/com.palm.app.boxnet-auth/      customUI OAuth login
+  apps/com.palm.app.boxnet-files/     Enyo file-picker/manager (folder-ID breadcrumb)
+  account/com.palm.boxnet.json        Synergy template (DOCUMENTS + PHOTO.UPLOAD)
 recon/                                RE notes: facebook, linkedin, snapfish
 docs/ARCHITECTURE.md
 ```

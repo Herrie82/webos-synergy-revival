@@ -1,6 +1,6 @@
 /*global BoxApi, console */
 /* checkCredentials - re-validate stored tokens (called by accounts on demand).
- * Hits GET /users/me; a 200 means the access/refresh tokens still work.
+ * Hits POST /users/get_current_account; a 200 means the tokens still work.
  */
 function CheckCredentialsCommandAssistant() {}
 
@@ -13,12 +13,14 @@ CheckCredentialsCommandAssistant.prototype = {
 			return;
 		}
 		var renewed = null;
-		var call = BoxApi.getAccountInfo(creds, { onTokensRenewed: function (nc) { renewed = nc; } });
-		future.nest(call);
+		var call = BoxApi.getAccountInfo(creds, function (nc) { renewed = nc; });
+		// Resolve `future` ourselves (no nest - nest would leak the raw API result).
 		call.then(this, function () {
-			var me = call.result;
+			var me;
+			try { me = call.result; }
+			catch (e) { future.setException(e); return; }
 			future.result = { returnValue: true, renewedCredentials: renewed,
-				username: me.login, displayName: me.name };
+				username: me.email, displayName: me.name && me.name.display_name };
 		});
 	}
 };
