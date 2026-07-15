@@ -1,6 +1,6 @@
 --- a/source/RemoteFileService.js
 +++ b/source/RemoteFileService.js
-@@ -202,6 +202,10 @@
+@@ -202,8 +202,36 @@
          kind:      "PalmService",
          service:   "palm://com.palm.downloadmanager/",
          subscribe: true
@@ -8,34 +8,63 @@
 +        name:      "modernDbx",
 +        kind:      "PalmService",
 +        service:   "palm://com.palm.service.dropbox/"
++    }, {
++        name:      "modernBox",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.boxnet/"
++    }, {
++        name:      "modernOne",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.onedrive/"
++    }, {
++        name:      "modernGdrive",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.gdrive/"
      }],
  
++    // MODERN REROUTE (webos-synergy-revival): pick the revival service for an account's
++    // mxId (null = not one of ours -> fall through to the legacy MX path).
++    _modernSvc: function(mxId) {
++        switch (mxId) {
++        case "drop":     return this.$.modernDbx;
++        case "box":      return this.$.modernBox;
++        case "onedrive": return this.$.modernOne;
++        case "gdrive":   return this.$.modernGdrive;
++        default:         return null;
++        }
++    },
++
      /**
-@@ -236,6 +240,17 @@
+      * Called when the object is first made.
+      */
+@@ -236,6 +264,20 @@
          this.newFileName = inNewName;
          this.cacheName   = inFile;
  
-+        // MODERN REROUTE: add a new file into a Dropbox folder via uploadFile. dropboxPath =
-+        // parent folder + "/" + name (parent "" = Dropbox root).
-+        if (inAccount && inAccount.mxId === "drop") {
++        // MODERN REROUTE: add a new file into a revived cloud folder via uploadFile. Pass both
++        // a Dropbox-style path AND a folderId+name so each service uses what it needs.
++        if (inAccount && this._modernSvc(inAccount.mxId)) {
 +            this.localInfo = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
-+            var dbxParent = (inParent === undefined || inParent === null) ? "" : String(inParent);
-+            var dbxPath   = dbxParent.replace(/\/+$/, "") + "/" + inNewName;
-+            this._modernUpload(QOWT.MXConfig.downloadFolder + inFile, dbxPath,
-+                { success: true, operation: QOWT.MX.addOp, newName: inNewName });
++            var parent = (inParent === undefined || inParent === null) ? "" : String(inParent);
++            this._modernUpload({
++                localPath:   QOWT.MXConfig.downloadFolder + inFile,
++                dropboxPath: parent.replace(/\/+$/, "") + "/" + inNewName,  // Dropbox path form
++                folderId:    parent,                                        // Box/OneDrive/Drive id
++                name:        inNewName
++            }, { success: true, operation: QOWT.MX.addOp, newName: inNewName });
 +            return;
 +        }
 +
          var src = QOWT.MXConfig.downloadFolder + inFile;
          uri = QOWT.mxe.getAddFileUrl(this.parentUri, this.newFileName, this.accountInfo);
          this.localInfo = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
-@@ -262,9 +277,55 @@
+@@ -262,9 +304,61 @@
          this.currentOp   = QOWT.MX.replaceOp;
          this.newFileName = undefined;
  
-+        // MODERN REROUTE: save an edited Dropbox doc straight back via uploadFile (mode
-+        // "overwrite"), skipping the dead MX GetRemoteItemInfo out-of-sync round-trip.
-+        if (inAccount && inAccount.mxId === "drop") {
++        // MODERN REROUTE: save an edited cloud doc straight back via uploadFile (overwrite),
++        // skipping the dead MX GetRemoteItemInfo out-of-sync round-trip.
++        if (inAccount && this._modernSvc(inAccount.mxId)) {
 +            this._modernReplace(inFile);
 +            return;
 +        }
@@ -43,22 +72,28 @@
          this._getRemoteInfo(inFile);
      },
  
-+    // MODERN REROUTE: replace (save-back) an edited Dropbox file. The cache holds the local
-+    // copy (uniqueTargetFilename) and its Dropbox path (uri); overwrite it in place.
++    // MODERN REROUTE: replace (save-back) an edited cloud file. The cache holds the local copy
++    // (uniqueTargetFilename) and the remote locator (uri = Dropbox path OR Box/OneDrive/Drive
++    // file id); overwrite it in place (replace:true selects each service's version endpoint).
 +    _modernReplace: function(inFile) {
 +        var info = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
 +        if (!info) { QOWT.MX.handleError("-1"); this.failureCb(); return; }
 +        this.localInfo = info;
-+        this._modernUpload(QOWT.MXConfig.downloadFolder + info.uniqueTargetFilename, info.uri,
-+            { success: true, operation: QOWT.MX.replaceOp });
++        this._modernUpload({
++            localPath:   QOWT.MXConfig.downloadFolder + info.uniqueTargetFilename,
++            dropboxPath: info.uri,      // Dropbox path (overwrite mode)
++            fileId:      info.uri,      // Box/OneDrive/Drive file id
++            replace:     true
++        }, { success: true, operation: QOWT.MX.replaceOp });
 +    },
 +
-+    // Shared modern upload: push a local file to Dropbox, then fire QuickOffice's existing
-+    // success/failure contract and keep remoteFileInfoCache consistent (mirrors _handleUpload).
-+    _modernUpload: function(localPath, dropboxPath, res) {
++    // Shared modern upload: push a local file to the account's revival service, then fire
++    // QuickOffice's existing success/failure contract and keep remoteFileInfoCache consistent
++    // (mirrors _handleUpload). callArgs carries the superset of params each service reads.
++    _modernUpload: function(callArgs, res) {
 +        this._muRes = res;
-+        this.$.modernDbx.call(
-+            { accountId: this.accountInfo._id, localPath: localPath, dropboxPath: dropboxPath },
++        callArgs.accountId = this.accountInfo._id;
++        this._modernSvc(this.accountInfo.mxId).call(callArgs,
 +            { method: "uploadFile", onSuccess: "_modernUploadOk", onFailure: "_modernUploadFail" });
 +    },
 +
@@ -69,7 +104,7 @@
 +            if (this.localInfo && inResponse) { this.localInfo.size = inResponse.size; }
 +            if (this.localInfo) { QOWT.mxe.remoteFileInfoCache.updateInfo(this.localInfo); }
 +        } else if (inResponse) { // add: register the new remote file in the cache
-+            var newInfo = { name: inResponse.name, uri: inResponse.path,
++            var newInfo = { name: inResponse.name, uri: (inResponse.path || inResponse.id),
 +                size: inResponse.size, parent: this.parentUri,
 +                type: (this.localInfo && this.localInfo.type) };
 +            QOWT.mxe.remoteFileInfoCache.addInfo(newInfo, this.cacheName);
@@ -85,7 +120,7 @@
      /**
       *
       * @param {Object} inFile
-@@ -524,6 +585,14 @@
+@@ -524,8 +618,40 @@
          kind:      "PalmService",
          service:   "palm://com.palm.downloadmanager/",
          subscribe: true
@@ -97,16 +132,42 @@
 +        name:      "modernDbx",
 +        kind:      "PalmService",
 +        service:   "palm://com.palm.service.dropbox/"
++    }, {
++        name:      "modernBox",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.boxnet/"
++    }, {
++        name:      "modernOne",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.onedrive/"
++    }, {
++        name:      "modernGdrive",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.gdrive/"
      }],
  
++    // MODERN REROUTE (webos-synergy-revival): pick the revival service for an account's
++    // mxId (null = not one of ours -> fall through to the legacy MX path).
++    _modernSvc: function(mxId) {
++        switch (mxId) {
++        case "drop":     return this.$.modernDbx;
++        case "box":      return this.$.modernBox;
++        case "onedrive": return this.$.modernOne;
++        case "gdrive":   return this.$.modernGdrive;
++        default:         return null;
++        }
++    },
++
      /**
-@@ -672,12 +741,49 @@
+      * Called when the object is first made.
+      */
+@@ -672,12 +798,52 @@
          this.uri         = inUri;
          this.accountInfo = inAccountInfo;
  
-+        // MODERN REROUTE: Dropbox downloads go through com.palm.service.dropbox/downloadFile
++        // MODERN REROUTE: revived-cloud downloads go through the account's service downloadFile
 +        // (modern TLS via bundled curl) instead of getDownloadUrl + the dead downloadmanager path.
-+        if (inAccountInfo && inAccountInfo.mxId === "drop" && inAccountInfo._id) {
++        if (inAccountInfo && inAccountInfo._id && this._modernSvc(inAccountInfo.mxId)) {
 +            this._modernDownload(inUri, inAccountInfo, inSuccess, inFailure);
 +            return;
 +        }
@@ -117,11 +178,14 @@
          QOWT.mxe.GetRemoteItemInfo(this, this.accountInfo, this.uri);
      },
  
-+    // MODERN REROUTE: download one Dropbox file to the SAME local cache path QuickOffice's
-+    // native viewer reads from, then fire the existing successCb(unique, name, account, mime).
++    // MODERN REROUTE: download one cloud file to the SAME local cache path QuickOffice's native
++    // viewer reads from, then fire the existing successCb(unique, name, account, mime). Box/
++    // OneDrive/Drive locators are opaque ids, so recover the real filename (with its extension -
++    // the viewer picks its renderer from it) via the uri->name map filled during listing.
 +    _modernDownload: function(inUri, inAccountInfo, inSuccess, inFailure) {
-+        var name = inUri, slash = inUri.lastIndexOf("/");
-+        if (slash >= 0) { name = inUri.substring(slash + 1); }
++        var name = (QOWT.mxRevivalNames && QOWT.mxRevivalNames[inUri]) || inUri;
++        var slash = name.lastIndexOf("/");
++        if (slash >= 0) { name = name.substring(slash + 1); }
 +        var unique = QOWT.MX.createUniqueTargetFilename(name);
 +        var dot = name.lastIndexOf("."), ext = (dot >= 0) ? name.substring(dot + 1) : "";
 +        this._mdName    = name;
@@ -130,7 +194,7 @@
 +        this._mdAccount = inAccountInfo;
 +        this._mdSuccess = inSuccess;
 +        this._mdFailure = inFailure;
-+        this.$.modernDbx.call(
++        this._modernSvc(inAccountInfo.mxId).call(
 +            { accountId: inAccountInfo._id, dropboxPath: inUri,
 +              localPath: QOWT.MXConfig.downloadFolder + unique },
 +            { method: "downloadFile", onSuccess: "_modernDownloadOk", onFailure: "_modernDownloadFail" });
@@ -150,7 +214,7 @@
      /**
       *
       * @param {Object} inEvent
-@@ -863,6 +969,15 @@
+@@ -863,6 +1029,39 @@
          onOtherListError: ""
      },
  
@@ -161,24 +225,48 @@
 +        name:    "modernDbx",
 +        kind:    "PalmService",
 +        service: "palm://com.palm.service.dropbox/"
++    }, {
++        name:    "modernBox",
++        kind:    "PalmService",
++        service: "palm://com.palm.service.boxnet/"
++    }, {
++        name:    "modernOne",
++        kind:    "PalmService",
++        service: "palm://com.palm.service.onedrive/"
++    }, {
++        name:    "modernGdrive",
++        kind:    "PalmService",
++        service: "palm://com.palm.service.gdrive/"
 +    }],
++
++    // MODERN REROUTE (webos-synergy-revival): pick the revival service for an account's
++    // mxId (null = not one of ours -> fall through to the legacy MX path).
++    _modernSvc: function(mxId) {
++        switch (mxId) {
++        case "drop":     return this.$.modernDbx;
++        case "box":      return this.$.modernBox;
++        case "onedrive": return this.$.modernOne;
++        case "gdrive":   return this.$.modernGdrive;
++        default:         return null;
++        }
++    },
 +
      /**
       * Called when the component is first made.
       */
-@@ -912,6 +1027,49 @@
+@@ -912,6 +1111,54 @@
       * @param {Object} inCallback
       * @param {Boolean} inJustFolders - if true, returns only folders
       */
-+    // MODERN REROUTE: list a Dropbox folder via com.palm.service.dropbox/listFolder and
-+    // feed the existing _processFiles(), so the browser UI is unchanged.
++    // MODERN REROUTE: list a folder via the account's revival service listFolder and feed the
++    // existing _processFiles(), so the browser UI is unchanged.
 +    _modernList: function(inSource, inCallback) {
 +        var path = inSource.folderUri || "";
 +        this.callback    = inCallback;
 +        this.locationUri = path;
 +        if (this.rootUri === undefined) { this.rootUri = ""; }
 +        this._mlParent   = path;
-+        this.$.modernDbx.call(
++        this._modernSvc(inSource.mxId).call(
 +            { accountId: inSource._id, path: path },
 +            { method: "listFolder", onSuccess: "_modernListOk", onFailure: "_modernListFail" });
 +    },
@@ -199,11 +287,16 @@
 +            mapped.push({
 +                type:         mime,
 +                name:         e.name,
-+                uri:          e.path,          // Dropbox path - reused as dropboxPath on download
++                uri:          e.path,          // locator - reused as dropboxPath/fileId on download
 +                size:         e.size,
 +                lastmodified: e.modified,
 +                parent:       this._mlParent
 +            });
++            // Remember locator -> real filename so the ID-based services (Box/OneDrive/Drive)
++            // can name the downloaded cache file with its real extension - the native viewer
++            // picks its renderer from that. (Dropbox's locator is already a path ending in it.)
++            QOWT.mxRevivalNames = QOWT.mxRevivalNames || {};
++            QOWT.mxRevivalNames[e.path] = e.name;
 +        }
 +        this._processFiles(mapped);
 +    },
@@ -216,13 +309,13 @@
      getFiles: function(inSource, inCallback, inJustFolders) {
          QOWT.utils.log("RemoteFileService getFiles");
  
-@@ -919,6 +1077,13 @@
+@@ -919,6 +1166,13 @@
          this.callback = inCallback;
          this.justFolders = inJustFolders;
  
 +        // MODERN REROUTE: Dropbox ("drop" = Account.kMXID_DROP_BOX) no longer uses the dead
 +        // MX proxy - list via com.palm.service.dropbox.
-+        if (inSource && inSource.mxId === "drop") {
++        if (inSource && this._modernSvc(inSource.mxId)) {
 +            this._modernList(inSource, inCallback);
 +            return;
 +        }

@@ -1,7 +1,10 @@
 /*global DriveApi, AccountCreds, Acl, console */
 /* uploadFile - upload a local file into a Google Drive folder. args:
- *   { accountId | credentials, folderId | path, localPath, name, mimeType }
- * folderId defaults to the drive root; name defaults to the local basename.
+ *   { accountId | credentials, folderId | path, localPath, name, mimeType }  (create new file)
+ *   { accountId | credentials, fileId | path | dropboxPath, localPath, replace:true }
+ *                                                                            (overwrite by file id)
+ * folderId defaults to the drive root; name defaults to the local basename. `replace` (QuickOffice
+ * save-back) updates an existing file's content in place.
  */
 function UploadFileCommandAssistant() {}
 
@@ -17,6 +20,7 @@ UploadFileCommandAssistant.prototype = {
 				detail: "need localPath" });
 			return;
 		}
+		var replaceId = args.replace ? (args.fileId || args.path || args.dropboxPath) : null;
 		var folderId = args.folderId || args.path || "root";
 		var name = args.name || args.localPath.split("/").pop();
 		var credF = AccountCreds.resolve(args);
@@ -25,7 +29,9 @@ UploadFileCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var call = DriveApi.uploadFile(creds, folderId, args.localPath, name, args.mimeType, function (nc) { renewed = nc; });
+			var call = replaceId
+				? DriveApi.uploadReplace(creds, replaceId, args.localPath, args.mimeType, function (nc) { renewed = nc; })
+				: DriveApi.uploadFile(creds, folderId, args.localPath, name, args.mimeType, function (nc) { renewed = nc; });
 			call.then(self, function () {
 				var meta;
 				try { meta = call.result || {}; }   // Drive 2-step upload returns the file metadata

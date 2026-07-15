@@ -73,10 +73,21 @@ var BoxApi = {
 	},
 
 	// POST upload.box.com/api/2.0/files/content (multipart: attributes JSON + file bytes).
+	// Creates a NEW file; Box 409s if a file of that name already exists in the folder - use
+	// uploadNewVersion() to overwrite an existing file (e.g. QuickOffice save-back).
 	uploadFile: function (creds, folderId, localPath, name, cb) {
 		var attrs = JSON.stringify({ name: name, parent: { id: folderId || Config.ROOT_FOLDER } });
 		return this._req({ method: "POST", url: Config.UPLOAD_BASE + "/files/content",
 			multipart: [ { name: "attributes", value: attrs }, { name: "file", file: localPath } ]
+		}, creds, cb, false);
+	},
+
+	// POST upload.box.com/api/2.0/files/{fileId}/content - upload a NEW VERSION of an existing
+	// file (Box's overwrite). Same response shape as uploadFile ({ entries:[fileObj] }).
+	uploadNewVersion: function (creds, fileId, localPath, cb) {
+		return this._req({ method: "POST",
+			url: Config.UPLOAD_BASE + "/files/" + encodeURIComponent(fileId) + "/content",
+			multipart: [ { name: "file", file: localPath } ]
 		}, creds, cb, false);
 	},
 

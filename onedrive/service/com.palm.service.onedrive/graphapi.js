@@ -99,6 +99,14 @@ var GraphApi = {
 		return this._req({ method: "PUT", url: Config.API_BASE + seg,
 			headers: { "Content-Type": "application/octet-stream" },
 			dataFile: localPath }, creds, cb, false);
+	},
+
+	// PUT new content to an EXISTING item (overwrite by id) - QuickOffice save-back.
+	uploadReplace: function (creds, itemId, localPath, cb) {
+		return this._req({ method: "PUT",
+			url: Config.API_BASE + "/me/drive/items/" + encodeURIComponent(itemId) + "/content",
+			headers: { "Content-Type": "application/octet-stream" },
+			dataFile: localPath }, creds, cb, false);
 	}
 };
 

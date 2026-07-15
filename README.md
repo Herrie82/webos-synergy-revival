@@ -11,7 +11,7 @@ QuickOffice engine.
 | Connector | What works | State |
 |---|---|---|
 | **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
-| **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto our Dropbox service (dead MX proxy bypassed); one patch fits both the Office and PDF apps | ✅ patched (patch, JS-only) |
+| **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto all four services (Dropbox/Box/OneDrive/Drive); dead MX proxy bypassed; patches fit both the Office and PDF apps | ✅ patched (2 patches, JS-only) |
 | **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
 | **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
 | **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC** — text/image render now; PDF/docx/xlsx need vendored libs |

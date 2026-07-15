@@ -1,8 +1,9 @@
 # QuickOffice integration
 
-Repairs QuickOffice's broken remote-file support by rerouting it onto our modern
-`com.palm.service.dropbox`. A Dropbox account's documents list and open in QuickOffice's
-native viewer again — no native reversing required.
+Repairs QuickOffice's broken remote-file support by rerouting it onto our modern cloud
+services — **Dropbox, Box, OneDrive, and Google Drive**. Those accounts' documents list,
+open, edit, and **save back** in QuickOffice's native viewer again — no native reversing
+required.
 
 ## What was broken (reverse-engineering result)
 
@@ -21,71 +22,82 @@ disk — it never touches the network. So the fix is pure JS.
 
 ## The reroute (`patches/RemoteFileService.js.patch`)
 
-Two seams in `RemoteFileService.js`, both keyed on the account's mxId `"drop"` (Dropbox):
+Three seams in `RemoteFileService.js`. Each is now **service-agnostic**: a `_modernSvc(mxId)`
+helper (added to all three kinds) maps the account's mxId → the right revival `PalmService`
+component (`modernDbx`/`modernBox`/`modernOne`/`modernGdrive`), or `null` to fall through to the
+legacy MX path. All four backends expose the same `listFolder`/`downloadFile`/`uploadFile`
+contract, so one code path serves them all.
 
 | Kind / method | Original | Rerouted to |
 |---|---|---|
-| `RemoteFileService.getFiles` (`_modernList`) | MX `serviceLogin → GetRoot → GetFilesForAccountAtLocation` | `palm://com.palm.service.dropbox/listFolder {accountId, path}` → maps entries → existing `_processFiles` |
-| `RemoteFileCacheService.getFilePathToRemoteFile` (`_modernDownload`) | `getDownloadUrl` + `dlManager.call({method:"download"})` | `.../downloadFile {accountId, dropboxPath, localPath}` |
-| `RemoteFileUploadService.replaceFileInCloud` (`_modernReplace` → `_modernUpload`) | MX `GetRemoteItemInfo` (out-of-sync check) + `dlManager.call({method:"upload"})` to the dead proxy | `.../uploadFile {accountId, localPath, dropboxPath}` (mode `overwrite`) → existing `successCb` |
-| `RemoteFileUploadService.addFileInCloud` (`_modernUpload`) | `getAddFileUrl` + `dlManager` upload | `.../uploadFile` to `parent + "/" + name` |
+| `RemoteFileService.getFiles` (`_modernList`) | MX `serviceLogin → GetRoot → GetFilesForAccountAtLocation` | `…/listFolder {accountId, path}` → maps entries → existing `_processFiles` |
+| `RemoteFileCacheService.getFilePathToRemoteFile` (`_modernDownload`) | `getDownloadUrl` + `dlManager.call({method:"download"})` | `…/downloadFile {accountId, dropboxPath, localPath}` |
+| `RemoteFileUploadService.replaceFileInCloud` (`_modernReplace` → `_modernUpload`) | MX `GetRemoteItemInfo` (out-of-sync check) + `dlManager` upload to the dead proxy | `…/uploadFile {accountId, localPath, fileId, replace:true}` → existing `successCb` |
+| `RemoteFileUploadService.addFileInCloud` (`_modernUpload`) | `getAddFileUrl` + `dlManager` upload | `…/uploadFile {accountId, localPath, folderId, name}` |
 
-**Save-back (edit → Save) now works:** `replaceFileInCloud` is what QuickOffice calls when you
-save an edited cloud document. The modern path uploads the cached local copy
-(`uniqueTargetFilename`) back to its Dropbox path (`localInfo.uri`) with `mode:"overwrite"`, then
-fires QuickOffice's existing `successCb` and updates `remoteFileInfoCache` — so the editor's
-"saved" state is unchanged. The dead MX out-of-sync round-trip is skipped (Dropbox's overwrite is
-last-writer-wins).
+**Save-back (edit → Save) works** across all four services. `replaceFileInCloud` uploads the
+cached local copy (`uniqueTargetFilename`) back over the existing remote file and fires
+QuickOffice's existing `successCb` + cache update, so the editor's "saved" state is unchanged. The
+dead MX out-of-sync round-trip is skipped. Each backend overwrites differently — the shared
+`{fileId, replace:true}` (plus `dropboxPath` for Dropbox) lets each service pick its own path:
+Dropbox `mode:"overwrite"`, Box/OneDrive/Drive a *new-version / update-content-by-id* call.
 
-**Bug fixed in the same patch:** the earlier revision added the `modernDbx` `PalmService`
-component only to `RemoteFileUploadService`, but `_modernDownload` lives in
-`RemoteFileCacheService` and calls `this.$.modernDbx` — which didn't exist there, so the Dropbox
-**download** path would have thrown once exercised (it was never interactively tested). The
-component is now present in all three kinds that use it (list / download / upload).
+**Path vs. ID locators.** Dropbox's locator is a real path (ends in the filename). Box, OneDrive
+and Drive use **opaque IDs**, so `_modernDownload` couldn't name the cached file (no extension →
+the native viewer can't pick a renderer). Fixed with a small `QOWT.mxRevivalNames` map that the
+list step fills (`locator → real filename`) and the download step reads. Downstream is untouched:
+the file still lands at `QOWT.MXConfig.downloadFolder + createUniqueTargetFilename(name)` and fires
+`successCb(unique, name, account, mime)`.
 
-Each adds a `PalmService` component (`modernDbx`) to its enyo kind and re-fires QuickOffice's
-**existing** success contract, so the downstream "open local file → hand to native arx viewer"
-path is untouched:
+**Bug fixed in the same patch:** an earlier revision added the `modernDbx` component only to
+`RemoteFileUploadService`, but `_modernDownload` lives in `RemoteFileCacheService` and calls
+`this.$.modernDbx` — which didn't exist there, so the download path would have thrown once
+exercised (it was never interactively tested). The components are now present in all three kinds.
 
-- List entries map `{path→uri, name, size, modified→lastmodified, folder→"application/directory"}`
-  and feed `_processFiles` verbatim.
-- Download writes to the exact cache path QuickOffice expects —
-  `QOWT.MXConfig.downloadFolder + QOWT.MX.createUniqueTargetFilename(name)` =
-  `/media/internal/.qo/<timestamp>-<name>` — then fires
-  `successCb(uniqueTargetFilename, name, accountInfo, mimeType)`. The mime is derived via
-  `QOWT.MX.getMimeType(ext)` (with an `application/octet-stream` fallback, because
-  `downloadCB` calls `mimeType.toLowerCase()`).
+## Account recognition (`patches/FileStore.js.patch`)
 
-**No account-recognition patch is needed:** QuickOffice maps accounts by
-`loc_name.toLowerCase()`, and our `com.palm.dropbox` template's `loc_name` "Dropbox" already
-falls into the existing `"dropbox" → mxId "drop"` case, carrying our `accountId` as `_id`.
+QuickOffice maps accounts by `loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback`.
+Dropbox already matched (`"dropbox" → mxId "drop"`), but the others didn't, so a small second
+patch adds the cases:
 
-## Companion service changes (in `../dropbox/`)
+| Template `loc_name` | → mxId |
+|---|---|
+| `Dropbox` | `drop` (stock case, unchanged) |
+| `Box` | `box` (new `case "box"`; stock only had `"box.net"`) |
+| `OneDrive` | `onedrive` (new literal mxId) |
+| `Google Drive` | `gdrive` (new literal mxId) |
 
-- `com.quickoffice.webos` / `com.quickoffice.ar` added to the `allowedAppIds` of
-  `listFolder` / `downloadFile` / `uploadFile`.
-- `downloadFile` now passes `curl --create-dirs` so it creates `/media/internal/.qo/` if absent.
+`accountType` is inert for the new ones — the modern reroute bypasses all MX account-type logic.
+
+## Companion service changes
+
+Each service's `listFolder`/`downloadFile`/`uploadFile` lists `com.quickoffice.webos` /
+`com.quickoffice.ar` in `allowedAppIds`, and `downloadFile` passes `curl --create-dirs` so
+`/media/internal/.qo/` is created if absent. For **save-back**, each service gained an
+overwrite-by-id path: Dropbox `mode:"overwrite"`, Box `uploadNewVersion`, OneDrive
+`uploadReplace` (PUT item content), Drive `uploadReplace` (PATCH content).
 
 ## Applying
 
+Both patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` —
+their `RemoteFileService.js` and `FileStore.js` are byte-identical, verified against the 2.1.2113
+/ 10.3.484 IPKs):
+
 ```sh
-patch -p1 -d /media/cryptofs/apps/usr/palm/applications/com.quickoffice.webos < patches/RemoteFileService.js.patch
+for app in com.quickoffice.webos com.quickoffice.ar; do
+  d=/media/cryptofs/apps/usr/palm/applications/$app
+  patch -p1 -d "$d" < patches/RemoteFileService.js.patch
+  patch -p1 -d "$d" < patches/FileStore.js.patch
+done
 # restart LunaSysMgr so QuickOffice reloads its (cached) app JS
 ```
 
-Round-trip verified: applying the patch to the pristine 2.1.2113 file reproduces the deployed
-version exactly.
+Both patches are **round-trip verified**: applying to the pristine IPK source reproduces the
+patched file exactly.
 
-## Applying to the PDF app
+## Limitations / TODO
 
-`com.quickoffice.ar`'s `source/RemoteFileService.js` is **byte-identical** to
-`com.quickoffice.webos`'s (verified against both 2.1.2113 / 10.3.484 IPKs), so the **same patch
-applies to both** — just point `patch -d` at the `com.quickoffice.ar` app dir as well.
-
-## TODO
-
-- **Other backends:** the reroute is keyed on `mxId === "drop"` (Dropbox) only. Box/OneDrive/Drive
-  each expose the same `listFolder`/`downloadFile`/`uploadFile` contract, but QuickOffice's
-  `FileStore` must first map their `loc_name` to an `mxId`; Box was an original QuickOffice
-  provider (`"box"`), OneDrive/Drive would need a new mapping.
-- **Interactive on-device test** of list / open / **save-back** is still pending.
+- **Google Drive native docs** (Docs/Sheets/Slides) won't open via QuickOffice: they have no
+  downloadable bytes and the download seam doesn't pass an `exportMime`. Real Office files stored
+  in Drive open fine. (The stand-alone `gdrive-files` app *does* export native docs.)
+- **Interactive on-device test** of list / open / **save-back** for all four backends is pending.

@@ -1,0 +1,30 @@
+--- a/source/FileStore.js
++++ b/source/FileStore.js
+@@ -694,11 +694,27 @@
+ 
+         switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
+ 
++        // "box" = the webos-synergy-revival Box template (loc_name "Box"); "box.net" = stock.
++        case "box":
+         case "box.net":
+             accountType = Account.kACCT_TYPE_BOXNET;
+             mxId        = Account.kMXID_BOXNET;
+             break;
+ 
++        // webos-synergy-revival: OneDrive / Google Drive templates (loc_name "OneDrive",
++        // "Google Drive"). These weren't QuickOffice providers, so use literal mxIds that the
++        // RemoteFileService modern reroute recognizes. accountType is inert here (the modern
++        // path bypasses the MX account-type logic entirely).
++        case "onedrive":
++            accountType = "onedriveAccount";
++            mxId        = "onedrive";
++            break;
++
++        case "google drive":
++            accountType = "gdriveAccount";
++            mxId        = "gdrive";
++            break;
++
+         case "google":
+             accountType = Account.kACCT_TYPE_GOOGLE_DOCS;
+             mxId        = Account.kMXID_GOOGLE_DOCS;

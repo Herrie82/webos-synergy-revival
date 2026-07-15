@@ -121,6 +121,16 @@ var DriveApi = {
 			});
 		});
 		return f;
+	},
+
+	// Update an existing file's CONTENT in place (overwrite by id) - QuickOffice save-back.
+	// Drive updates content with PATCH on the upload endpoint (uploadType=media).
+	uploadReplace: function (creds, fileId, localPath, mimeType, cb) {
+		return this._req({ method: "PATCH",
+			url: Config.UPLOAD_BASE + "/files/" + encodeURIComponent(fileId) +
+				"?uploadType=media&fields=id,name,size",
+			headers: { "Content-Type": mimeType || "application/octet-stream" },
+			dataFile: localPath }, creds, cb, false);
 	}
 };
 
