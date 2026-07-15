@@ -1,5 +1,5 @@
---- a/source/RemoteFileService.js
-+++ b/source/RemoteFileService.js
+--- a/source/RemoteFileService.js	2026-07-15 21:25:45.144303581 +0200
++++ b/source/RemoteFileService.js	2026-07-15 21:25:45.150303689 +0200
 @@ -202,8 +202,36 @@
          kind:      "PalmService",
          service:   "palm://com.palm.downloadmanager/",
@@ -58,7 +58,7 @@
          var src = QOWT.MXConfig.downloadFolder + inFile;
          uri = QOWT.mxe.getAddFileUrl(this.parentUri, this.newFileName, this.accountInfo);
          this.localInfo = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
-@@ -262,9 +304,61 @@
+@@ -262,9 +304,69 @@
          this.currentOp   = QOWT.MX.replaceOp;
          this.newFileName = undefined;
  
@@ -109,6 +109,14 @@
 +                type: (this.localInfo && this.localInfo.type) };
 +            QOWT.mxe.remoteFileInfoCache.addInfo(newInfo, this.cacheName);
 +        }
++        // AUTO-REFRESH: cloud services have no push watch, so tell any open file browser that a
++        // remote file changed. FileStore listens for this and fires its watch callback, which
++        // clears the folder cache and re-lists - so a newly-saved file shows without a manual
++        // refresh. (No-op if no browser is mounted.)
++        if (QOWT.EVT && QOWT.EVT.dispatchEvent) {
++            QOWT.EVT.dispatchEvent(window.document, "qowt:remoteFileChanged",
++                { operation: this.currentOp });
++        }
 +        this.successCb(res);
 +    },
 +
@@ -120,7 +128,7 @@
      /**
       *
       * @param {Object} inFile
-@@ -524,8 +618,40 @@
+@@ -524,8 +626,40 @@
          kind:      "PalmService",
          service:   "palm://com.palm.downloadmanager/",
          subscribe: true
@@ -161,7 +169,7 @@
      /**
       * Called when the object is first made.
       */
-@@ -672,12 +798,52 @@
+@@ -672,12 +806,52 @@
          this.uri         = inUri;
          this.accountInfo = inAccountInfo;
  
@@ -214,7 +222,7 @@
      /**
       *
       * @param {Object} inEvent
-@@ -863,6 +1029,39 @@
+@@ -863,6 +1037,39 @@
          onOtherListError: ""
      },
  
@@ -254,7 +262,25 @@
      /**
       * Called when the component is first made.
       */
-@@ -912,6 +1111,54 @@
+@@ -897,6 +1104,17 @@
+      */
+     cancelAll: function() {
+         QOWT.mxe.CancelRequestFromGroup(this);
++        // MODERN REROUTE: the picker calls cancelAll()+getFiles() twice per folder open; the
++        // legacy path relied on CancelRequestFromGroup to drop the first in-flight request so
++        // only one render happened. Our PalmService list calls weren't cancellable, so BOTH
++        // completed and both rendered -> every entry appeared twice. Tear the pending revival
++        // requests down (enyo Service.cancel() destroys its outstanding Request children) and
++        // bump the list generation so any late/duplicate response can no longer re-render.
++        this._mlGen = (this._mlGen || 0) + 1;
++        var svcs = [this.$.modernDbx, this.$.modernBox, this.$.modernOne, this.$.modernGdrive];
++        for (var i = 0; i < svcs.length; i++) {
++            if (svcs[i] && svcs[i].cancel) { svcs[i].cancel(); }
++        }
+     },
+ 
+     /**
+@@ -912,6 +1130,66 @@
       * @param {Object} inCallback
       * @param {Boolean} inJustFolders - if true, returns only folders
       */
@@ -265,13 +291,25 @@
 +        this.callback    = inCallback;
 +        this.locationUri = path;
 +        if (this.rootUri === undefined) { this.rootUri = ""; }
++        // _processFiles() writes this.folderCache[...]; the legacy path seeds it in
++        // _startFetching(), which the modern reroute bypasses. Without this, _processFiles threw
++        // "Cannot set property 'ROOT' of undefined" on every list (after the callback had already
++        // rendered), leaving the error listener dangling and the cache unpopulated.
++        if (!this.folderCache) { this.folderCache = []; }
 +        this._mlParent   = path;
++        // Stamp this request's generation so a stale (cancelled/duplicate) response is ignored.
++        this._mlGen = (this._mlGen || 0) + 1;
 +        this._modernSvc(inSource.mxId).call(
 +            { accountId: inSource._id, path: path },
-+            { method: "listFolder", onSuccess: "_modernListOk", onFailure: "_modernListFail" });
++            { method: "listFolder", onSuccess: "_modernListOk", onFailure: "_modernListFail",
++              mlGen: this._mlGen });
 +    },
 +
-+    _modernListOk: function(inSender, inResponse) {
++    _modernListOk: function(inSender, inResponse, inRequest) {
++        // Defensive dedupe: if this response belongs to a superseded list request (the picker
++        // double-calls getFiles), drop it. cancelAll() already destroys the prior request, so
++        // this only fires if a response slips through; harmless when mlGen isn't plumbed through.
++        if (inRequest && inRequest.mlGen && inRequest.mlGen !== this._mlGen) { return; }
 +        var entries = (inResponse && inResponse.entries) || [];
 +        var mapped = [], i, e, isDir, mime, dot, ext;
 +        for (i = 0; i < entries.length; i++) {
@@ -309,7 +347,7 @@
      getFiles: function(inSource, inCallback, inJustFolders) {
          QOWT.utils.log("RemoteFileService getFiles");
  
-@@ -919,6 +1166,13 @@
+@@ -919,6 +1197,13 @@
          this.callback = inCallback;
          this.justFolders = inJustFolders;
  

@@ -1,6 +1,38 @@
---- a/source/FileStore.js
-+++ b/source/FileStore.js
-@@ -694,11 +694,27 @@
+--- a/source/FileStore.js	2026-07-15 21:25:45.148303653 +0200
++++ b/source/FileStore.js	2026-07-15 21:25:45.153303744 +0200
+@@ -300,6 +300,31 @@
+         }
+     ],
+ 
++    // MODERN REROUTE: the revival cloud services have no push "watch", so saving/uploading a
++    // file from the editor never fires the local-file watch that normally refreshes the browser
++    // (that is why newly-added files needed a manual refresh). RemoteFileService dispatches
++    // "qowt:remoteFileChanged" after a successful modern upload; treat it exactly like a watch
++    // event so the current folder listing re-queries and the new/updated file appears at once.
++    create: function() {
++        this.inherited(arguments);
++        this._remoteChangedBound = enyo.hitch(this, "_onRemoteFileChanged");
++        QOWT.EVT.addListener(window.document, "qowt:remoteFileChanged", this._remoteChangedBound);
++    },
++
++    destroy: function() {
++        if (this._remoteChangedBound) {
++            QOWT.EVT.removeListener(window.document, "qowt:remoteFileChanged", this._remoteChangedBound);
++            this._remoteChangedBound = undefined;
++        }
++        this.inherited(arguments);
++    },
++
++    _onRemoteFileChanged: function() {
++        // Mirror onLocalFileWatch: hand the browser its watch callback so it clears its cache
++        // and re-lists the current folder through the (always-fresh) modern getFiles path.
++        if (this.onWatchCb) { this.onWatchCb([]); }
++    },
++
+     /**
+      * Assigns a delegate to (or clears) the watch callback
+      *
+@@ -694,11 +719,27 @@
  
          switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
  

@@ -54,6 +54,31 @@ the file still lands at `QOWT.MXConfig.downloadFolder + createUniqueTargetFilena
 `this.$.modernDbx` — which didn't exist there, so the download path would have thrown once
 exercised (it was never interactively tested). The components are now present in all three kinds.
 
+## Listing reliability (found in first on-device test)
+
+The first real device run surfaced two list bugs, both now fixed in `RemoteFileService.js.patch`:
+
+- **Every entry appeared twice.** The picker calls `cancelAll()` + `getFiles()` *twice* per
+  folder open; the legacy path relied on `cancelAll()` (`CancelRequestFromGroup`) to drop the
+  first in-flight request so only one render happened. Our modern `PalmService` list calls
+  weren't cancellable, so **both** completed and both rendered. `cancelAll()` now also calls
+  `cancel()` on the four revival `PalmService` components (enyo `Service.cancel()` destroys its
+  outstanding `Request` children) and bumps a list generation; `_modernListOk` drops any response
+  whose stamped generation is stale. One render per open.
+- **`Cannot set property 'ROOT' of undefined`** thrown on every list. `_processFiles()` writes
+  `this.folderCache[…]`, which the legacy `_startFetching()` seeds but the modern reroute
+  bypassed. `_modernList` now initializes `this.folderCache` first, so the throw (which left the
+  `qowt:error` listener dangling) is gone.
+
+## Auto-refresh after save (`FileStore.js.patch`)
+
+Cloud services have no push "watch", so saving a new/edited file from the editor never fired the
+local-file watch that refreshes the browser — newly-added files needed a manual refresh. Now
+`_modernUploadOk` dispatches a `qowt:remoteFileChanged` document event on a successful upload, and
+`FileStore` (which already holds the browser's watch callback via `setWatchCallback`) listens for
+it and fires that callback — exactly the local-file-watch path. The open folder clears its cache
+and re-lists through the always-fresh modern `getFiles`, so the saved file shows immediately.
+
 ## Account recognition (`patches/FileStore.js.patch`)
 
 QuickOffice maps accounts by `loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback`.
@@ -100,4 +125,7 @@ patched file exactly.
 - **Google Drive native docs** (Docs/Sheets/Slides) won't open via QuickOffice: they have no
   downloadable bytes and the download seam doesn't pass an `exportMime`. Real Office files stored
   in Drive open fine. (The stand-alone `gdrive-files` app *does* export native docs.)
-- **Interactive on-device test** of list / open / **save-back** for all four backends is pending.
+- **Dropbox is interactively verified on device**: list, open, and **save-back** work, and the
+  listing-reliability + auto-refresh fixes above were driven by that testing. Box / OneDrive /
+  Drive share the identical reroute code but their interactive test is still blocked on provider
+  keys (no account can be added yet).
