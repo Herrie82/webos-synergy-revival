@@ -11,7 +11,96 @@
      }],
  
      /**
-@@ -672,12 +676,49 @@
+@@ -236,6 +240,17 @@
+         this.newFileName = inNewName;
+         this.cacheName   = inFile;
+ 
++        // MODERN REROUTE: add a new file into a Dropbox folder via uploadFile. dropboxPath =
++        // parent folder + "/" + name (parent "" = Dropbox root).
++        if (inAccount && inAccount.mxId === "drop") {
++            this.localInfo = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
++            var dbxParent = (inParent === undefined || inParent === null) ? "" : String(inParent);
++            var dbxPath   = dbxParent.replace(/\/+$/, "") + "/" + inNewName;
++            this._modernUpload(QOWT.MXConfig.downloadFolder + inFile, dbxPath,
++                { success: true, operation: QOWT.MX.addOp, newName: inNewName });
++            return;
++        }
++
+         var src = QOWT.MXConfig.downloadFolder + inFile;
+         uri = QOWT.mxe.getAddFileUrl(this.parentUri, this.newFileName, this.accountInfo);
+         this.localInfo = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
+@@ -262,9 +277,55 @@
+         this.currentOp   = QOWT.MX.replaceOp;
+         this.newFileName = undefined;
+ 
++        // MODERN REROUTE: save an edited Dropbox doc straight back via uploadFile (mode
++        // "overwrite"), skipping the dead MX GetRemoteItemInfo out-of-sync round-trip.
++        if (inAccount && inAccount.mxId === "drop") {
++            this._modernReplace(inFile);
++            return;
++        }
++
+         this._getRemoteInfo(inFile);
+     },
+ 
++    // MODERN REROUTE: replace (save-back) an edited Dropbox file. The cache holds the local
++    // copy (uniqueTargetFilename) and its Dropbox path (uri); overwrite it in place.
++    _modernReplace: function(inFile) {
++        var info = QOWT.mxe.remoteFileInfoCache.getInfo(inFile);
++        if (!info) { QOWT.MX.handleError("-1"); this.failureCb(); return; }
++        this.localInfo = info;
++        this._modernUpload(QOWT.MXConfig.downloadFolder + info.uniqueTargetFilename, info.uri,
++            { success: true, operation: QOWT.MX.replaceOp });
++    },
++
++    // Shared modern upload: push a local file to Dropbox, then fire QuickOffice's existing
++    // success/failure contract and keep remoteFileInfoCache consistent (mirrors _handleUpload).
++    _modernUpload: function(localPath, dropboxPath, res) {
++        this._muRes = res;
++        this.$.modernDbx.call(
++            { accountId: this.accountInfo._id, localPath: localPath, dropboxPath: dropboxPath },
++            { method: "uploadFile", onSuccess: "_modernUploadOk", onFailure: "_modernUploadFail" });
++    },
++
++    _modernUploadOk: function(inSender, inResponse) {
++        QOWT.utils.log("RemoteFileUploadService _modernUploadOk " + JSON.stringify(inResponse));
++        var res = this._muRes || { success: true, operation: this.currentOp };
++        if (this.currentOp === QOWT.MX.replaceOp) {
++            if (this.localInfo && inResponse) { this.localInfo.size = inResponse.size; }
++            if (this.localInfo) { QOWT.mxe.remoteFileInfoCache.updateInfo(this.localInfo); }
++        } else if (inResponse) { // add: register the new remote file in the cache
++            var newInfo = { name: inResponse.name, uri: inResponse.path,
++                size: inResponse.size, parent: this.parentUri,
++                type: (this.localInfo && this.localInfo.type) };
++            QOWT.mxe.remoteFileInfoCache.addInfo(newInfo, this.cacheName);
++        }
++        this.successCb(res);
++    },
++
++    _modernUploadFail: function(inSender, inError) {
++        QOWT.utils.log("RemoteFileUploadService _modernUploadFail " + JSON.stringify(inError));
++        this.failureCb({ error: (inError && (inError.errorText || inError.errorCode)) || "upload failed" });
++    },
++
+     /**
+      *
+      * @param {Object} inFile
+@@ -524,6 +585,14 @@
+         kind:      "PalmService",
+         service:   "palm://com.palm.downloadmanager/",
+         subscribe: true
++    }, {
++        // MODERN REROUTE (webos-synergy-revival): _modernDownload() below calls
++        // this.$.modernDbx.downloadFile. This component MUST live in RemoteFileCacheService
++        // (an earlier revision added it only to RemoteFileUploadService, so the Dropbox
++        // download path had no modernDbx here and silently failed).
++        name:      "modernDbx",
++        kind:      "PalmService",
++        service:   "palm://com.palm.service.dropbox/"
+     }],
+ 
+     /**
+@@ -672,12 +741,49 @@
          this.uri         = inUri;
          this.accountInfo = inAccountInfo;
  
@@ -61,7 +150,7 @@
      /**
       *
       * @param {Object} inEvent
-@@ -863,6 +904,15 @@
+@@ -863,6 +969,15 @@
          onOtherListError: ""
      },
  
@@ -77,7 +166,7 @@
      /**
       * Called when the component is first made.
       */
-@@ -912,6 +962,49 @@
+@@ -912,6 +1027,49 @@
       * @param {Object} inCallback
       * @param {Boolean} inJustFolders - if true, returns only folders
       */
@@ -127,7 +216,7 @@
      getFiles: function(inSource, inCallback, inJustFolders) {
          QOWT.utils.log("RemoteFileService getFiles");
  
-@@ -919,6 +1012,13 @@
+@@ -919,6 +1077,13 @@
          this.callback = inCallback;
          this.justFolders = inJustFolders;
  

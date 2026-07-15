@@ -27,6 +27,21 @@ Two seams in `RemoteFileService.js`, both keyed on the account's mxId `"drop"` (
 |---|---|---|
 | `RemoteFileService.getFiles` (`_modernList`) | MX `serviceLogin → GetRoot → GetFilesForAccountAtLocation` | `palm://com.palm.service.dropbox/listFolder {accountId, path}` → maps entries → existing `_processFiles` |
 | `RemoteFileCacheService.getFilePathToRemoteFile` (`_modernDownload`) | `getDownloadUrl` + `dlManager.call({method:"download"})` | `.../downloadFile {accountId, dropboxPath, localPath}` |
+| `RemoteFileUploadService.replaceFileInCloud` (`_modernReplace` → `_modernUpload`) | MX `GetRemoteItemInfo` (out-of-sync check) + `dlManager.call({method:"upload"})` to the dead proxy | `.../uploadFile {accountId, localPath, dropboxPath}` (mode `overwrite`) → existing `successCb` |
+| `RemoteFileUploadService.addFileInCloud` (`_modernUpload`) | `getAddFileUrl` + `dlManager` upload | `.../uploadFile` to `parent + "/" + name` |
+
+**Save-back (edit → Save) now works:** `replaceFileInCloud` is what QuickOffice calls when you
+save an edited cloud document. The modern path uploads the cached local copy
+(`uniqueTargetFilename`) back to its Dropbox path (`localInfo.uri`) with `mode:"overwrite"`, then
+fires QuickOffice's existing `successCb` and updates `remoteFileInfoCache` — so the editor's
+"saved" state is unchanged. The dead MX out-of-sync round-trip is skipped (Dropbox's overwrite is
+last-writer-wins).
+
+**Bug fixed in the same patch:** the earlier revision added the `modernDbx` `PalmService`
+component only to `RemoteFileUploadService`, but `_modernDownload` lives in
+`RemoteFileCacheService` and calls `this.$.modernDbx` — which didn't exist there, so the Dropbox
+**download** path would have thrown once exercised (it was never interactively tested). The
+component is now present in all three kinds that use it (list / download / upload).
 
 Each adds a `PalmService` component (`modernDbx`) to its enyo kind and re-fires QuickOffice's
 **existing** success contract, so the downstream "open local file → hand to native arx viewer"
@@ -61,9 +76,16 @@ patch -p1 -d /media/cryptofs/apps/usr/palm/applications/com.quickoffice.webos < 
 Round-trip verified: applying the patch to the pristine 2.1.2113 file reproduces the deployed
 version exactly.
 
+## Applying to the PDF app
+
+`com.quickoffice.ar`'s `source/RemoteFileService.js` is **byte-identical** to
+`com.quickoffice.webos`'s (verified against both 2.1.2113 / 10.3.484 IPKs), so the **same patch
+applies to both** — just point `patch -d` at the `com.quickoffice.ar` app dir as well.
+
 ## TODO
 
-- The **PDF viewer app `com.quickoffice.ar`** has its own copy of this remote layer — apply the
-  same reroute there for PDFs.
-- **Upload** (edit-and-save-back) still uses the MX proxy — reroute the upload path onto
-  `.../uploadFile` if write support is wanted.
+- **Other backends:** the reroute is keyed on `mxId === "drop"` (Dropbox) only. Box/OneDrive/Drive
+  each expose the same `listFolder`/`downloadFile`/`uploadFile` contract, but QuickOffice's
+  `FileStore` must first map their `loc_name` to an `mxId`; Box was an original QuickOffice
+  provider (`"box"`), OneDrive/Drive would need a new mapping.
+- **Interactive on-device test** of list / open / **save-back** is still pending.
