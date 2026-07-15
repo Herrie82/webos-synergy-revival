@@ -1,0 +1,11 @@
+# editor / OS cruft
+*~
+*.swp
+.DS_Store
+# local backups from on-device edits
+*.orig
+*.bak
+*.stock.bak
+*.2011.orig
+# scratch
+/tmp/

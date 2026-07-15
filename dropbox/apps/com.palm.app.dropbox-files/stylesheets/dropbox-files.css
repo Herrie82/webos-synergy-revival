@@ -1,0 +1,10 @@
+.dbx-body        { font-size: 20px; }
+.dbx-status      { padding: 10px 14px; color: #555; }
+.dbx-path        { padding: 8px 14px; background: #eef1f4; color: #333; font-weight: bold;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbx-row         { padding: 14px 14px; border-bottom: 1px solid #e0e0e0; }
+.dbx-name        { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbx-meta        { color: #999; font-size: 15px; padding-left: 10px; }
+.dbx-up          { color: #2a6fb0; font-weight: bold; }
+.dbx-uploadbar   { padding: 6px; }
+.dbx-uploadbar .enyo-input { font-size: 16px; }

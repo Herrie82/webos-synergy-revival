@@ -1,0 +1,27 @@
+{
+	"templateId": "com.palm.boxnet",
+	"loc_name": "Box",
+	"loc_usernameLabel": "EMAIL ADDRESS",
+	"icon": {
+		"loc_32x32": "images/box_net_32.png",
+		"loc_48x48": "images/box_net_48.png",
+		"loc_64x64": "images/box_net_64.png"
+	},
+
+	"__comment": "OAuth2 replaces the dead username/password validator. customUI hosts the consent webview (like com.palm.eas / com.palm.skype); it loads OAuth2.buildAuthorizeUrl(), captures ?code= from the redirect to Config.REDIRECT_URI, then calls exchangeCode which returns the stored token credentials.",
+	"validator": {
+		"customUI": { "appId": "com.palm.app.boxnet-auth", "name": "oauth.html" },
+		"address":  "palm://com.palm.service.boxnet/exchangeCode"
+	},
+	"onCredentialsChanged": "palm://com.palm.service.boxnet/checkCredentials",
+
+	"readPermissions":  ["com.palm.app.boxnet-files", "com.palm.app.photos"],
+	"writePermissions": ["com.palm.app.boxnet-files", "com.palm.app.photos"],
+
+	"capabilityProviders": [{
+		"capability": "DOCUMENTS",
+		"id": "com.palm.boxnet.documents",
+		"implementation": "palm://com.palm.service.boxnet/",
+		"__comment": "No longer bound to QuickOffice (closed/dead). A new file-picker app consumes listFolder/downloadFile."
+	}]
+}

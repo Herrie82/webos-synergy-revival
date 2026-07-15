@@ -1,0 +1,13 @@
+[
+	{ "library": { "name": "foundations",     "version": "1.0" } },
+	{ "library": { "name": "foundations.xml", "version": "1.0" } },
+	{ "library": { "name": "mojoservice",     "version": "1.0" } },
+	{ "library": { "name": "globalization",   "version": "1.0" } },
+	{ "source": "./config.js" },
+	{ "source": "./oauth2.js" },
+	{ "source": "./boxapi.js" },
+	{ "source": "./boxnet_service.js" },
+	{ "source": "commands/exchangeCode_command.js" },
+	{ "source": "commands/checkCredentials_command.js" },
+	{ "source": "commands/listFolder_command.js" }
+]

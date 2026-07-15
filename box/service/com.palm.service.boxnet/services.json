@@ -1,0 +1,19 @@
+{
+	"description": "Box (box.com) Service - OAuth2 / REST v2",
+	"commandTimeout": 30,
+	"activityTimeout": 30,
+	"engine": "node",
+	"services": [
+		{
+			"name": "com.palm.service.boxnet",
+			"description": "Box Service",
+			"assistant": "BoxNetService",
+			"globalized": true,
+			"commands": [
+				{ "name": "exchangeCode",     "assistant": "ExchangeCodeCommandAssistant",     "public": true },
+				{ "name": "checkCredentials", "assistant": "CheckCredentialsCommandAssistant", "public": true },
+				{ "name": "listFolder",       "assistant": "ListFolderCommandAssistant",       "public": true }
+			]
+		}
+	]
+}

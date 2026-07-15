@@ -1,0 +1,26 @@
+--- a/photos-src/base/Utils.js
++++ b/photos-src/base/Utils.js
+@@ -412,9 +412,21 @@
+ 								accountsCapability[account.templateId].videoDownload    =false;
+ 								accountsCapability[account.templateId].serviceName      ="com.palm.service.photos.snapfish";
+ 								accountsCapability[account.templateId].computeNumFiles  =true;
+-		
++
+ 							break;
+-							
++
++							case "com.palm.dropbox":
++								// Synergy-revival Dropbox photo source. listAlbums/listPhotos live in
++								// the main Dropbox service (already bus-registered) rather than a
++								// separate com.palm.service.photos.dropbox, so no new LS2 role.
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.dropbox";
++
++							break;
++
+ 							default:
+ 								accountsCapability[account.templateId]=new Capability();
+ 							break;

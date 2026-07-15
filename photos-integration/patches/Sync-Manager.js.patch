@@ -1,0 +1,136 @@
+--- a/photos-src/base/Sync-Manager.js
++++ b/photos-src/base/Sync-Manager.js
+@@ -796,6 +796,10 @@
+ 	var photoPromise = Promise();
+ 	var urlObj={"host":"","path":"","fileName":""};
+ 	parseUrl(photo.src_big,urlObj);
++	// Providers may supply the real filename explicitly (e.g. Dropbox temporary links
++	// end in an opaque token, not a name.ext) - prefer it so the local file keeps its
++	// name and extension, which the thumbnail/extractfs pass relies on.
++	if (photo.fileName) { urlObj.fileName = photo.fileName; }
+ 	var destUrl=albumItem.path+"/"+urlObj.fileName;
+ 	//node_path.exists(destUrl, function(exists) {
+ 	//	if(exists){
+@@ -838,78 +842,61 @@
+ 	downloadTo=downloadTo.replace(/%/g,"_");
+ 	
+ 	var that=this;
+-	var wait = 10000; //Give each image 10 seconds to download
++	var wait = 130000; //curl gets --max-time 120; give the wrapper a little more
+ 	var timeout = null;
+ 	var finishedPromise =Promise();
+ 	var start = new Date();
+ 	var downloadError = null;
+-	var request = null;
+-	var httpClient = null;
++	// Synergy-revival: the device node is OpenSSL 0.9.8 and node_http.createClient(80,..)
++	// is plain HTTP - it cannot fetch modern-TLS cloud URLs (e.g. Dropbox temporary links).
++	// Shell out to the bundled modern curl (7.88.1/OpenSSL 1.1.1w, same binary+CA store the
++	// Dropbox file connector uses) with the FULL url from photo.src_big. Everything after the
++	// bytes land locally (_addPhotoToDb, thumbnails, rendering) is unchanged and TLS-free.
++	var DBX_CURL   = "/var/dropbox-tls/curl";
++	var DBX_CAINFO = "/etc/ssl/certs/ca-certificates.crt";
++	var DBX_LIBDIR = "/var/dropbox-tls";   // bundled libssl/libcrypto/libcurl live here
+ 	var startDownload = function(){
+ 		try {
+-			httpClient = node_http.createClient(80, domain);
+-			httpClient.on('error',function(error){
+-				that.log("Download httpClient Errors so Far for "+ downloadTo +" :::\n"+error);
+-				if (!downloadError){
+-						downloadError+="\n";
+-						downloadError += error;
+-						clearTimeout(timeout);
+-						finishedPromise.breakk(downloadError);
+-				}
++			var node_cp = require('child_process');
++			var srcUrl = photo.src_big; //full https URL (temp link); split domain/path assumed port 80
++			// spawn env REPLACES the environment - copy process.env and prepend the bundle
++			// dir to LD_LIBRARY_PATH so the modern curl finds its own libssl.so.1.1.
++			var childEnv = {};
++			var penv = (typeof process !== "undefined" && process.env) ? process.env : {};
++			// NB: process.env is a special wrapper here - penv.hasOwnProperty is not callable,
++			// so copy with a plain for-in (no guard) / Object.prototype.hasOwnProperty.
++			for (var ek in penv) { childEnv[ek] = penv[ek]; }
++			childEnv.LD_LIBRARY_PATH = DBX_LIBDIR + (childEnv.LD_LIBRARY_PATH ? ":" + childEnv.LD_LIBRARY_PATH : "");
++			// --create-dirs: make the album directory hierarchy if missing (node's
++			// createWriteStream would not, and curl exit 23 = cannot open output file).
++			var child = node_cp.spawn(DBX_CURL,
++				["-sS","-L","--fail","--create-dirs","--max-time","120","--cacert",DBX_CAINFO,"-o",downloadTo,srcUrl],
++				{ env: childEnv });
++			var stderr = "";
++			child.stderr.on('data', function(d){ stderr += d; });
++			child.on('error', function(err){
++				if (downloadError!==null) { return; }
++				downloadError = "curl spawn error: "+err;
++				that.log("* * * curl spawn error for "+downloadTo+": "+err,1);
++				clearTimeout(timeout);
++				finishedPromise.breakk(downloadError);
+ 			});
+-			request = httpClient.request('GET', downloadFrom,{'host': domain});
+-			request.end();
+-			request.on('error',function(error){
+-				that.log("* * * Download clientRequest Errors so Far for "+ downloadTo +" :::\n"+error,1);
+-				if (!downloadError){
+-						downloadError+="\n";
+-						downloadError += error;
+-						clearTimeout(timeout);
+-						finishedPromise.breakk(downloadError);
++			child.on('exit', function(code){
++				if (downloadError!==null) { return; }
++				if (code===0){
++					if(that.dbgTime){ that.dbgTime.addTimeToDbgProperty(((new Date())-start),'ImgDownload'); }
++					clearTimeout(timeout);
++					finishedPromise.fulfill(that._addPhotoToDb(downloadTo,photo,albumItem));
++				} else {
++					downloadError = "curl exit "+code+" :: "+stderr;
++					that.log("* * * curl download failed for "+downloadTo+": "+downloadError,1);
++					clearTimeout(timeout);
++					finishedPromise.breakk(downloadError);
+ 				}
+-		
+-			});
+-			
+-			request.on('close',function(error){
+-				that.log("* * * Download clientRequest CLOSE Errors so Far for "+ downloadTo +" :::\n"+error,1);
+-				if (!downloadError){
+-						downloadError+="\n";
+-						downloadError += error;
+-						clearTimeout(timeout);
+-						finishedPromise.breakk(downloadError);
+-				}
+-		
+-			});
+-			
+-			request.on('response', function (response) {
+-		
+-				//@todo need to catch error when no space on disk
+-				//@todo need to handle the case where if no chunk or no end event is received
+-				//for a big timeout. we should stop the download and continue
+-		
+-				var file = node_fs.createWriteStream(downloadTo);
+-				response.on('data', function (chunk) {
+-					file.write(chunk);
+-			
+-				});	
+-		
+-				response.on('end', function () {
+-					//console.log("*****FINISHED downloading photo:"+downloadTo);		
+-					file.end();
+-					if(that.dbgTime)
+-					{
+-						that.dbgTime.addTimeToDbgProperty(((new Date())-start),'ImgDownload');
+-					}
+-					if(downloadError===null){
+-						clearTimeout(timeout);
+-						finishedPromise.fulfill(that._addPhotoToDb(downloadTo,photo,albumItem));
+-					}				
+-				});
+-		
+ 			});
+ 		}
+ 		catch(e){
+-			that.log("*#*#*#*#* Exception with NODEjs HTTP Connection "+JSON.stringify(e),1);
++			that.log("*#*#*#*#* Exception spawning curl "+JSON.stringify(e),1);
+ 			finishedPromise.breakk(JSON.stringify(e));
+ 		}
+ 	};
