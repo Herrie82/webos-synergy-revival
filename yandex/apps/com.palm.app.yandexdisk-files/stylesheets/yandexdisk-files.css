@@ -1,0 +1,10 @@
+.ydx-body        { font-size: 20px; }
+.ydx-status      { padding: 10px 14px; color: #555; }
+.ydx-path        { padding: 8px 14px; background: #eef1f4; color: #333; font-weight: bold;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ydx-row         { padding: 14px 14px; border-bottom: 1px solid #e0e0e0; }
+.ydx-name        { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ydx-meta        { color: #999; font-size: 15px; padding-left: 10px; }
+.ydx-up          { color: #cc0000; font-weight: bold; }
+.ydx-uploadbar   { padding: 6px; }
+.ydx-uploadbar .enyo-input { font-size: 16px; }

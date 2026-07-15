@@ -36,6 +36,10 @@ account (PHOTO.UPLOAD capability)
    **hardcoded** `templateId → serviceName` switch (the provider name is *not* derived from
    the template). We point it at `com.palm.service.dropbox` so the provider methods live in
    the already-bus-registered Dropbox service (no new LS2 role / bus rescan needed).
+   The same patch now carries a `case` for **every** revival photo source —
+   `com.palm.dropbox`, `com.palm.boxnet`, `com.palm.onedrive`, `com.palm.pcloud`, and
+   `com.palm.flickr` — each routed to its own `com.palm.service.*`. (Flickr is the only one
+   that returns *multiple* albums; the rest surface a single folder as one album.)
 
 3. **Provider methods** — `listAlbums` / `listPhotos` in the Dropbox service
    (`dropbox/service/com.palm.service.dropbox/commands/`). One Dropbox folder = one album

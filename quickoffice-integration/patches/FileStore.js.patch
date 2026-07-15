@@ -1,5 +1,5 @@
---- a/source/FileStore.js	2026-07-15 21:25:45.148303653 +0200
-+++ b/source/FileStore.js	2026-07-15 21:25:45.153303744 +0200
+--- a/source/FileStore.js	2026-07-15 23:03:01.110698476 +0200
++++ b/source/FileStore.js	2026-07-15 23:03:01.114698547 +0200
 @@ -300,6 +300,31 @@
          }
      ],
@@ -32,7 +32,7 @@
      /**
       * Assigns a delegate to (or clears) the watch callback
       *
-@@ -694,11 +719,27 @@
+@@ -694,11 +719,40 @@
  
          switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
  
@@ -55,6 +55,19 @@
 +        case "google drive":
 +            accountType = "gdriveAccount";
 +            mxId        = "gdrive";
++            break;
++
++        // webos-synergy-revival: pCloud / Yandex Disk templates (loc_name "pCloud",
++        // "Yandex Disk"). Same as above - literal mxIds the RemoteFileService modern reroute
++        // recognizes; accountType is inert (modern path bypasses MX account-type logic).
++        case "pcloud":
++            accountType = "pcloudAccount";
++            mxId        = "pcloud";
++            break;
++
++        case "yandex disk":
++            accountType = "yandexAccount";
++            mxId        = "yandex";
 +            break;
 +
          case "google":

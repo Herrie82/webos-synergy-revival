@@ -1,6 +1,6 @@
---- a/photos-src/base/Utils.js
-+++ b/photos-src/base/Utils.js
-@@ -414,6 +414,46 @@
+--- a/photos-src/base/Utils.js	2026-07-15 23:05:10.530980614 +0200
++++ b/photos-src/base/Utils.js	2026-07-15 23:05:10.533980667 +0200
+@@ -414,6 +414,74 @@
  								accountsCapability[account.templateId].computeNumFiles  =true;
  
  							break;
@@ -41,6 +41,34 @@
 +								accountsCapability[account.templateId].getUserInfo      =false;
 +								accountsCapability[account.templateId].videoDownload    =false;
 +								accountsCapability[account.templateId].serviceName      ="com.palm.service.onedrive";
++
++							break;
++
++							case "com.palm.pcloud":
++								// Synergy-revival pCloud photo source. Mirrors Dropbox/Box/OneDrive:
++								// listAlbums/listPhotos live in the main pCloud service (already
++								// bus-registered). pCloud has no album API, so one folder (root) is
++								// surfaced as one album; src_big is each image's getfilelink temp URL
++								// (an ordinary https link, so the curl fetch needs no auth header).
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.pcloud";
++
++							break;
++
++							case "com.palm.flickr":
++								// Synergy-revival Flickr photo source. listAlbums/listPhotos live in
++								// the main Flickr service (OAuth 1.0a signed in node; HTTPS via curl).
++								// Unlike the others it returns EVERY photoset plus a synthetic
++								// "All Photos" album; src_big is a live.staticflickr.com static URL
++								// (ordinary https, so the curl fetch needs no auth header).
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.flickr";
 +
 +							break;
 +

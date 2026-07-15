@@ -11,11 +11,14 @@ QuickOffice engine.
 | Connector | What works | State |
 |---|---|---|
 | **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
-| **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto all four services (Dropbox/Box/OneDrive/Drive); dead MX proxy bypassed; patches fit both the Office and PDF apps | ✅ patched (2 patches, JS-only) |
+| **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto six services (Dropbox/Box/OneDrive/Drive/pCloud/Yandex); dead MX proxy bypassed; patches fit both the Office and PDF apps | ✅ patched (2 patches, JS-only) |
 | **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
 | **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
 | **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC — deployed on device**; PDF.js/mammoth/SheetJS vendored (view-only). On-device open of a real PDF still to be exercised |
 | **Google Drive** | DOCUMENTS — sign-in (OAuth2 + PKCE), file browse/upload/download, native-doc export, auth + file-picker apps | 🟡 **code-complete (personal/≤100-user)** — untested pending a Google client_id+secret; [recon](recon/google-drive.md) |
+| **pCloud** | Full stack — sign-in (OAuth2, ships secret), file browse/upload/download, auth + file-picker apps, photos provider; region-aware US/EU host | 🟡 **code-complete, mirrors Dropbox** — untested pending a pCloud `client_id`+secret; [recon](recon/pcloud.md) |
+| **Yandex Disk** | DOCUMENTS — sign-in (OAuth2, ships secret, PKCE-capable), path-based browse/upload/download, auth + file-picker apps | 🟡 **code-complete, mirrors Dropbox** — untested pending a Yandex `client_id`+secret; [recon](recon/yandex.md) |
+| **Flickr** | PHOTO.UPLOAD — sign-in (**OAuth 1.0a**, HMAC-SHA1 signed in node), album/photo browse + download into the Photos app | 🟡 **code-complete** (signer verified vs OAuth spec test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
 | Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
@@ -68,9 +71,23 @@ gdrive/
   apps/com.palm.app.gdrive-auth/      customUI OAuth login
   apps/com.palm.app.gdrive-files/     Enyo file-picker/manager (native-doc export)
   account/com.palm.gdrive.json        Synergy template (DOCUMENTS only)
+pcloud/
+  service/com.palm.service.pcloud/    pCloud service (OAuth2 + REST, region-aware US/EU host, DOCUMENTS + PHOTO.UPLOAD)
+  apps/com.palm.app.pcloud-auth/      customUI OAuth login
+  apps/com.palm.app.pcloud-files/     Enyo file-picker/manager (folder-ID breadcrumb)
+  account/com.palm.pcloud.json        Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+yandex/
+  service/com.palm.service.yandexdisk/ Yandex Disk service (OAuth2 + REST, path-based, DOCUMENTS)
+  apps/com.palm.app.yandexdisk-auth/  customUI OAuth login
+  apps/com.palm.app.yandexdisk-files/ Enyo file-picker/manager (path breadcrumb)
+  account/com.palm.yandexdisk.json    Synergy template (DOCUMENTS only)
+flickr/
+  service/com.palm.service.flickr/    Flickr service (OAuth 1.0a signed in node + REST, PHOTO.UPLOAD)
+  apps/com.palm.app.flickr-auth/      customUI OAuth 1.0a login (captures oauth_verifier)
+  account/com.palm.flickr/            Synergy template (PHOTO.UPLOAD only)
 docviewer/
   com.palm.app.docviewer/             Atlas-hosted viewer PoC (PDF/docx/xlsx + text/images)
-recon/                                RE notes: facebook, linkedin, snapfish
+recon/                                RE notes: facebook, linkedin, snapfish, google-drive, instagram, pcloud, yandex, flickr
 docs/ARCHITECTURE.md
 ```
 

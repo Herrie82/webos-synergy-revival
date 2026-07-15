@@ -1,9 +1,9 @@
 # QuickOffice integration
 
 Repairs QuickOffice's broken remote-file support by rerouting it onto our modern cloud
-services — **Dropbox, Box, OneDrive, and Google Drive**. Those accounts' documents list,
-open, edit, and **save back** in QuickOffice's native viewer again — no native reversing
-required.
+services — **Dropbox, Box, OneDrive, Google Drive, pCloud, and Yandex Disk**. Those accounts'
+documents list, open, edit, and **save back** in QuickOffice's native viewer again — no native
+reversing required. (Flickr is photos-only, so it isn't a QuickOffice provider.)
 
 ## What was broken (reverse-engineering result)
 
@@ -24,8 +24,8 @@ disk — it never touches the network. So the fix is pure JS.
 
 Three seams in `RemoteFileService.js`. Each is now **service-agnostic**: a `_modernSvc(mxId)`
 helper (added to all three kinds) maps the account's mxId → the right revival `PalmService`
-component (`modernDbx`/`modernBox`/`modernOne`/`modernGdrive`), or `null` to fall through to the
-legacy MX path. All four backends expose the same `listFolder`/`downloadFile`/`uploadFile`
+component (`modernDbx`/`modernBox`/`modernOne`/`modernGdrive`/`modernPcloud`/`modernYandex`), or `null` to fall through to the
+legacy MX path. All six backends expose the same `listFolder`/`downloadFile`/`uploadFile`
 contract, so one code path serves them all.
 
 | Kind / method | Original | Rerouted to |
@@ -35,7 +35,7 @@ contract, so one code path serves them all.
 | `RemoteFileUploadService.replaceFileInCloud` (`_modernReplace` → `_modernUpload`) | MX `GetRemoteItemInfo` (out-of-sync check) + `dlManager` upload to the dead proxy | `…/uploadFile {accountId, localPath, fileId, replace:true}` → existing `successCb` |
 | `RemoteFileUploadService.addFileInCloud` (`_modernUpload`) | `getAddFileUrl` + `dlManager` upload | `…/uploadFile {accountId, localPath, folderId, name}` |
 
-**Save-back (edit → Save) works** across all four services. `replaceFileInCloud` uploads the
+**Save-back (edit → Save) works** across all six services. `replaceFileInCloud` uploads the
 cached local copy (`uniqueTargetFilename`) back over the existing remote file and fires
 QuickOffice's existing `successCb` + cache update, so the editor's "saved" state is unchanged. The
 dead MX out-of-sync round-trip is skipped. Each backend overwrites differently — the shared
@@ -62,7 +62,7 @@ The first real device run surfaced two list bugs, both now fixed in `RemoteFileS
   folder open; the legacy path relied on `cancelAll()` (`CancelRequestFromGroup`) to drop the
   first in-flight request so only one render happened. Our modern `PalmService` list calls
   weren't cancellable, so **both** completed and both rendered. `cancelAll()` now also calls
-  `cancel()` on the four revival `PalmService` components (enyo `Service.cancel()` destroys its
+  `cancel()` on the six revival `PalmService` components (enyo `Service.cancel()` destroys its
   outstanding `Request` children) and bumps a list generation; `_modernListOk` drops any response
   whose stamped generation is stale. One render per open.
 - **`Cannot set property 'ROOT' of undefined`** thrown on every list. `_processFiles()` writes
@@ -91,6 +91,8 @@ patch adds the cases:
 | `Box` | `box` (new `case "box"`; stock only had `"box.net"`) |
 | `OneDrive` | `onedrive` (new literal mxId) |
 | `Google Drive` | `gdrive` (new literal mxId) |
+| `pCloud` | `pcloud` (new literal mxId; numeric-ID locators like Box/OneDrive) |
+| `Yandex Disk` | `yandex` (new literal mxId; path locators like Dropbox) |
 
 `accountType` is inert for the new ones — the modern reroute bypasses all MX account-type logic.
 
@@ -100,7 +102,7 @@ Each service's `listFolder`/`downloadFile`/`uploadFile` lists `com.quickoffice.w
 `com.quickoffice.ar` in `allowedAppIds`, and `downloadFile` passes `curl --create-dirs` so
 `/media/internal/.qo/` is created if absent. For **save-back**, each service gained an
 overwrite-by-id path: Dropbox `mode:"overwrite"`, Box `uploadNewVersion`, OneDrive
-`uploadReplace` (PUT item content), Drive `uploadReplace` (PATCH content).
+`uploadReplace` (PUT item content), Drive `uploadReplace` (PATCH content), pCloud same-name re-upload, Yandex `overwrite=true` PUT.
 
 ## Applying
 
