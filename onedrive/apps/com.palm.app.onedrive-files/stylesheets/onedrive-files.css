@@ -1,0 +1,10 @@
+.od-body        { font-size: 20px; }
+.od-status      { padding: 10px 14px; color: #555; }
+.od-path        { padding: 8px 14px; background: #eef1f4; color: #333; font-weight: bold;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.od-row         { padding: 14px 14px; border-bottom: 1px solid #e0e0e0; }
+.od-name        { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.od-meta        { color: #999; font-size: 15px; padding-left: 10px; }
+.od-up          { color: #2a6fb0; font-weight: bold; }
+.od-uploadbar   { padding: 6px; }
+.od-uploadbar .enyo-input { font-size: 16px; }

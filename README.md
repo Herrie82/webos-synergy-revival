@@ -13,7 +13,11 @@ QuickOffice engine.
 | **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
 | **QuickOffice** | Remote file **list + open** rerouted onto our Dropbox service (dead MX proxy bypassed) | ✅ patched (patch, JS-only) |
 | **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
+| **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
+| **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC** — text/image render now; PDF/docx/xlsx need vendored libs |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
+| Instagram | — | ❌ dead (Basic Display API shut down 2024-12, successors need Business acct + secret + App Review); recon only |
+| Google Drive | — | ⚠️ personal-only (restricted-scope verification + 100-user cap block a public build); recon only |
 | Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
 
 Everything under `dropbox/` has been built and **run on real hardware**: an account is
@@ -54,6 +58,13 @@ box/
   apps/com.palm.app.boxnet-auth/      customUI OAuth login
   apps/com.palm.app.boxnet-files/     Enyo file-picker/manager (folder-ID breadcrumb)
   account/com.palm.boxnet.json        Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+onedrive/
+  service/com.palm.service.onedrive/  OneDrive service (OAuth2/PKCE + Microsoft Graph)
+  apps/com.palm.app.onedrive-auth/    customUI OAuth login
+  apps/com.palm.app.onedrive-files/   Enyo file-picker/manager (folder-ID breadcrumb)
+  account/com.palm.onedrive.json      Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+docviewer/
+  com.palm.app.docviewer/             Atlas-hosted viewer PoC (PDF/docx/xlsx + text/images)
 recon/                                RE notes: facebook, linkedin, snapfish
 docs/ARCHITECTURE.md
 ```

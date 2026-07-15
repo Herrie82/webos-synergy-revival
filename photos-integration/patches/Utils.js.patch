@@ -1,6 +1,6 @@
 --- a/photos-src/base/Utils.js
 +++ b/photos-src/base/Utils.js
-@@ -414,6 +414,32 @@
+@@ -414,6 +414,46 @@
  								accountsCapability[account.templateId].computeNumFiles  =true;
  
  							break;
@@ -27,6 +27,20 @@
 +								accountsCapability[account.templateId].getUserInfo      =false;
 +								accountsCapability[account.templateId].videoDownload    =false;
 +								accountsCapability[account.templateId].serviceName      ="com.palm.service.boxnet";
++
++							break;
++
++							case "com.palm.onedrive":
++								// Synergy-revival OneDrive photo source. Mirrors Dropbox/Box:
++								// listAlbums/listPhotos live in the main OneDrive service (already
++								// bus-registered). The one album is the Graph Camera Roll special
++								// folder; src_big is each item's @microsoft.graph.downloadUrl
++								// (pre-signed, so the curl fetch needs no auth header).
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.onedrive";
 +
 +							break;
 +

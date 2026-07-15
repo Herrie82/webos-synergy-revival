@@ -1,0 +1,12 @@
+{
+	"id": "com.palm.app.docviewer",
+	"version": "1.0.0",
+	"vendor": "webOS Ports",
+	"type": "web",
+	"main": "index.html",
+	"title": "Document Viewer",
+	"icon": "icon.png",
+	"splashicon": "icon.png",
+	"uiRevision": 2,
+	"requiredMemory": 64
+}
