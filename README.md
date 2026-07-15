@@ -15,9 +15,9 @@ QuickOffice engine.
 | **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
 | **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
 | **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC** — text/image render now; PDF/docx/xlsx need vendored libs |
+| **Google Drive** | DOCUMENTS — sign-in (OAuth2 + PKCE), file browse/upload/download, native-doc export, auth + file-picker apps | 🟡 **code-complete (personal/≤100-user)** — untested pending a Google client_id+secret; [recon](recon/google-drive.md) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
-| Instagram | — | ❌ dead (Basic Display API shut down 2024-12, successors need Business acct + secret + App Review); recon only |
-| Google Drive | — | ⚠️ personal-only (restricted-scope verification + 100-user cap block a public build); recon only |
+| Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
 | Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
 
 Everything under `dropbox/` has been built and **run on real hardware**: an account is
@@ -63,6 +63,11 @@ onedrive/
   apps/com.palm.app.onedrive-auth/    customUI OAuth login
   apps/com.palm.app.onedrive-files/   Enyo file-picker/manager (folder-ID breadcrumb)
   account/com.palm.onedrive.json      Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+gdrive/
+  service/com.palm.service.gdrive/    Google Drive service (OAuth2/PKCE + Drive API v3, DOCUMENTS)
+  apps/com.palm.app.gdrive-auth/      customUI OAuth login
+  apps/com.palm.app.gdrive-files/     Enyo file-picker/manager (native-doc export)
+  account/com.palm.gdrive.json        Synergy template (DOCUMENTS only)
 docviewer/
   com.palm.app.docviewer/             Atlas-hosted viewer PoC (PDF/docx/xlsx + text/images)
 recon/                                RE notes: facebook, linkedin, snapfish
