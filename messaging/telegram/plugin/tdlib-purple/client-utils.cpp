@@ -153,9 +153,18 @@ std::vector<const td::td_api::user *> getUsersByPurpleName(const char *buddyName
             purple_debug_warning(config::pluginId, "Cannot %s: no user with id %s\n", action, buddyName);
     } else {
         account.getUsersByDisplayName(buddyName, result);
+        // webOS: webOS may address a conversation by Telegram @username (composed by handle or
+        // via a linked contact) rather than an "id<n>" buddy or the display name. Fall back to
+        // a username match, then to a normalized-display-name match (webOS turns "Herman van
+        // Hazendonk" into the handle "hermanvanhazendonk"), so those sends resolve instead of
+        // failing with "User not found".
+        if (result.empty())
+            account.getUsersByUsername(buddyName, result);
+        if (result.empty())
+            account.getUsersByNormalizedDisplayName(buddyName, result);
         if (action) {
             if (result.empty())
-                purple_debug_warning(config::pluginId, "Cannot %s: no user with display name '%s'\n",
+                purple_debug_warning(config::pluginId, "Cannot %s: no user with display name or username '%s'\n",
                                     action, buddyName);
             else if (result.size() != 1)
                 purple_debug_warning(config::pluginId, "Cannot %s: more than one user with display name '%s'\n",

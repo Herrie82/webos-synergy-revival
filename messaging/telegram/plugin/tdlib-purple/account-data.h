@@ -343,6 +343,15 @@ public:
     std::string                   getDisplayName(UserId userId) const;
     void                          getUsersByDisplayName(const char *displayName,
                                                         std::vector<const td::td_api::user*> &users);
+    // webOS: resolve a Telegram @username (case-insensitive, optional leading '@') to loaded
+    // contacts, so composing a message to a handle (not an "id<n>" buddy) can find the user.
+    void                          getUsersByUsername(const char *username,
+                                                     std::vector<const td::td_api::user*> &users);
+    // webOS: match a NORMALIZED display name (lowercase, only [a-z0-9] kept). webOS turns a
+    // contact's display name into a handle this way ("Herman van Hazendonk" -> "hermanvanhazendonk",
+    // "Pine64 Protocol Bot" -> "pine64protocolbot"), and addresses conversations by that handle.
+    void                          getUsersByNormalizedDisplayName(const char *name,
+                                                     std::vector<const td::td_api::user*> &users);
 
     const td::td_api::basicGroup *getBasicGroup(BasicGroupId groupId) const;
     const td::td_api::basicGroupFullInfo *getBasicGroupInfo(BasicGroupId groupId) const;

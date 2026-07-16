@@ -4,6 +4,7 @@
 #include "format.h"
 #include <purple.h>
 #include <algorithm>
+#include <cctype>
 
 static bool isCanonicalPhoneNumber(const char *s)
 {
@@ -605,6 +606,67 @@ void TdAccountData::getUsersByDisplayName(const char *displayName,
 
     for (const UserMap::value_type &entry: m_userInfo)
         if (entry.second.displayName == displayName)
+            users.push_back(entry.second.user.get());
+}
+
+// webOS: match by Telegram @username. Telegram usernames are case-insensitive; accept an
+// optional leading '@'. Checks the editable username and any active usernames (tdlib 1.8.x
+// user.usernames_).
+void TdAccountData::getUsersByUsername(const char *username,
+                                       std::vector<const td::td_api::user*> &users)
+{
+    users.clear();
+    if (!username || (*username == '\0'))
+        return;
+    if (*username == '@')
+        username++;
+    std::string want(username);
+    std::transform(want.begin(), want.end(), want.begin(), ::tolower);
+    if (want.empty())
+        return;
+
+    auto equalsIgnoreCase = [&want](const std::string &candidate) {
+        std::string s(candidate);
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        return s == want;
+    };
+
+    for (const UserMap::value_type &entry: m_userInfo) {
+        const td::td_api::user *u = entry.second.user.get();
+        if (!u || !u->usernames_)
+            continue;
+        bool hit = equalsIgnoreCase(u->usernames_->editable_username_);
+        if (!hit)
+            for (const std::string &active: u->usernames_->active_usernames_)
+                if (equalsIgnoreCase(active)) { hit = true; break; }
+        if (hit)
+            users.push_back(u);
+    }
+}
+
+// webOS: reduce a name to a handle the way webOS does: keep only ASCII alphanumerics, lowercased.
+static std::string normalizeHandle(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c: s)
+        if (std::isalnum(c))
+            out += (char) std::tolower(c);
+    return out;
+}
+
+void TdAccountData::getUsersByNormalizedDisplayName(const char *name,
+                                                    std::vector<const td::td_api::user*> &users)
+{
+    users.clear();
+    if (!name || (*name == '\0'))
+        return;
+    std::string want = normalizeHandle(name);
+    if (want.empty())
+        return;
+
+    for (const UserMap::value_type &entry: m_userInfo)
+        if (normalizeHandle(entry.second.displayName) == want)
             users.push_back(entry.second.user.get());
 }
 

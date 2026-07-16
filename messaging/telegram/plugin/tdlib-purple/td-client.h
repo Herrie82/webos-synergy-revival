@@ -155,6 +155,11 @@ private:
     TdAccountData         m_data;
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
+    // webOS perf: at first login every contact needs a private chat materialized. Doing this
+    // strictly serially (one createPrivateChat per server round-trip) is very slow for large
+    // contact lists. Keep a window of concurrent requests in flight instead (batching), which
+    // cuts N*RTT down to ~(N/window)*RTT. m_privateChatRequestsInFlight tracks the window.
+    int                   m_privateChatRequestsInFlight = 0;
     bool                  m_chatListReady = false;
     bool                  m_isProxyAdded = false;
     std::vector<PurpleRoomlist *>               m_pendingRoomLists;
