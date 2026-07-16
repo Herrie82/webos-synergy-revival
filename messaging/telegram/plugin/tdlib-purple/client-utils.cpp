@@ -122,10 +122,14 @@ std::string proxyTypeToString(PurpleProxyType proxyType)
 
 const char *getPurpleStatusId(const td::td_api::UserStatus &tdStatus)
 {
+    // webOS: only a genuinely-online user is "available" (green); every other Telegram status
+    // (offline, seen recently / last week / last month, hidden) is offline (grey). Previously all
+    // non-online users mapped to AWAY, which the webOS transport renders as IDLE - an orange dot on
+    // every single contact, which reads as "wrong/everyone busy". Grey-when-not-online is correct.
     if (tdStatus.get_id() == td::td_api::userStatusOnline::ID)
         return purple_primitive_get_id_from_type(PURPLE_STATUS_AVAILABLE);
     else
-        return purple_primitive_get_id_from_type(PURPLE_STATUS_AWAY);
+        return purple_primitive_get_id_from_type(PURPLE_STATUS_OFFLINE);
 }
 
 std::string getPurpleBuddyName(const td::td_api::user &user)
