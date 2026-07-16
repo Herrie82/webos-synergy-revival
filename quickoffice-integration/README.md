@@ -96,16 +96,20 @@ you save from the **editor**, where no file browser is mounted — so a just-sav
 when you next open the browser (which does re-list fresh). To make refreshing explicit and reliable,
 two affordances were added:
 
-- **Pull-to-refresh** (`FolderContentsList.js.patch`). The list's `VirtualList` scroll strategy
-  reports `getScrollTop() < 0` **only** when it's over-pulled past the top (normal scrolling bottoms
-  out at 0), so a negative scrollTop past a 60px threshold is an unambiguous "pull down at the top"
-  signal — no fighting the strategy's own drag handling. Hooked via the list's published
-  `onScroll`/`onScrollStop` (which `VirtualList` doesn't use internally): arm on `onScroll`, fire on
-  release. It calls the new `refreshNow()` — drop `fsoCache`, reset paging, `scheduleRender(RESET)` —
-  which re-queries through the always-fresh modern `getFiles`.
-- **Toolbar Refresh button** (`FolderContentsPane.js.patch`, a fourth patched file). A captioned
+- **Pull-to-refresh** (`FolderContentsList.js.patch`). *First attempt* hooked the list's published
+  `onScroll`/`onScrollStop` and watched for a negative `getScrollTop()` — but a `VirtualList`
+  **contains** a `Scroller` (`fileList.$.scroller`) rather than being one, so those events fire to
+  the `VirtualList`, not to us, and it never triggered on device. The working version reaches the
+  scroller's drag **strategy** (`fileList.$.scroller.$.scroll`) and wraps its
+  `startDrag`/`drag`/`dragFinish`. It arms only when the drag **starts at the top** and the **raw
+  finger travel** (`e.pageY - strat.my`, immune to the strategy's overscroll damping) exceeds an
+  80px threshold, then fires on release. It calls the new `refreshNow()` — drop `fsoCache`, reset
+  paging, `scheduleRender(RESET)` — which re-queries through the always-fresh modern `getFiles`.
+- **Toolbar Refresh button** (`FolderContentsPane.js.patch`, a fourth patched file). An icon
   `ToolButton` on the **left** of the footer toolbar (opposite the New-document / Share buttons),
-  wired to the same `refreshNow()`.
+  wired to the same `refreshNow()`. The icon (`assets/toolbar-icon-refresh.png`, deployed to each
+  app's `images/`) is the browser app's `menu-icon-refresh` sprite — already the 32×64 two-state
+  (normal/pressed) format the QuickOffice toolbar icons use, so it drops in unchanged.
 
 ## Account recognition (`patches/FileStore.js.patch`)
 
@@ -145,6 +149,7 @@ for app in com.quickoffice.webos com.quickoffice.ar; do
   patch -p1 -d "$d" < patches/FileStore.js.patch
   patch -p1 -d "$d" < patches/FolderContentsList.js.patch
   patch -p1 -d "$d" < patches/FolderContentsPane.js.patch
+  cp assets/toolbar-icon-refresh.png "$d/images/"   # icon for the toolbar Refresh button
 done
 # restart LunaSysMgr so QuickOffice reloads its (cached) app JS
 ```

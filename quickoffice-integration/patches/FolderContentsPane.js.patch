@@ -1,5 +1,5 @@
---- a/source/FolderContentsPane.js	2026-07-16 05:59:37.788934665 +0200
-+++ b/source/FolderContentsPane.js	2026-07-16 05:59:37.790934697 +0200
+--- a/source/FolderContentsPane.js	2026-07-16 06:10:18.152611401 +0200
++++ b/source/FolderContentsPane.js	2026-07-16 06:10:18.155611452 +0200
 @@ -131,6 +131,15 @@
              className: "enyo-toolbar-draghandle",
              onmousedown:   "cancelRemoteOperation"
@@ -9,7 +9,7 @@
 +            // getFiles. Complements the pull-to-refresh gesture in FolderContentsList.
 +            name:         "refreshButton",
 +            kind:         "ToolButton",
-+            caption:      $L("Refresh"),
++            icon:         "images/toolbar-icon-refresh.png",
 +            cssNamespace: "formatting-button",
 +            onclick:      "onClickRefresh"
 +        }, {
