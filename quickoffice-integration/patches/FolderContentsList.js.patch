@@ -1,0 +1,23 @@
+--- a/source/FolderContentsList.js	2026-07-16 05:48:21.396689582 +0200
++++ b/source/FolderContentsList.js	2026-07-16 05:48:21.398689609 +0200
+@@ -1532,6 +1532,12 @@
+      * @param {Object} inCaption The text to display, centered within the overlay
+      */
+     showOverlay: function(inCaption) {
++        // MODERN REROUTE (webos-synergy-revival): a scheduled render can run in a later tick,
++        // after this list has been torn down or before its subcomponents exist (the modern
++        // save-back auto-refresh fires onWatchFired on browsers that aren't mounted). Guard so
++        // the async render can't throw "Cannot call method 'hide' of undefined" and abort the
++        // JS turn - which was leaving the real folder listing stuck on its spinner.
++        if (!this.$ || !this.$.overlay || !this.$.fileList) { return; }
+         this.$.fileList.hide();
+         this.$.overlay.show();
+         this.$.overlay.setContent(inCaption);
+@@ -1541,6 +1547,7 @@
+      * Hides the overlay that appears when there are no files to display.
+      */
+     hideOverlay: function() {
++        if (!this.$ || !this.$.overlay || !this.$.fileList) { return; }
+         this.$.overlay.hide();
+         this.$.fileList.show();
+     }

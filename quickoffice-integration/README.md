@@ -79,6 +79,16 @@ local-file watch that refreshes the browser — newly-added files needed a manua
 it and fires that callback — exactly the local-file-watch path. The open folder clears its cache
 and re-lists through the always-fresh modern `getFiles`, so the saved file shows immediately.
 
+**Crash fix (found in the second on-device test — `FolderContentsList.js.patch`).** The event is
+broadcast to *every* `FileStore` instance, so it also fired `onWatchFired` on browsers that aren't
+mounted (a closed Save-As dialog, or a list still mid-construction). That schedules a render which
+runs in a **later tick** and hit `this.$.overlay.hide()` with no `overlay` subcomponent —
+`Cannot call method 'hide' of undefined` — and because it threw in an async tick it couldn't be
+caught at the fire site; it aborted the render turn and left the *real* Dropbox listing stuck on
+its spinner. Two-part fix: `FileStore._onRemoteFileChanged` skips destroyed stores (and wraps the
+call), and `FolderContentsList.showOverlay`/`hideOverlay` now no-op if their subcomponents are
+absent (a torn-down/half-built list). This is a third patched file, stock-pristine otherwise.
+
 ## Account recognition (`patches/FileStore.js.patch`)
 
 QuickOffice maps accounts by `loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback`.
@@ -106,20 +116,21 @@ overwrite-by-id path: Dropbox `mode:"overwrite"`, Box `uploadNewVersion`, OneDri
 
 ## Applying
 
-Both patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` —
-their `RemoteFileService.js` and `FileStore.js` are byte-identical, verified against the 2.1.2113
-/ 10.3.484 IPKs):
+All three patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` —
+their `RemoteFileService.js`, `FileStore.js` and `FolderContentsList.js` are byte-identical,
+verified against the 2.1.2113 / 10.3.484 IPKs):
 
 ```sh
 for app in com.quickoffice.webos com.quickoffice.ar; do
   d=/media/cryptofs/apps/usr/palm/applications/$app
   patch -p1 -d "$d" < patches/RemoteFileService.js.patch
   patch -p1 -d "$d" < patches/FileStore.js.patch
+  patch -p1 -d "$d" < patches/FolderContentsList.js.patch
 done
 # restart LunaSysMgr so QuickOffice reloads its (cached) app JS
 ```
 
-Both patches are **round-trip verified**: applying to the pristine IPK source reproduces the
+All three patches are **round-trip verified**: applying to the pristine IPK source reproduces the
 patched file exactly.
 
 ## Limitations / TODO

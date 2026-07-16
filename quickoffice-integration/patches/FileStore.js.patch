@@ -1,6 +1,6 @@
---- a/source/FileStore.js	2026-07-15 23:03:01.110698476 +0200
-+++ b/source/FileStore.js	2026-07-15 23:03:01.114698547 +0200
-@@ -300,6 +300,31 @@
+--- a/source/FileStore.js	2026-07-16 05:48:21.392689528 +0200
++++ b/source/FileStore.js	2026-07-16 05:48:21.394689555 +0200
+@@ -300,6 +300,37 @@
          }
      ],
  
@@ -26,13 +26,19 @@
 +    _onRemoteFileChanged: function() {
 +        // Mirror onLocalFileWatch: hand the browser its watch callback so it clears its cache
 +        // and re-lists the current folder through the (always-fresh) modern getFiles path.
-+        if (this.onWatchCb) { this.onWatchCb([]); }
++        // Skip destroyed stores (this event is broadcast to every FileStore instance) and don't
++        // let a stale callback's synchronous work escape - the render it schedules is guarded
++        // separately in FolderContentsList.showOverlay/hideOverlay.
++        if (this.destroyed || !this.onWatchCb) { return; }
++        try { this.onWatchCb([]); } catch (e) {
++            QOWT.utils.log("FileStore _onRemoteFileChanged ignored stale watch: " + e);
++        }
 +    },
 +
      /**
       * Assigns a delegate to (or clears) the watch callback
       *
-@@ -694,11 +719,40 @@
+@@ -694,11 +725,40 @@
  
          switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
  
