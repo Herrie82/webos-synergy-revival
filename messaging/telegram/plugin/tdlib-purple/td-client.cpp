@@ -186,6 +186,20 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         break;
     }
 
+    case td::td_api::updateChatNotificationSettings::ID: {
+        // webOS: chat was muted/unmuted (on this or another client). Update the stored settings
+        // and refresh the "muted" blist flag so the transport suppresses/allows notifications.
+        auto &notifUpdate = static_cast<td::td_api::updateChatNotificationSettings &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: notification settings for chat %" G_GINT64_FORMAT "\n",
+                          notifUpdate.chat_id_);
+        ChatId chatId = getChatId(notifUpdate);
+        m_data.updateChatNotificationSettings(chatId, std::move(notifUpdate.notification_settings_));
+        const td::td_api::chat *chat = m_data.getChat(chatId);
+        if (chat)
+            updateChatMuteState(*chat);
+        break;
+    }
+
     case td::td_api::updateOption::ID: {
         const td::td_api::updateOption &option = static_cast<const td::td_api::updateOption &>(update);
         updateOption(option, m_data);
@@ -374,16 +388,23 @@ void PurpleTdClient::sendTdlibParameters()
     // and ignore_file_names_ are no longer part of it (set via setOption after login if needed).
     const char *username = purple_account_get_username(m_account);
     std::string databaseDir = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
-    purple_debug_misc(config::pluginId, "Account %s using database directory %s\n",
-                      username, databaseDir.c_str());
+    // webOS: the default files_directory == database_directory, which lives under
+    // /var/preferences (a tiny ~62MB partition). Downloaded media (photos/videos/files/stickers)
+    // would fill /var. Keep the small, essential sqlite database on /var but redirect the
+    // unbounded media cache to the large (24GB) /media/cryptofs partition. Create the per-account
+    // dir up front so TDLib can use it immediately.
+    std::string filesDir = std::string("/media/cryptofs/.purple-tdlib-files") + G_DIR_SEPARATOR_S + username;
+    g_mkdir_with_parents(filesDir.c_str(), 0700);
+    purple_debug_misc(config::pluginId, "Account %s using database directory %s, files directory %s\n",
+                      username, databaseDir.c_str(), filesDir.c_str());
     bool useSecretChats = (purple_account_get_bool(m_account, AccountOptions::EnableSecretChats,
                                                    AccountOptions::EnableSecretChatsDefault) != FALSE);
     // config::stuff (obfuscated api-cred fallback) is empty in the webOS build; creds come
     // straight from config::api_id / config::api_hash (baked in via CMake -DAPI_ID/-DAPI_HASH).
     m_transceiver.sendQuery(td::td_api::make_object<td::td_api::setTdlibParameters>(
         false,                              // use_test_dc
-        databaseDir,                        // database_directory
-        std::string(),                      // files_directory (empty -> == database_directory)
+        databaseDir,                        // database_directory (small sqlite DB stays on /var)
+        filesDir,                           // files_directory (media cache -> big /media/cryptofs)
         std::string(),                      // database_encryption_key (bytes)
         true,                               // use_file_database
         true,                               // use_chat_info_database
@@ -1279,6 +1300,86 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
 
     if (secretChatId.valid())
         updateKnownSecretChat(secretChatId, m_transceiver, m_data);
+
+    // webOS: keep the blist "muted" flag in sync whenever we (re)process a chat.
+    updateChatMuteState(*chat);
+}
+
+// webOS: a chat is "archived" when it sits in Telegram's Archive chat list and not the Main list.
+// Each chatPosition carries its list (Main/Archive/Folder) and an order (0 == not in that list).
+bool isChatArchived(const td::td_api::chat &chat)
+{
+    bool hasMain = false, hasArchive = false;
+    for (const auto &pos : chat.positions_) {
+        if (!pos || !pos->list_ || pos->order_ == 0)
+            continue;
+        int32_t listId = pos->list_->get_id();
+        if (listId == td::td_api::chatListMain::ID)
+            hasMain = true;
+        else if (listId == td::td_api::chatListArchive::ID)
+            hasArchive = true;
+    }
+    return hasArchive && !hasMain;
+}
+
+void PurpleTdClient::updateChatMuteState(const td::td_api::chat &chat)
+{
+    if (!purple_account_is_connected(m_account))
+        return;
+
+    // Effective per-chat mute: the user explicitly muted THIS chat (mute_for > 0 and not deferring
+    // to the scope default). Scope-level defaults ("mute all groups/channels") are intentionally
+    // not considered in this version - only an explicit per-chat mute suppresses notifications.
+    bool muted = chat.notification_settings_ &&
+                 !chat.notification_settings_->use_default_mute_for_ &&
+                 (chat.notification_settings_->mute_for_ > 0);
+
+    // Resolve the blist node: a buddy for a 1:1 private chat, a chat for a group/supergroup.
+    PurpleBlistNode *node = nullptr;
+    const td::td_api::user *privateUser = m_data.getUserByPrivateChat(chat);
+    if (privateUser) {
+        std::string buddyName = getPurpleBuddyName(*privateUser);
+        PurpleBuddy *buddy = purple_find_buddy(m_account, buddyName.c_str());
+        if (buddy)
+            node = (PurpleBlistNode *)buddy;
+    } else {
+        std::string chatName = getPurpleChatName(chat);
+        if (!chatName.empty()) {
+            PurpleChat *purpleChat = purple_blist_find_chat(m_account, chatName.c_str());
+            if (purpleChat)
+                node = (PurpleBlistNode *)purpleChat;
+        }
+    }
+
+    if (node) {
+        purple_blist_node_set_bool(node, "muted", muted);
+        // webOS: also expose the archived state so the transport can silence archived chats.
+        purple_blist_node_set_bool(node, "archived", isChatArchived(chat));
+        purple_debug_misc(config::pluginId, "Chat %" G_GINT64_FORMAT " muted=%d archived=%d\n",
+                          chat.id_, (int)muted, (int)isChatArchived(chat));
+    }
+}
+
+// webOS: move a chat into (archived=true) or out of (archived=false) Telegram's Archive list.
+// Invoked by the /archive and /unarchive chat commands; the app-facing trigger is wired separately.
+void PurpleTdClient::setChatArchived(PurpleConversation *conv, bool archived)
+{
+    int purpleChatId = purple_conv_chat_get_id(PURPLE_CONV_CHAT(conv));
+    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    if (!chat) {
+        purple_conversation_write(conv, "", "Chat not found", PURPLE_MESSAGE_NO_LOG, time(NULL));
+        return;
+    }
+
+    auto request = td::td_api::make_object<td::td_api::addChatToList>();
+    request->chat_id_ = chat->id_;
+    if (archived)
+        request->chat_list_ = td::td_api::make_object<td::td_api::chatListArchive>();
+    else
+        request->chat_list_ = td::td_api::make_object<td::td_api::chatListMain>();
+    m_transceiver.sendQuery(std::move(request), nullptr);
+    purple_debug_misc(config::pluginId, "Chat %" G_GINT64_FORMAT " -> %s\n", chat->id_,
+                      archived ? "archived" : "unarchived");
 }
 
 void PurpleTdClient::updateUserInfo(const td::td_api::user &user, const td::td_api::chat *privateChat)

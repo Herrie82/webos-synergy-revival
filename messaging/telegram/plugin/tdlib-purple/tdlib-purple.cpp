@@ -760,6 +760,25 @@ static PurpleCmdRet tgprpl_cmd_kick(PurpleConversation *conv, const gchar *cmd, 
     return PURPLE_CMD_RET_OK;
 }
 
+// webOS: /archive and /unarchive move the current chat in/out of Telegram's Archive list.
+static PurpleCmdRet tgprpl_cmd_archive(PurpleConversation *conv, const gchar *cmd, gchar **args, gchar **error, void *data)
+{
+    PurpleTdClient *tdClient = getTdClient(purple_conversation_get_account(conv));
+    if (!tdClient)
+        return PURPLE_CMD_RET_FAILED;
+    tdClient->setChatArchived(conv, true);
+    return PURPLE_CMD_RET_OK;
+}
+
+static PurpleCmdRet tgprpl_cmd_unarchive(PurpleConversation *conv, const gchar *cmd, gchar **args, gchar **error, void *data)
+{
+    PurpleTdClient *tdClient = getTdClient(purple_conversation_get_account(conv));
+    if (!tdClient)
+        return PURPLE_CMD_RET_FAILED;
+    tdClient->setChatArchived(conv, false);
+    return PURPLE_CMD_RET_OK;
+}
+
 static PurpleMediaCaps getMediaCaps(PurpleAccount *account, const char *who)
 {
 #ifndef NoVoip
@@ -905,6 +924,16 @@ static gboolean tgprpl_load (PurplePlugin *plugin)
                         config::pluginId, hangupCommand,
                         // TRANSLATOR: Command description, the initial "hangup" must remain verbatim!
                         _("hangup: Terminate any active call (with any user)"), NULL);
+
+    // webOS: archive / unarchive the current chat (moves it in/out of Telegram's Archive list).
+    purple_cmd_register("archive", "", PURPLE_CMD_P_PLUGIN,
+                        (PurpleCmdFlag)(PURPLE_CMD_FLAG_CHAT | PURPLE_CMD_FLAG_PRPL_ONLY),
+                        config::pluginId, tgprpl_cmd_archive,
+                        _("archive: Move this chat to the Telegram archive"), NULL);
+    purple_cmd_register("unarchive", "", PURPLE_CMD_P_PLUGIN,
+                        (PurpleCmdFlag)(PURPLE_CMD_FLAG_CHAT | PURPLE_CMD_FLAG_PRPL_ONLY),
+                        config::pluginId, tgprpl_cmd_unarchive,
+                        _("unarchive: Move this chat out of the Telegram archive"), NULL);
 
     return TRUE;
 }

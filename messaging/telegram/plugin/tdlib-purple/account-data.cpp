@@ -71,6 +71,21 @@ UserId getUserIdByPrivateChat(const td::td_api::chat &chat)
 
 bool isChatInContactList(const td::td_api::chat &chat, const td::td_api::user *privateChatUser)
 {
+    // webOS: exclude chats that live only in the Archive list - archived people/chats should not
+    // appear as webOS buddies. Archived = has an Archive-list position (order!=0) and no Main one.
+    bool hasMain = false, hasArchive = false;
+    for (const auto &pos : chat.positions_) {
+        if (!pos || !pos->list_ || pos->order_ == 0)
+            continue;
+        int32_t listId = pos->list_->get_id();
+        if (listId == td::td_api::chatListMain::ID)
+            hasMain = true;
+        else if (listId == td::td_api::chatListArchive::ID)
+            hasArchive = true;
+    }
+    if (hasArchive && !hasMain)
+        return false;
+
     return !chat.positions_.empty() || (privateChatUser && privateChatUser->is_contact_);
 }
 
@@ -474,6 +489,13 @@ void TdAccountData::updateChatTitle(ChatId chatId, const std::string &title)
     auto it = m_chatInfo.find(chatId);
     if (it != m_chatInfo.end())
         it->second.chat->title_ = title;
+}
+
+void TdAccountData::updateChatNotificationSettings(ChatId chatId, td::td_api::object_ptr<td::td_api::chatNotificationSettings> settings)
+{
+    auto it = m_chatInfo.find(chatId);
+    if (it != m_chatInfo.end())
+        it->second.chat->notification_settings_ = std::move(settings);
 }
 
 void TdAccountData::updateSmallChatPhoto(ChatId chatId, td::td_api::object_ptr<td::td_api::file> photo)

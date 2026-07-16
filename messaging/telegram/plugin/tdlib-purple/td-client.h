@@ -38,6 +38,8 @@ public:
     int  sendGroupMessage(int purpleChatId, const char *message);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
+    // webOS: archive (true) / unarchive (false) the chat backing this conversation.
+    void setChatArchived(PurpleConversation *conv, bool archived);
     void addUserToChat(int purpleChatId, const char *name);
     void showInviteLink(const std::string &purpleChatName);
     void getGroupChatList(PurpleRoomlist *roomlist);
@@ -105,6 +107,9 @@ private:
     void       updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> group);
     void       updateSupergroup(td::td_api::object_ptr<td::td_api::supergroup> group);
     void       updateChat(const td::td_api::chat *chat);
+    // webOS: mirror a chat's server-side mute state onto its buddy/chat blist node as a "muted"
+    // bool, which imlibpurpletransport reads to suppress notifications for muted conversations.
+    void       updateChatMuteState(const td::td_api::chat &chat);
     void       updateUserInfo(const td::td_api::user &user, const td::td_api::chat *privateChat);
     void       downloadChatPhoto(const td::td_api::chat &chat);
     void       requestBasicGroupFullInfo(BasicGroupId groupId);

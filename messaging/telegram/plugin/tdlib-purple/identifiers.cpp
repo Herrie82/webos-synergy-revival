@@ -129,6 +129,11 @@ ChatId getChatId(const td::td_api::updateChatLastMessage &update)
     return ChatId(update.chat_id_);
 }
 
+ChatId getChatId(const td::td_api::updateChatNotificationSettings &update)
+{
+    return ChatId(update.chat_id_);
+}
+
 BasicGroupId getBasicGroupId(const td::td_api::updateBasicGroupFullInfo &update)
 {
     return BasicGroupId(update.basic_group_id_);
