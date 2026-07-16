@@ -1,0 +1,15 @@
+{
+    "id": "com.palm.app.telegram",
+    "version": "1.0.0",
+    "vendor": "webOS Ports",
+    "type": "web",
+    "main": "validator.html",
+    "title": "Telegram",
+    "visible": false,
+    "icon": "images/header-icon.png",
+    "splashicon": "images/icon-256x256.png",
+    "noWindow": true,
+    "uiRevision": 2,
+    "keywords": ["Telegram", "IM"],
+    "requiredPermissions": ["accounts.query", "accounts.manage", "connectionmanager.read"]
+}

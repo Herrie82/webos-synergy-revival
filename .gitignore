@@ -9,3 +9,22 @@
 *.2011.orig
 # scratch
 /tmp/
+
+# --- messaging/: vendored native libpurple plugin build artifacts ---
+# Source is vendored; built objects/libs are rebuilt via each plugin's build step.
+build/
+build-arm/
+build-native/
+*.o
+*.a
+*.la
+*.lo
+*.so
+*.so.*
+*.dll
+CMakeCache.txt
+CMakeFiles/
+*.cmake.stamp
+# libqrencode in-tree build dirs
+messaging/*/plugin/libqrencode/inst/
+messaging/*/plugin/libqrencode/use/

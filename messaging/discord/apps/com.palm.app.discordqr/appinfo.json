@@ -1,0 +1,11 @@
+{
+    "id": "com.palm.app.discordqr",
+    "version": "1.0.0",
+    "vendor": "webOS Ports",
+    "type": "web",
+    "main": "index.html",
+    "title": "Discord QR",
+    "visible": false,
+    "icon": "icon.png",
+    "uiRevision": 2
+}

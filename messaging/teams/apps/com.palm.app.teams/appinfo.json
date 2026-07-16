@@ -1,0 +1,15 @@
+{
+    "id": "com.palm.app.teams",
+    "version": "1.0.0",
+    "vendor": "webOS Ports",
+    "type": "web",
+    "main": "validator.html",
+    "title": "Teams",
+    "visible": false,
+    "icon": "images/header-icon.png",
+    "splashicon": "images/icon-256x256.png",
+    "noWindow": true,
+    "uiRevision": 2,
+    "keywords": ["Teams", "Microsoft", "IM"],
+    "requiredPermissions": ["accounts.query", "accounts.manage", "connectionmanager.read"]
+}
