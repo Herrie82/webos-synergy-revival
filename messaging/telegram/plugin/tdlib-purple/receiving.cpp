@@ -130,10 +130,17 @@ static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &
                 purple_conv_chat_write(conv, purple_account_get_name_for_display(account.purpleAccount),
                                        text, flags, message.timestamp);
         } else {
-            if (purpleId != 0)
+            if (purpleId != 0) {
+                // webOS: smuggle the sender's routable id + display name through the single `who` slot
+                // as "id<userId>\x1f<Display Name>". The webOS transport splits on \x1f -> from.addr =
+                // the id (so the app can open a 1:1 with the sender), from.name = the display name.
+                // Other libpurple UIs just see the combined string. No id -> plain display name.
+                std::string who = message.incomingGroupchatSender.empty() ? "someone" : message.incomingGroupchatSender;
+                if (!message.incomingGroupchatSenderId.empty())
+                    who = message.incomingGroupchatSenderId + "\x1f" + who;
                 serv_got_chat_in(purple_account_get_connection(account.purpleAccount), purpleId,
-                                 message.incomingGroupchatSender.empty() ? "someone" : message.incomingGroupchatSender.c_str(),
-                                 flags, text, message.timestamp);
+                                 who.c_str(), flags, text, message.timestamp);
+            }
         }
     }
 
@@ -769,6 +776,13 @@ void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td
     messageInfo.id               = getId(*message);
     messageInfo.type             = TgMessageInfo::Type::Other;
     messageInfo.incomingGroupchatSender = getIncomingGroupchatSenderPurpleName(chat, *message, account);
+    // webOS: also record the sender's routable purple id ("id<userId>") so the transport/app can
+    // offer opening a 1:1 with them from a group message. Only for real user senders.
+    {
+        UserId gcSenderId = getSenderUserId(*message);
+        if (gcSenderId.valid())
+            messageInfo.incomingGroupchatSenderId = "id" + std::to_string(gcSenderId.value());
+    }
     messageInfo.timestamp        = message->date_;
     messageInfo.outgoing         = message->is_outgoing_;
     messageInfo.sentLocally      = (message->sending_state_ != nullptr);

@@ -127,6 +127,9 @@ struct TgMessageInfo {
     MessageId   id;
     Type        type;
     std::string incomingGroupchatSender;
+    // webOS: the group message sender's routable purple id ("id<userId>"), separate from the display
+    // name above, so the transport can offer "message this person" (open a 1:1) from a group message.
+    std::string incomingGroupchatSenderId;
     time_t      timestamp;
     bool        outgoing;
     bool        sentLocally = false; // For outgoing messages, whether sent by this very client
@@ -139,6 +142,7 @@ struct TgMessageInfo {
         id = other.id;
         type = other.type;
         incomingGroupchatSender = other.incomingGroupchatSender;
+        incomingGroupchatSenderId = other.incomingGroupchatSenderId;
         timestamp = other.timestamp;
         outgoing = other.outgoing;
         sentLocally = other.sentLocally;
@@ -323,6 +327,7 @@ public:
     void addChat(TdChatPtr chat); // Updates existing chat if any
     void updateChatPosition(ChatId chatId, td::td_api::object_ptr<td::td_api::chatPosition> &&position);
     void updateChatTitle(ChatId chatId, const std::string &title);
+    void updateChatNotificationSettings(ChatId chatId, td::td_api::object_ptr<td::td_api::chatNotificationSettings> settings);
     void updateSmallChatPhoto(ChatId chatId, td::td_api::object_ptr<td::td_api::file> photo);
     void setContacts(const td::td_api::users &users);
     void getContactsWithNoChat(std::vector<UserId> &userIds);
