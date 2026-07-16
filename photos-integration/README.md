@@ -1,88 +1,50 @@
-# Photos-app integration
+# Photos integration
 
-Makes a Dropbox folder appear as an **album inside the stock Photos app**
-(`com.palm.app.photos`), the way Facebook/Photobucket "Synergy" albums used to. Verified
-end-to-end: a Dropbox `/Camera Uploads` image syncs down through the modern curl and renders
-as a native album.
+Gives the stock **Photos & Videos** app (`com.palm.app.photos`) a per-service icon for each
+cloud photo library, so revived Box / Dropbox accounts are visually distinguishable in the
+**Libraries** list instead of all showing the same generic thumbnail under the account holder's
+name.
 
-## Why this is mostly a backend job
+## What was broken
 
-The Photos app is **100% MojoDB-driven** — it never loads a remote URL. A backend
-aggregator (`com.palm.service.photos`) discovers cloud accounts, calls a per-provider
-`listAlbums`/`listPhotos`, **downloads the bytes to local storage**, writes
-`com.palm.media.image.album:1` / `.file:1`, and the app just renders local file paths. So
-the webview's dead TLS is irrelevant to *display* — the entire problem is getting bytes to
-disk, which is one function in the aggregator.
+The Libraries list renders each cloud source's icon from a CSS class, not from the account's
+`iconSmall`/`iconLarge` fields (those are set to a literal `"FIXMEFIXMEFIXME_20x20.png"` in
+`PhotoAccounts.js` - dead stock code). In `LibraryNavigationPanel.js`:
 
-```
-account (PHOTO.UPLOAD capability)
-   → aggregator com.palm.service.photos  (discovers the account)
-   → com.palm.service.dropbox/listAlbums + /listPhotos   (provider methods, in the Dropbox service)
-   → Dropbox get_temporary_link  (pre-signed https URL)
-   → curl download to /media/internal/.photosApp/<templateId>/<user>/<album>/   ← the TLS patch
-   → com.palm.media.image.file:1 + thumbnails
-   → Photos app renders the local files
+```js
+// type = last dotted segment of the templateId: "com.palm.boxnet" -> "boxnet"
+var type = a.accountType.split('.'); type = type[type.length-1];
+...
+item.$.icon.addClass('library-navigation-icon-' + type);   // e.g. -boxnet / -dropbox
 ```
 
-## The 4-point recipe (works for any cloud photo source)
+Stock `LibraryNavigationPanel.css` only defines `library-navigation-icon-{facebook,snapfish,photobucket}`
+(the photo services that shipped in 2011). There is **no `-boxnet` or `-dropbox` rule**, so both
+revived libraries fall through to the default and render the generic icon.
 
-1. **Account template** — add a `PHOTO.UPLOAD` capabilityProvider whose `implementation` /
-   `onEnabled` / `onDelete` / `onCredentialsChanged` point at `com.palm.service.photos` (the
-   aggregator, **not** your service). Add `com.palm.service.photos` to the template's
-   `read`+`writePermissions`. See `dropbox/account/com.palm.dropbox/com.palm.dropbox.json`
-   (and every locale override — locale files win over the base).
+## The fix (`patches/LibraryNavigationPanel.css.patch`)
 
-2. **Aggregator routing** — `Utils.js.patch` adds a `case "com.palm.dropbox"` to the
-   **hardcoded** `templateId → serviceName` switch (the provider name is *not* derived from
-   the template). We point it at `com.palm.service.dropbox` so the provider methods live in
-   the already-bus-registered Dropbox service (no new LS2 role / bus rescan needed).
-   The same patch now carries a `case` for **every** revival photo source —
-   `com.palm.dropbox`, `com.palm.boxnet`, `com.palm.onedrive`, `com.palm.pcloud`, and
-   `com.palm.flickr` — each routed to its own `com.palm.service.*`. (Flickr is the only one
-   that returns *multiple* albums; the rest surface a single folder as one album.)
+Append the two missing service classes (plus their 20x20 variants), pointing at bundled 40x40 /
+20x20 badges:
 
-3. **Provider methods** — `listAlbums` / `listPhotos` in the Dropbox service
-   (`dropbox/service/com.palm.service.dropbox/commands/`). One Dropbox folder = one album
-   (`photolib.js` `ALBUM_PATH`, default `/Camera Uploads`) to bound how much auto-downloads.
-   Shapes the aggregator expects:
-   - `listAlbums` → `{returnValue, albums:[{aid, name, size:{images:N}}]}`
-   - `listPhotos` → `{returnValue, photos:[{pid, src_big, src_small, caption, type:"image", fileName}]}`
+| Template | `type` | CSS class | Icon |
+|---|---|---|---|
+| `com.palm.boxnet` | `boxnet` | `.library-navigation-icon-boxnet` | `icon_boxnet_40x40.png` (blue badge, white box) |
+| `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `icon_dropbox_40x40.png` (white badge, flat glyph) |
 
-     `src_big` is a Dropbox `/2/files/get_temporary_link` (pre-signed, no-auth https, ~4h),
-     so the downloader needs no token. `fileName` carries the real name+ext (temp-link URLs
-     have none).
+No JS change is needed - the class is already applied per account; only the CSS rule + image were
+missing. Box gets a mostly-blue badge and Dropbox a mostly-white one, so the two "same holder name"
+libraries are easy to tell apart at a glance.
 
-4. **The TLS patch** — `Sync-Manager.js.patch`. Stock `_downloadAndUpdateDb` fetched images
-   with `node_http.createClient(80, domain)` — plain HTTP, port 80, no TLS. Replaced with a
-   `child_process.spawn` of the bundled curl (`/var/dropbox-tls/curl`, full https temp link,
-   `--create-dirs`, `LD_LIBRARY_PATH=/var/dropbox-tls`, `--cacert` the system store). A
-   sibling patch to `_doPhotoWork` honors `photo.fileName`. Everything downstream (DB,
-   extractfs thumbnails, local rendering) is unchanged and TLS-free.
-
-## Applying the patches
-
-The patches are against the stock `com.palm.service.photos/photos-src/base/` tree
-(paths are `a/photos-src/base/…`). On device:
+## Applying
 
 ```sh
-cd /usr/palm/services/com.palm.service.photos/photos-src/base
-cp Utils.js Utils.js.orig; cp Sync-Manager.js Sync-Manager.js.orig   # keep a backup
-patch -p1 -d /usr/palm/services/com.palm.service.photos < Utils.js.patch
-patch -p1 -d /usr/palm/services/com.palm.service.photos < Sync-Manager.js.patch
-# restart the photos service (kill its pid) so it reloads
+D=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
+patch -p1 -d "$D" < patches/LibraryNavigationPanel.css.patch
+cp assets/icon_boxnet_40x40.png  assets/icon_boxnet_20x20.png  "$D/images/"
+cp assets/icon_dropbox_40x40.png assets/icon_dropbox_20x20.png "$D/images/"
+# relaunch the Photos card (cold launch reloads its CSS)
 ```
 
-Round-trip verified: applying each patch to the pristine stock file reproduces the
-deployed version exactly.
-
-## Enabling it on an account
-
-Adding `PHOTO.UPLOAD` to the template does **not** retro-fit an account created earlier —
-the capability is written to the account record at enable time. User path: **Settings →
-Accounts → Dropbox → enable the "Photos" toggle** (fires `modifyAccount` → `onEnabled` →
-sync). Force a sync from a shell with
-`luna-send -n 1 -f palm://com.palm.service.photos/remoteSyncAlbums '{"accountId":"…"}'`.
-
-> Note: a synced photo is downloaded once (deduped by Dropbox file id); disabling the
-> capability does not purge the media DB records, so only a *new* file id re-downloads.
-> And every image in the album is copied to local storage — hence the single-folder scope.
+The badges are derived from the official brand art (Box's box-social wordmark; the current flat
+Dropbox glyph) - the same sources used for the account-template icons under `box/` and `dropbox/`.
