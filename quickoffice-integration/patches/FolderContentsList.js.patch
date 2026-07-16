@@ -1,6 +1,65 @@
---- a/source/FolderContentsList.js	2026-07-16 05:48:21.396689582 +0200
-+++ b/source/FolderContentsList.js	2026-07-16 05:48:21.398689609 +0200
-@@ -1532,6 +1532,12 @@
+--- a/source/FolderContentsList.js	2026-07-16 05:59:37.781934551 +0200
++++ b/source/FolderContentsList.js	2026-07-16 05:59:37.785934616 +0200
+@@ -39,6 +39,10 @@
+          */
+         kQUERY_AHEAD_THRESHOLD: 75, // Feel free to tweak...
+ 
++        // MODERN REROUTE (webos-synergy-revival): px the list must be over-pulled past the top
++        // before releasing triggers a pull-to-refresh.
++        kPULL_REFRESH_THRESHOLD: 60,
++
+         /**
+          * {Number} The number of milliseconds after a user touches a file (to open it) before
+          *          another touch event will be recognized. This constant is used to prevent too
+@@ -231,6 +235,12 @@
+ 	name: "fileList",
+         kind: "VirtualList",
+         onSetupRow: "setupRow",
++        // MODERN REROUTE (webos-synergy-revival): pull-to-refresh. The scroll strategy reports
++        // getScrollTop() < 0 only when the list is over-pulled past the TOP (normal scroll bottoms
++        // out at 0), so a negative scrollTop past a threshold is an unambiguous "pull down at top"
++        // signal. Arm on onScroll, fire the refresh on release (onScrollStop).
++        onScroll:     "_pullScroll",
++        onScrollStop: "_pullScrollStop",
+         // NOTE: We don't make use of onAcquirePage/onDiscardPage events here, because of list
+         //       filtering. We always query _all_ files and folders from the local device or
+         //       remote source. When filtering (by type and/or name) is in effect, we ignore
+@@ -407,6 +417,34 @@
+         this.scheduleRender(FolderContentsList.kSCHEDULE_RENDER_REFRESH);
+     },
+ 
++    // MODERN REROUTE (webos-synergy-revival): force a fresh listing - drop the cache and re-query
++    // the (remote) source. Used by pull-to-refresh and the toolbar Refresh button. A RESET render
++    // (vs REFRESH) tries to keep scroll position while flushing both buffers.
++    refreshNow: function() {
++        this.fsoCache.length = 0;
++        this.filteredFsoIndex.length = 0;
++        this.isEOD = false;
++        this.nextPageHandle = undefined;
++        this.resultsPending = false;
++        this.scheduleRender(FolderContentsList.kSCHEDULE_RENDER_RESET);
++    },
++
++    // MODERN REROUTE: pull-to-refresh. getScrollTop() is negative only when over-pulled past the
++    // top; arm once it passes the threshold so a brief overshoot doesn't trigger.
++    _pullScroll: function(inSender) {
++        if (inSender && inSender.getScrollTop && inSender.getScrollTop() < -FolderContentsList.kPULL_REFRESH_THRESHOLD) {
++            this._pullArmed = true;
++        }
++    },
++
++    // MODERN REROUTE: fire the refresh on release, only if the pull passed the threshold.
++    _pullScrollStop: function(inSender) {
++        if (this._pullArmed) {
++            this._pullArmed = false;
++            this.refreshNow();
++        }
++    },
++
+     /**
+      * Called by the framework when the (published) 'account' property changes.
+      *
+@@ -1532,6 +1570,12 @@
       * @param {Object} inCaption The text to display, centered within the overlay
       */
      showOverlay: function(inCaption) {
@@ -13,7 +72,7 @@
          this.$.fileList.hide();
          this.$.overlay.show();
          this.$.overlay.setContent(inCaption);
-@@ -1541,6 +1547,7 @@
+@@ -1541,6 +1585,7 @@
       * Hides the overlay that appears when there are no files to display.
       */
      hideOverlay: function() {

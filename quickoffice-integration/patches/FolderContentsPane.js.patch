@@ -1,0 +1,33 @@
+--- a/source/FolderContentsPane.js	2026-07-16 05:59:37.788934665 +0200
++++ b/source/FolderContentsPane.js	2026-07-16 05:59:37.790934697 +0200
+@@ -131,6 +131,15 @@
+             className: "enyo-toolbar-draghandle",
+             onmousedown:   "cancelRemoteOperation"
+         }, {
++            // MODERN REROUTE (webos-synergy-revival): manual Refresh, left side (opposite the
++            // New-document button). Re-lists the current folder through the always-fresh modern
++            // getFiles. Complements the pull-to-refresh gesture in FolderContentsList.
++            name:         "refreshButton",
++            kind:         "ToolButton",
++            caption:      $L("Refresh"),
++            cssNamespace: "formatting-button",
++            onclick:      "onClickRefresh"
++        }, {
+             kind: "Spacer"
+         }, {
+             name:         "sendToButton",
+@@ -422,6 +431,14 @@
+         this.$.folderContentsList.refreshList();
+     },
+ 
++    // MODERN REROUTE (webos-synergy-revival): toolbar Refresh button - drop the cache and
++    // re-query the folder so a just-saved file appears without navigating away.
++    onClickRefresh: function() {
++        if (this.$.folderContentsList) {
++            this.$.folderContentsList.refreshNow();
++        }
++    },
++
+     /**
+      * Called by the framework when the (published) 'disabled' property changes. When disabled
+      * (e.g. during long-running operations with animations), we ignore clicks to avoid affecting

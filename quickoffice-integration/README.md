@@ -89,6 +89,24 @@ its spinner. Two-part fix: `FileStore._onRemoteFileChanged` skips destroyed stor
 call), and `FolderContentsList.showOverlay`/`hideOverlay` now no-op if their subcomponents are
 absent (a torn-down/half-built list). This is a third patched file, stock-pristine otherwise.
 
+## Manual refresh — pull-to-refresh + toolbar button (third on-device test)
+
+The broadcast auto-refresh above only helps when a browser is *already open* during a change. But
+you save from the **editor**, where no file browser is mounted — so a just-saved file only appears
+when you next open the browser (which does re-list fresh). To make refreshing explicit and reliable,
+two affordances were added:
+
+- **Pull-to-refresh** (`FolderContentsList.js.patch`). The list's `VirtualList` scroll strategy
+  reports `getScrollTop() < 0` **only** when it's over-pulled past the top (normal scrolling bottoms
+  out at 0), so a negative scrollTop past a 60px threshold is an unambiguous "pull down at the top"
+  signal — no fighting the strategy's own drag handling. Hooked via the list's published
+  `onScroll`/`onScrollStop` (which `VirtualList` doesn't use internally): arm on `onScroll`, fire on
+  release. It calls the new `refreshNow()` — drop `fsoCache`, reset paging, `scheduleRender(RESET)` —
+  which re-queries through the always-fresh modern `getFiles`.
+- **Toolbar Refresh button** (`FolderContentsPane.js.patch`, a fourth patched file). A captioned
+  `ToolButton` on the **left** of the footer toolbar (opposite the New-document / Share buttons),
+  wired to the same `refreshNow()`.
+
 ## Account recognition (`patches/FileStore.js.patch`)
 
 QuickOffice maps accounts by `loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback`.
@@ -116,9 +134,9 @@ overwrite-by-id path: Dropbox `mode:"overwrite"`, Box `uploadNewVersion`, OneDri
 
 ## Applying
 
-All three patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` —
-their `RemoteFileService.js`, `FileStore.js` and `FolderContentsList.js` are byte-identical,
-verified against the 2.1.2113 / 10.3.484 IPKs):
+All four patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` — their
+`RemoteFileService.js`, `FileStore.js`, `FolderContentsList.js` and `FolderContentsPane.js` are
+byte-identical, verified against the 2.1.2113 / 10.3.484 IPKs):
 
 ```sh
 for app in com.quickoffice.webos com.quickoffice.ar; do
@@ -126,11 +144,12 @@ for app in com.quickoffice.webos com.quickoffice.ar; do
   patch -p1 -d "$d" < patches/RemoteFileService.js.patch
   patch -p1 -d "$d" < patches/FileStore.js.patch
   patch -p1 -d "$d" < patches/FolderContentsList.js.patch
+  patch -p1 -d "$d" < patches/FolderContentsPane.js.patch
 done
 # restart LunaSysMgr so QuickOffice reloads its (cached) app JS
 ```
 
-All three patches are **round-trip verified**: applying to the pristine IPK source reproduces the
+All four patches are **round-trip verified**: applying to the pristine IPK source reproduces the
 patched file exactly.
 
 ## Limitations / TODO
