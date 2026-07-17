@@ -126,6 +126,51 @@ fb_cb_api_auth(FbApi *api, gpointer data)
 	fb_api_contacts(api);
 }
 
+/* Two-factor auth (webOS): the user supplied the login-approval code. */
+static void
+fb_cb_2fa_ok(gpointer data, const gchar *code)
+{
+	FbData *fata = data;
+	PurpleConnection *gc = fb_data_get_connection(fata);
+
+	purple_connection_update_progress(gc, _("Verifying login code"), 1, 4);
+	fb_api_auth_2fa(fb_data_get_api(fata), code);
+}
+
+static void
+fb_cb_2fa_cancel(gpointer data, const gchar *code)
+{
+	FbData *fata = data;
+
+	(void) code;
+	purple_connection_error(fb_data_get_connection(fata),
+		PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
+		_("Two-factor authentication was cancelled"));
+}
+
+/* FbApi::2fa -- Facebook challenged the login. Prompt for the approval code and
+ * finish via fb_api_auth_2fa(). NB: on webOS this needs a request-input UI op in
+ * imlibpurpletransport (currently absent, like Telegram's login-code prompt); on
+ * desktop Pidgin the dialog appears directly. */
+static void
+fb_cb_api_2fa(FbApi *api, gpointer data)
+{
+	FbData *fata = data;
+	PurpleConnection *gc = fb_data_get_connection(fata);
+	PurpleAccount *acct = purple_connection_get_account(gc);
+
+	purple_connection_update_progress(gc, _("Waiting for login code"), 1, 4);
+	purple_request_input(gc,
+		_("Facebook Login Approval"),
+		_("Enter your Facebook login code"),
+		_("This account uses two-factor authentication. Enter the login-approval "
+		  "code from SMS, the Facebook app, or your code generator."),
+		NULL, FALSE, FALSE, NULL,
+		_("OK"), G_CALLBACK(fb_cb_2fa_ok),
+		_("Cancel"), G_CALLBACK(fb_cb_2fa_cancel),
+		acct, NULL, NULL, fata);
+}
+
 static void
 fb_cb_api_connect(FbApi *api, gpointer data)
 {
@@ -1003,6 +1048,10 @@ fb_login(PurpleAccount *acct)
 	g_signal_connect(api,
 	                 "auth",
 	                 G_CALLBACK(fb_cb_api_auth),
+	                 fata);
+	g_signal_connect(api,
+	                 "2fa",
+	                 G_CALLBACK(fb_cb_api_2fa),
 	                 fata);
 	g_signal_connect(api,
 	                 "connect",

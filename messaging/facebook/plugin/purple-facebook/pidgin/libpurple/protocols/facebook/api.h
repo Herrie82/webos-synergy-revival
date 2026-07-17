@@ -649,6 +649,17 @@ void
 fb_api_auth(FbApi *api, const gchar *user, const gchar *pass);
 
 /**
+ * fb_api_auth_2fa:
+ * @api: The #FbApi.
+ * @code: The two-factor / login-approval code.
+ *
+ * Completes a login that Facebook challenged with two-factor auth (see the
+ * FbApi::2fa signal), by re-sending the authentication request with the code.
+ */
+void
+fb_api_auth_2fa(FbApi *api, const gchar *code);
+
+/**
  * fb_api_contact:
  * @api: The #FbApi.
  * @uid: The user #FbId.

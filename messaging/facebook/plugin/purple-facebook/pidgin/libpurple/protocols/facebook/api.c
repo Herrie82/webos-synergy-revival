@@ -69,6 +69,15 @@ struct _FbApiPrivate
 	guint unread;
 	FbId lastmid;
 	gchar *contacts_delta;
+
+	/* Two-factor auth (webOS): stash the credentials from fb_api_auth() and the
+	 * first-factor/machine_id from Facebook's 2FA challenge so fb_api_auth_2fa()
+	 * can re-POST auth.login with the code the user provides. */
+	gchar *auth_user;
+	gchar *auth_pass;
+	gchar *twofa_first_factor;
+	gchar *twofa_machine_id;
+	gchar *twofa_uid;
 };
 
 struct _FbApiData
@@ -190,6 +199,11 @@ fb_api_dispose(GObject *obj)
 	g_free(priv->stoken);
 	g_free(priv->token);
 	g_free(priv->contacts_delta);
+	g_free(priv->auth_user);
+	g_free(priv->auth_pass);
+	g_free(priv->twofa_first_factor);
+	g_free(priv->twofa_machine_id);
+	g_free(priv->twofa_uid);
 }
 
 static void
@@ -289,6 +303,23 @@ fb_api_class_init(FbApiClass *klass)
 	 * process. This is emitted as a result of #fb_api_auth().
 	 */
 	g_signal_new("auth",
+	             G_TYPE_FROM_CLASS(klass),
+	             G_SIGNAL_ACTION,
+	             0,
+	             NULL, NULL,
+	             fb_marshal_VOID__VOID,
+	             G_TYPE_NONE,
+	             0);
+
+	/**
+	 * FbApi::2fa:
+	 * @api: The #FbApi.
+	 *
+	 * Emitted when Facebook challenges the login with two-factor auth. The
+	 * handler should collect the approval code from the user and call
+	 * fb_api_auth_2fa() with it to finish signing in.
+	 */
+	g_signal_new("2fa",
 	             G_TYPE_FROM_CLASS(klass),
 	             G_SIGNAL_ACTION,
 	             0,
@@ -658,6 +689,44 @@ fb_api_json_chk(FbApi *api, gconstpointer data, gssize size, JsonNode **node)
 	}
 
 	g_object_unref(values);
+
+	/* webOS: Facebook challenges a 2FA/login-approval account with an error whose
+	 * error_data carries a "login_first_factor" (+ machine_id, uid). Capture those
+	 * and raise FbApi::2fa so the prpl can prompt for the code and re-POST via
+	 * fb_api_auth_2fa(), instead of treating it as a fatal auth failure. */
+	{
+		gchar *edata = fb_json_node_get_str(root, "$.error_data", NULL);
+
+		if (edata != NULL && strstr(edata, "login_first_factor") != NULL) {
+			JsonNode *enode;
+			GError *eerr = NULL;
+
+			fb_util_debug(FB_UTIL_DEBUG_INFO, "2FA challenge error_data: %s",
+			              edata);
+			enode = fb_json_node_new(edata, strlen(edata), &eerr);
+
+			if (enode != NULL) {
+				g_free(priv->twofa_first_factor);
+				g_free(priv->twofa_machine_id);
+				g_free(priv->twofa_uid);
+				priv->twofa_first_factor =
+					fb_json_node_get_str(enode, "$.login_first_factor", NULL);
+				priv->twofa_machine_id =
+					fb_json_node_get_str(enode, "$.machine_id", NULL);
+				priv->twofa_uid =
+					fb_json_node_get_str(enode, "$.uid", NULL);
+				json_node_free(enode);
+			}
+
+			g_clear_error(&eerr);
+			g_free(edata);
+			g_signal_emit_by_name(api, "2fa");
+			json_node_free(root);
+			return FALSE;
+		}
+
+		g_free(edata);
+	}
 
 	for (msg = NULL, i = 0; i < G_N_ELEMENTS(exprs); i++) {
 		msg = fb_json_node_get_str(root, exprs[i], NULL);
@@ -2187,11 +2256,55 @@ fb_api_cb_auth(PurpleHttpConnection *con, PurpleHttpResponse *res,
 void
 fb_api_auth(FbApi *api, const gchar *user, const gchar *pass)
 {
+	FbApiPrivate *priv = api->priv;
 	FbHttpParams *prms;
+
+	/* Stash the credentials so a 2FA challenge can re-POST auth.login (see
+	 * fb_api_auth_2fa). Facebook wants the same email/password alongside the code. */
+	g_free(priv->auth_user);
+	g_free(priv->auth_pass);
+	priv->auth_user = g_strdup(user);
+	priv->auth_pass = g_strdup(pass);
 
 	prms = fb_http_params_new();
 	fb_http_params_set_str(prms, "email", user);
 	fb_http_params_set_str(prms, "password", pass);
+	fb_api_http_req(api, FB_API_URL_AUTH, "authenticate", "auth.login",
+	                prms, fb_api_cb_auth);
+}
+
+/**
+ * fb_api_auth_2fa:
+ * @api: The #FbApi.
+ * @code: The two-factor / login-approval code from SMS, the Facebook app,
+ *        or a code generator.
+ *
+ * Completes a login that Facebook challenged with two-factor auth. Re-POSTs
+ * auth.login with the code plus the first_factor / machine_id captured from the
+ * challenge (see the FbApi::2fa signal). On success the normal FbApi::auth path
+ * runs, so the caller does not need to do anything else.
+ */
+void
+fb_api_auth_2fa(FbApi *api, const gchar *code)
+{
+	FbApiPrivate *priv;
+	FbHttpParams *prms;
+
+	g_return_if_fail(FB_IS_API(api));
+	priv = api->priv;
+
+	prms = fb_http_params_new();
+	fb_http_params_set_str(prms, "email", priv->auth_user ? priv->auth_user : "");
+	fb_http_params_set_str(prms, "password", priv->auth_pass ? priv->auth_pass : "");
+	fb_http_params_set_str(prms, "twofactor_code", code ? code : "");
+	fb_http_params_set_str(prms, "credentials_type", "two_factor");
+	fb_http_params_set_str(prms, "generate_session_cookies", "1");
+	if (priv->twofa_uid != NULL)
+		fb_http_params_set_str(prms, "userid", priv->twofa_uid);
+	if (priv->twofa_machine_id != NULL)
+		fb_http_params_set_str(prms, "machine_id", priv->twofa_machine_id);
+	if (priv->twofa_first_factor != NULL)
+		fb_http_params_set_str(prms, "first_factor", priv->twofa_first_factor);
 	fb_api_http_req(api, FB_API_URL_AUTH, "authenticate", "auth.login",
 	                prms, fb_api_cb_auth);
 }
