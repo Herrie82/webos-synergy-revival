@@ -11,6 +11,7 @@ into webOS by **imlibpurpleservice**.
 | **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | **TDLib**-based; supersedes the older tgl `telegram-purple` |
 | **Facebook** | `com.palm.facebook` | `com.palm.app.facebook` | `purple-facebook` | Plain email + password; reuses on-device json-glib. Upstream fragile — 2FA accounts can't log in |
 | **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
+| **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
 | **Signal** | `com.palm.signal` _(scaffold)_ | `com.palm.app.signal` | `purple-signal` | Builds (jar + ARM .so) but can't run yet: needs a modern ARMv7 JVM + Rust libsignal. See below |
 
 ## Layout
@@ -38,6 +39,8 @@ sources track these upstream forks:
 - Facebook — https://github.com/dequis/purple-facebook (`master` @ `2c8038a`, 0.9.6)
 - Google Chat — https://github.com/EionRobb/purple-googlechat (`master` @ `539e0cc`); `googlechat.pb-c.*`
   pre-generated (protoc-c 1.4.1) + protobuf-c runtime v1.4.1 vendored
+- WhatsApp — https://github.com/hoehermann/purple-gowhatsapp (`whatsmeow` @ `4b75b6e`) + `scripts/purple-cmake`
+  submodule; Go backend (`go.mau.fi/whatsmeow`, `modernc.org/sqlite`) fetched at build time
 - `libqrencode`, `imlibpurpleservice` — vendored source
 
 The Telegram plugin's `api_id`/`api_hash` in `tdlib-purple/CMakeLists.txt` is TDLib's **public
