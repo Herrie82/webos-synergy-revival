@@ -160,6 +160,7 @@ fb_cb_api_2fa(FbApi *api, gpointer data)
 	PurpleAccount *acct = purple_connection_get_account(gc);
 	void *handle;
 
+	purple_debug_info("facebook", "FB2FA: fb_cb_api_2fa entered; prompting for code\n");
 	purple_connection_update_progress(gc, _("Waiting for login code"), 1, 4);
 	handle = purple_request_input(gc,
 		_("Facebook Login Approval"),
@@ -171,6 +172,7 @@ fb_cb_api_2fa(FbApi *api, gpointer data)
 		_("Cancel"), G_CALLBACK(fb_cb_2fa_cancel),
 		acct, NULL, NULL, fata);
 
+	purple_debug_info("facebook", "FB2FA: request_input handle=%p (NULL -> IM fallback)\n", handle);
 	if (handle == NULL) {
 		/* No request-input UI op (imlibpurpletransport). Fall back to the IM channel
 		 * like Telegram: write the prompt into a "Facebook" chat; the user's reply is
@@ -1064,7 +1066,7 @@ fb_login(PurpleAccount *acct)
 	                 G_CALLBACK(fb_cb_api_auth),
 	                 fata);
 	g_signal_connect(api,
-	                 "2fa",
+	                 "twofactor",
 	                 G_CALLBACK(fb_cb_api_2fa),
 	                 fata);
 	g_signal_connect(api,
@@ -1288,8 +1290,11 @@ fb_im_send(PurpleConnection *gc, const gchar *who, const gchar *tmsg,
 
 	/* IM-channel 2FA fallback (webOS): while a login-approval code is pending, the
 	 * user's reply to the "Facebook" prompt chat IS the code, not a message to send. */
+	purple_debug_info("facebook", "FB2FA: fb_im_send to '%s' awaiting_2fa=%d\n",
+	                  who ? who : "(null)", fb_api_is_awaiting_2fa(api));
 	if (fb_api_is_awaiting_2fa(api)) {
 		sext = purple_markup_strip_html(purple_message_get_contents(msg));
+		purple_debug_info("facebook", "FB2FA: got code reply from auth chat, submitting\n");
 		fb_api_auth_2fa(api, g_strstrip(sext));
 		g_free(sext);
 		return 1;

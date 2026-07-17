@@ -320,7 +320,7 @@ fb_api_class_init(FbApiClass *klass)
 	 * handler should collect the approval code from the user and call
 	 * fb_api_auth_2fa() with it to finish signing in.
 	 */
-	g_signal_new("2fa",
+	g_signal_new("twofactor",
 	             G_TYPE_FROM_CLASS(klass),
 	             G_SIGNAL_ACTION,
 	             0,
@@ -695,39 +695,49 @@ fb_api_json_chk(FbApi *api, gconstpointer data, gssize size, JsonNode **node)
 	 * error_data carries a "login_first_factor" (+ machine_id, uid). Capture those
 	 * and raise FbApi::2fa so the prpl can prompt for the code and re-POST via
 	 * fb_api_auth_2fa(), instead of treating it as a fatal auth failure. */
-	{
+	/* Detect on the RAW response — Facebook's error_data is a nested JSON *string*,
+	 * and extracting it via a JSON path is unreliable, so match the raw body. */
+	if (data != NULL && strstr((const gchar *) data, "login_first_factor") != NULL) {
 		gchar *edata = fb_json_node_get_str(root, "$.error_data", NULL);
+		JsonNode *enode = NULL;
+		GError *eerr = NULL;
 
-		if (edata != NULL && strstr(edata, "login_first_factor") != NULL) {
-			JsonNode *enode;
-			GError *eerr = NULL;
+		purple_debug_info("facebook", "FB2FA: login-approval challenge detected%s\n",
+		                  edata ? "" : " (error_data extract failed)");
 
-			fb_util_debug(FB_UTIL_DEBUG_INFO, "2FA challenge error_data: %s",
-			              edata);
+		if (edata != NULL)
 			enode = fb_json_node_new(edata, strlen(edata), &eerr);
 
-			if (enode != NULL) {
-				g_free(priv->twofa_first_factor);
-				g_free(priv->twofa_machine_id);
-				g_free(priv->twofa_uid);
-				priv->twofa_first_factor =
-					fb_json_node_get_str(enode, "$.login_first_factor", NULL);
-				priv->twofa_machine_id =
-					fb_json_node_get_str(enode, "$.machine_id", NULL);
-				priv->twofa_uid =
-					fb_json_node_get_str(enode, "$.uid", NULL);
-				json_node_free(enode);
-			}
+		g_free(priv->twofa_first_factor);
+		g_free(priv->twofa_machine_id);
+		g_free(priv->twofa_uid);
+		priv->twofa_first_factor = NULL;
+		priv->twofa_machine_id = NULL;
+		priv->twofa_uid = NULL;
 
-			g_clear_error(&eerr);
-			g_free(edata);
-			priv->twofa_awaiting_im = TRUE;
-			g_signal_emit_by_name(api, "2fa");
-			json_node_free(root);
-			return FALSE;
+		if (enode != NULL) {
+			gint64 uid;
+			priv->twofa_first_factor =
+				fb_json_node_get_str(enode, "$.login_first_factor", NULL);
+			priv->twofa_machine_id =
+				fb_json_node_get_str(enode, "$.machine_id", NULL);
+			uid = fb_json_node_get_int(enode, "$.uid", NULL);   /* uid is a number */
+			if (uid != 0)
+				priv->twofa_uid = g_strdup_printf("%" G_GINT64_FORMAT, uid);
+			json_node_free(enode);
 		}
 
+		purple_debug_info("facebook", "FB2FA: first_factor=%s machine_id=%s uid=%s\n",
+		                  priv->twofa_first_factor ? "yes" : "no",
+		                  priv->twofa_machine_id ? "yes" : "no",
+		                  priv->twofa_uid ? priv->twofa_uid : "no");
+
+		g_clear_error(&eerr);
 		g_free(edata);
+		priv->twofa_awaiting_im = TRUE;
+		g_signal_emit_by_name(api, "twofactor");
+		json_node_free(root);
+		return FALSE;
 	}
 
 	for (msg = NULL, i = 0; i < G_N_ELEMENTS(exprs); i++) {
@@ -2295,6 +2305,10 @@ fb_api_auth_2fa(FbApi *api, const gchar *code)
 	g_return_if_fail(FB_IS_API(api));
 	priv = api->priv;
 	priv->twofa_awaiting_im = FALSE;
+
+	purple_debug_info("facebook", "FB2FA: resubmitting login with 2FA code (first_factor=%s uid=%s)\n",
+	                  priv->twofa_first_factor ? "yes" : "no",
+	                  priv->twofa_uid ? priv->twofa_uid : "no");
 
 	prms = fb_http_params_new();
 	fb_http_params_set_str(prms, "email", priv->auth_user ? priv->auth_user : "");
