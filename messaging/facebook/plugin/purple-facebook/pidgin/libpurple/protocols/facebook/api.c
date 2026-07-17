@@ -78,6 +78,7 @@ struct _FbApiPrivate
 	gchar *twofa_first_factor;
 	gchar *twofa_machine_id;
 	gchar *twofa_uid;
+	gboolean twofa_awaiting_im;
 };
 
 struct _FbApiData
@@ -720,6 +721,7 @@ fb_api_json_chk(FbApi *api, gconstpointer data, gssize size, JsonNode **node)
 
 			g_clear_error(&eerr);
 			g_free(edata);
+			priv->twofa_awaiting_im = TRUE;
 			g_signal_emit_by_name(api, "2fa");
 			json_node_free(root);
 			return FALSE;
@@ -2292,6 +2294,7 @@ fb_api_auth_2fa(FbApi *api, const gchar *code)
 
 	g_return_if_fail(FB_IS_API(api));
 	priv = api->priv;
+	priv->twofa_awaiting_im = FALSE;
 
 	prms = fb_http_params_new();
 	fb_http_params_set_str(prms, "email", priv->auth_user ? priv->auth_user : "");
@@ -2307,6 +2310,13 @@ fb_api_auth_2fa(FbApi *api, const gchar *code)
 		fb_http_params_set_str(prms, "first_factor", priv->twofa_first_factor);
 	fb_api_http_req(api, FB_API_URL_AUTH, "authenticate", "auth.login",
 	                prms, fb_api_cb_auth);
+}
+
+gboolean
+fb_api_is_awaiting_2fa(FbApi *api)
+{
+	g_return_val_if_fail(FB_IS_API(api), FALSE);
+	return api->priv->twofa_awaiting_im;
 }
 
 static gchar *

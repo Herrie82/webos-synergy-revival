@@ -660,6 +660,16 @@ void
 fb_api_auth_2fa(FbApi *api, const gchar *code);
 
 /**
+ * fb_api_is_awaiting_2fa:
+ * @api: The #FbApi.
+ *
+ * Returns: %TRUE while a 2FA challenge is pending and the login code has not yet
+ * been submitted. Used by the IM-channel code-entry fallback (webOS).
+ */
+gboolean
+fb_api_is_awaiting_2fa(FbApi *api);
+
+/**
  * fb_api_contact:
  * @api: The #FbApi.
  * @uid: The user #FbId.
