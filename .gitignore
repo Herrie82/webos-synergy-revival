@@ -32,3 +32,6 @@ messaging/*/plugin/libqrencode/use/
 # --- prebuilt cross-deps (large binaries; not committed) ---
 /build-output/
 messaging/libpurple/
+
+# Rust cross-build artifacts (purple-presage)
+target/
