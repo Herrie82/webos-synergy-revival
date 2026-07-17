@@ -84,8 +84,12 @@ void presage_handle_uuid(PurpleConnection *connection, const char *uuid) {
     if (purple_strequal(username, uuid)) {
         purple_request_close_with_handle(connection); // close request displaying the QR code
     } else {
-        char *errmsg = g_strdup_printf("Username for this account must be '%s'.", uuid);
-        purple_connection_error(connection, PURPLE_CONNECTION_ERROR_OTHER_ERROR, errmsg);
-        g_free(errmsg);
+        // webOS create-after-confirm: the preview login's username is the phone number the user
+        // typed, not the Signal UUID. Rather than erroring the connection, surface the real UUID as
+        // the account "token" so imlibpurpletransport captures it (account_logged_in_cb ->
+        // AuthChannel::setConfirmed) and the accounts validator re-creates the account with
+        // username=UUID. Close the QR request and let the connection reach CONNECTED.
+        purple_account_set_string(account, "token", uuid);
+        purple_request_close_with_handle(connection);
     }
 }
