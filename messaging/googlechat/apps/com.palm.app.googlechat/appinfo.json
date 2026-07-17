@@ -1,0 +1,15 @@
+{
+    "id": "com.palm.app.googlechat",
+    "version": "1.0.0",
+    "vendor": "webOS Ports",
+    "type": "web",
+    "main": "validator.html",
+    "title": "Google Chat",
+    "visible": false,
+    "icon": "images/header-icon.png",
+    "splashicon": "images/icon-256x256.png",
+    "noWindow": true,
+    "uiRevision": 2,
+    "keywords": ["Google Chat", "Hangouts", "IM"],
+    "requiredPermissions": ["accounts.query", "accounts.manage", "connectionmanager.read"]
+}
