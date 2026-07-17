@@ -7,21 +7,21 @@
 // MESSAGING/IM capability's onEnabled hands off to imlibpurpletransport, which
 // would log in via prpl-hehoe-signal (hoehermann/purple-signal).
 //
-// --- STATUS: SCAFFOLD ONLY (plugin not runnable on the TouchPad) -------------
+// --- BACKEND (now built) -----------------------------------------------------
 // purple-signal is NOT a self-contained C plugin: it embeds a Java VM in-process
 // (JNI_CreateJavaVM) and drives signal-cli (Java), whose crypto is the Rust
-// libsignal. webOS 3.0.5 ARMv7 (glibc 2.23) has NO JVM, and no public ARMv7 build
-// of libsignal_jni exists. So this UI + template exist for completeness and future
-// work, but sign-in cannot currently succeed. See ../../BUILD-LOG.md for the full
-// attempt log and the exact walls hit.
+// libsignal. Both were cross-compiled for webOS ARMv7 (a softfp OpenJDK 11 via
+// build-jvm.sh; libsignal_jni + libzkgroup via build-libsignal.sh) and are deployed
+// by deploy-signal.sh. On-device end-to-end testing is the remaining validation
+// step. See ../../BUILD-LOG.md for the full build.
 //
-// --- AUTH MODEL (when/if a backend exists) -----------------------------------
+// --- AUTH MODEL --------------------------------------------------------------
 // Signal identifies an account by PHONE NUMBER (E.164, e.g. +15551234567). Real
 // registration requires either (a) a fresh registration with an SMS/voice code +
 // captcha token, or (b) linking as a secondary device by scanning a QR from an
-// existing phone. Neither can complete without the Java/Rust backend, so this
-// scene only collects the phone number (like Telegram) and stores a non-empty
-// sentinel credential; a future prpl would drive the code/link handshake.
+// existing phone. This scene collects the phone number (like Telegram) + points the
+// prpl at the deployed signal-cli jars (signal-cli-lib-dir); the code/link handshake
+// is driven during connect from the Messaging app.
 
 enyo.kind({
     name: "Validator",
@@ -51,7 +51,7 @@ enyo.kind({
                 { className: "accounts-body-text", style: "padding: 12px 16px; line-height: 1.4;", allowHtml: true,
                   content: "Enter your phone number in <b>international format</b> (with country code, e.g. +15551234567)." },
                 { className: "accounts-body-text", style: "padding: 4px 16px 12px; line-height: 1.4; opacity: 0.7;", allowHtml: true,
-                  content: "<b>Note:</b> Signal support is not yet functional on this device — the protocol backend cannot run here. See the project notes for details." },
+                  content: "After you tap <b>Sign In</b>, finish linking from the <b>Messaging</b> app (registration code or device-link). Signal runs a bundled Java backend, so the first connect is slow on this device." },
                 { kind: "ActivityButton", name: "signInButton", caption: "Sign In", disabled: true, active: false,
                   className: "enyo-button-dark accounts-btn", onclick: "performSignIn" }
             ]}
@@ -130,7 +130,9 @@ enyo.kind({
             username: phone,
             alias: this.getAlias(phone),
             credentials: { common: { password: "signal-link-pending" } },
-            config: {},
+            // Point the prpl at the deployed signal-cli jars (Util::createPurpleAccount forwards
+            // config keys matching the prpl's protocol options -> purple_account_set_string).
+            config: { "signal-cli-lib-dir": "/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/signal-cli/lib" },
             template: this.template || { templateId: "com.palm.signal" },
             templateId: "com.palm.signal"
         };

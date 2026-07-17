@@ -67,8 +67,12 @@ echo "  jar:           $JAR"
 
 # ---------------------------------------------------------------------------
 # STAGE 2 (ARM cross): compile the full c/CMakeLists SRC_LIST for ARM and link.
-# The unresolved JNI_CreateJavaVM is EXPECTED (shared objects tolerate it at link).
+# Link against the cross-built OpenJDK's libjvm.so (build-jvm.sh) so JNI_CreateJavaVM
+# resolves; bake an rpath to the JRE's on-device location so the messaging process can
+# find libjvm.so + its deps at g_module_open() time.
 # ---------------------------------------------------------------------------
+JRE=${JRE:-$REPO/build-output/openjdk-arm-jre}                 # cross-built ARM JRE (build-jvm.sh)
+ONDEVICE_JRE=${ONDEVICE_JRE:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/jre}
 PC=$(pkg-config --cflags purple glib-2.0)
 PL=$(pkg-config --libs purple glib-2.0)
 FLAGS=($CXXFLAGS $CPPFLAGS -std=c++17 -fPIC -DPURPLE_PLUGINS
@@ -89,13 +93,18 @@ for s in "${SRCS[@]}"; do
 	$CXX "${FLAGS[@]}" -c "$SRC/$s" -o "$o"
 	OBJS+=("$o")
 done
-echo "=== Linking purple-signal.so (undefined JNI_CreateJavaVM is expected) ==="
-$CXX -shared -fPIC $LDFLAGS -Wl,-soname,purple-signal.so "${OBJS[@]}" $PL -o "$BUILD/purple-signal.so"
+echo "=== Linking purple-signal.so against libjvm (rpath -> on-device JRE) ==="
+$CXX -shared -fPIC $LDFLAGS -Wl,-soname,purple-signal.so "${OBJS[@]}" $PL \
+	-L"$JRE/lib/server" -ljvm \
+	-Wl,-rpath-link,"$JRE/lib/server" -Wl,-rpath-link,"$JRE/lib" \
+	-Wl,-rpath,"$ONDEVICE_JRE/lib/server" -Wl,-rpath,"$ONDEVICE_JRE/lib" \
+	-o "$BUILD/purple-signal.so"
 
 echo ""
 echo "=== Result ==="
 arm-unknown-linux-gnueabi-readelf -h "$BUILD/purple-signal.so" | grep -E "Machine|Type"
 echo "purple_init_plugin: $(arm-unknown-linux-gnueabi-nm -D "$BUILD/purple-signal.so" | grep -c purple_init_plugin)"
-echo "UNRESOLVED (runtime wall): $(arm-unknown-linux-gnueabi-nm -D -u "$BUILD/purple-signal.so" | grep -c JNI_CreateJavaVM) x JNI_CreateJavaVM  <- needs an ARM libjvm.so on device (none exists)"
+echo "NEEDED libjvm: $(arm-unknown-linux-gnueabi-readelf -d "$BUILD/purple-signal.so" | grep -c 'libjvm.so')  (1 = JNI_CreateJavaVM will resolve from the JRE)"
+echo "rpath: $(arm-unknown-linux-gnueabi-readelf -d "$BUILD/purple-signal.so" | grep -oE 'RUNPATH.*|RPATH.*' | head -1)"
 echo ""
 echo "!! Built (jar + ARM .so), but NOT deployable: no ARMv7 JVM and no ARMv7 libsignal_jni. See BUILD-LOG.md. !!"

@@ -1,9 +1,12 @@
-# Signal prpl — build log (attempt)
+# Signal prpl — build log
 
-**Outcome: everything BUILDS; it cannot RUN.** Both the Java jar and a full ARM
-cross-compile of the C++ plugin succeed, but Signal cannot sign in on the TouchPad
-because there is **no ARMv7 JVM for webOS** to host signal-cli. The Rust crypto piece —
-the part everyone assumes is the blocker — turns out to be the *tractable* one.
+**Outcome: fully BUILT.** Both walls are solved — a softfp ARMv7 **OpenJDK 11** to host
+signal-cli (Wall 1) and the pure-Rust **libsignal_jni + libzkgroup** natives (Wall 2) were
+cross-compiled, and `assemble-signal.sh` bundles everything the prpl needs. The one thing left
+is **on-device end-to-end testing** (deploy with `deploy-signal.sh`, then watch a real
+registration/link) — the JVM footprint on a 1 GB device is the main risk to validate. The three
+build steps: `build-jvm.sh` (Wall 1), `build-libsignal.sh` (Wall 2), `build-signal.sh` (the prpl
+\+ Java jar); then `assemble-signal.sh` → `deploy-signal.sh`.
 
 ## Upstream / vendoring
 - Source: **hoehermann/purple-signal** @ `be9adde` (VERSION `0.0.0`), vendored under
@@ -67,42 +70,43 @@ None was staged — so we **cross-compiled OpenJDK 11 for the exact device ABI**
 So the JVM to host signal-cli now exists. What remains for a *running* Signal is Wall 2 plus
 on-device wiring (deploy the JRE, build libsignal_jni, point purple-signal at both) and testing.
 
-**Wall 2 — the Rust `libsignal_jni` — actually MODERATE, not the blocker.**
-signal-cli 0.8.0 needs the native Rust libsignal for non-x86_64 (INSTALL.md: *"No known
-public build available"*). Investigated concretely:
-- Version chain (confirmed from gradle sources, not guessed): signal-cli 0.8.0 →
-  `signal-service-java 2.15.3_unofficial_19` (Turasa) → `signal-client-java 0.2.3` →
-  **`signalapp/libsignal-client` tag `java-0.2.3`** (commit `627d7b4`).
-- **`rustup target add armv7-unknown-linux-gnueabi` succeeds** — Rust ships an official
-  prebuilt `std` for this exact triple/glibc (for both stable and the pinned nightly).
-- **Crypto is 100% pure-Rust** — `curve25519-dalek 3.0.0` (portable u32 backend on 32-bit,
-  no asm), `sha2`/`hmac`/`aes`, `getrandom 0.1`, Signal's `aes-gcm-siv 0.1`. **No ring, no
-  BoringSSL, no OpenSSL** → none of the usual C-crypto cross-compile pain.
-- Build wasn't completed here only because the sandbox couldn't fetch the crates.io index
-  (an environment limit, not a code blocker). Remaining real tasks: use the pinned
-  **`nightly-2020-11-09`** toolchain (required by `#![feature(box_patterns)]`), and confirm
-  `aes-gcm-siv`'s software fallback compiles on 32-bit ARM (both AES-NI and aarch64-crypto
-  paths are `cfg`-gated off for armv7).
-- Verdict: **moderate**, realistic from source. This piece is *not* what makes Signal
-  infeasible here.
+**Wall 2 — the Rust `libsignal_jni` + `libzkgroup`. ✅ SOLVED — cross-compiled.**
+signal-cli 0.8.0 needs native Rust libs for non-x86_64 (INSTALL.md: *"No known public build
+available"*). Version chain (confirmed from gradle sources): signal-cli 0.8.0 →
+`signal-service-java 2.15.3_unofficial_19` (Turasa) → `signal-client-java 0.2.3` (+
+`zkgroup-java 0.7.0`). Cross-built by `build-libsignal.sh`:
+- **`libsignal_jni.so`** ← `signalapp/libsignal-client` tag `java-0.2.3` (commit `627d7b4`),
+  toolchain **nightly-2020-11-09** (pinned; `#![feature(box_patterns)]`). Result: ELF32 ARM,
+  softfp, **166** `Java_org_signal_client_internal_Native_*` JNI exports.
+- **`libzkgroup.so`** ← `signalapp/zkgroup` tag `v0.7.0`, toolchain **1.41.1**. Result: ELF32
+  ARM, softfp, **48** `Java_org_signal_zkgroup_*` JNI exports.
+- Both are **100% pure-Rust** crypto (`curve25519-dalek` portable u32 backend, `sha2`/`hmac`/
+  `aes`, `aes-gcm-siv` software path) — **no ring/BoringSSL/OpenSSL**, so cross-compiling was
+  just the two pinned old toolchains + the ARM cross linker (`CARGO_TARGET_..._LINKER`). The
+  earlier "stall" was only the old cargo's slow built-in git index clone — fixed with
+  `CARGO_NET_GIT_FETCH_WITH_CLI=true`.
+- `assemble-signal.sh` strips them and **swaps them into** `signal-client-java-0.2.3.jar` /
+  `zkgroup-java-0.7.0.jar` (replacing the bundled x86_64 resources) so signal-cli's
+  `getResourceAsStream` loader extracts the correct arch, and also stages the raw `.so` next to
+  the prpl (java.library.path fallback).
+
+## On-device wiring (how the pieces fit)
+- `purple-signal.so` is now **linked against libjvm.so** with an **RPATH** to the on-device JRE
+  (`…/backend/jre/lib/server` + `/lib`), so `JNI_CreateJavaVM` resolves at `g_module_open()`.
+- The prpl builds the JVM classpath from `-Djava.class.path=<plugindir>/purple_signal.jar` + all
+  jars in the account's **`signal-cli-lib-dir`** option; the setup app defaults that to
+  `…/backend/signal-cli/lib`. `java.library.path` = the plugin dir (natives fallback).
+- `deploy-signal.sh` ships the JRE + signal-cli jars as one tarball (robust over novacom) to
+  `…/backend/`, and the prpl + jar + two natives into `…/backend/lib/purple-2/`.
 
 ## Bottom line
-**Wall 1 (the JVM) is solved** — a softfp ARMv7 OpenJDK 11 now exists (`build-jvm.sh`). What
-remains before Signal actually connects:
-- **Wall 2 (Rust libsignal):** moderate — pure-Rust, official std for the target, needs the
-  pinned `nightly-2020-11-09`. Cross-build `libsignal_jni` (libsignal-client `java-0.2.3`) +
-  zkgroup 0.7.0. Not yet done.
-- **On-device wiring:** deploy the minimal JRE (`build-output/openjdk-arm-jre/`), the
-  signal-cli jars, `libsignal_jni.so`, `purple_signal.jar`, and the prpl; point purple-signal's
-  JVM/signal-cli-path settings at them; then test registration against Signal servers (noting
-  the plugin is archived and pinned to signal-cli 0.8.0, which may fail against current servers).
-
-Alternative still worth considering: a **JVM-free native prpl on Rust `libsignal`** (Wall 2
-only) — now that we know Wall 2 is the tractable piece, this is lighter long-term. The pure-C
-`libsignal-protocol-c` is *not* a shortcut: it's abandoned and rejected by current Signal servers.
-
-Progress is wired up in-tree: template + app + backend mapping + `build-signal.sh` (jar + ARM
-`.so`) + `build-jvm.sh` (the OpenJDK cross-build) + this log.
+**Signal is fully built** — Wall 1 (softfp ARM OpenJDK 11) and Wall 2 (pure-Rust libsignal_jni +
+libzkgroup) are both solved and assembled. The remaining work is **on-device end-to-end testing**:
+deploy, add an account, and confirm a real registration/device-link against Signal servers —
+watching the JVM startup + memory footprint on the 1 GB device, and noting the plugin is archived
+and pinned to signal-cli 0.8.0 (which may need updating if Signal's servers have moved on). The
+lighter long-term alternative remains a JVM-free native prpl on Rust `libsignal` (Wall 2 only);
+the pure-C `libsignal-protocol-c` is *not* a shortcut (abandoned, rejected by current servers).
 
 ## Files
 - `build-signal.sh` — Stage 1 (host JDK jar + header) + Stage 2 (ARM C++ .so). Builds, not deployable.

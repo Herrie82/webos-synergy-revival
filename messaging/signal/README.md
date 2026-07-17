@@ -1,8 +1,10 @@
-# signal — Signal IM for webOS (TouchPad 3.0.5) — **scaffold / not functional**
+# signal — Signal IM for webOS (TouchPad 3.0.5) — **built; on-device test pending**
 
-> **Status: does not work on the device yet.** The Synergy surface (account template +
-> setup app) and a full ARM cross-compile of the plugin exist, but Signal **cannot sign
-> in** on the TouchPad. See `BUILD-LOG.md` for the complete attempt and evidence.
+> **Status: fully cross-compiled.** Both hard pieces are done — a softfp ARM **OpenJDK 11**
+> to host signal-cli (`build-jvm.sh`) and the pure-Rust **libsignal_jni + libzkgroup**
+> natives (`build-libsignal.sh`). `deploy-signal.sh` installs the whole runtime. The
+> remaining step is **end-to-end testing on the device** (first real registration/link +
+> JVM footprint on 1 GB). See `BUILD-LOG.md` for the full build.
 
 The prpl is **hoehermann/purple-signal** (`prpl-hehoe-signal`), vendored under
 `plugin/purple-signal/` with its submodules. Unlike Teams/Discord/Telegram/Facebook it is

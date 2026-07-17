@@ -12,7 +12,7 @@ into webOS by **imlibpurpleservice**.
 | **Facebook** | `com.palm.facebook` | `com.palm.app.facebook` | `purple-facebook` | Plain email + password; reuses on-device json-glib. Upstream fragile — 2FA accounts can't log in |
 | **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
 | **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
-| **Signal** | `com.palm.signal` _(scaffold)_ | `com.palm.app.signal` | `purple-signal` | Builds (jar + ARM .so) but can't run yet: needs a modern ARMv7 JVM + Rust libsignal. See below |
+| **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-signal` (+ cross-built OpenJDK 11 JRE, libsignal_jni, libzkgroup) | Fully built; embeds a JVM to drive signal-cli. On-device test pending. See below |
 
 ## Layout
 
@@ -49,18 +49,17 @@ default** (`94575`), the same one shipped in TDLib's own examples — not a priv
 The superseded tgl-based `telegram-purple` / `purple-telegram` and the abandoned build trees are
 **not** vendored.
 
-## Signal (deferred)
+## Signal (built; on-device test pending)
 
-`hoehermann/purple-signal` (`prpl-hehoe-signal`) is vendored and scaffolded (`signal/`), and it
-**builds** — the Java jar compiles on a host JDK and all 18 C++ TUs cross-compile into a valid
-ARM `purple-signal.so`. It just **can't run on-device yet**, because it is not a self-contained C
-plugin: its stack is `C++ plugin → embedded JVM → signal-cli (Java) → Rust libsignal_jni.so`.
-Remaining work, of which the hard part is now done:
-1. ~~a modern Java-11+ `libjvm.so` for armv7~~ — **✅ done**: `signal/build-jvm.sh` cross-compiles
-   **OpenJDK 11 (Zero, headless, softfp)** and `jlink`s a ~25 MB ARM JRE (`build-output/openjdk-arm-jre/`);
-2. the **Rust `libsignal_jni`** (moderate — pure-Rust, official std for the target, pinned
-   `nightly-2020-11-09`); then on-device wiring + testing.
-
-The repo is also **archived (2022)** and pinned to signal-cli 0.8.0. A lighter long-term path is a
-JVM-free native prpl on Rust `libsignal` (item 2 only). See `signal/BUILD-LOG.md` for the full log,
-versions, and evidence.
+`hoehermann/purple-signal` (`prpl-hehoe-signal`) is not a self-contained C plugin — its stack is
+`C++ plugin → embedded JVM → signal-cli (Java) → Rust libsignal_jni.so`. Both hard pieces are now
+**cross-compiled for webOS ARMv7**:
+1. a softfp **OpenJDK 11** (Zero, headless) to host signal-cli — `signal/build-jvm.sh` (+ a ~25 MB
+   `jlink`'d JRE in `build-output/openjdk-arm-jre/`); and
+2. the pure-Rust **libsignal_jni** (libsignal-client `java-0.2.3`) + **libzkgroup** (zkgroup
+   `v0.7.0`) — `signal/build-libsignal.sh`.
+`signal/assemble-signal.sh` bundles the JRE + signal-cli jars (with the ARM natives swapped in) +
+`purple_signal.jar` + the prpl (now linked against `libjvm.so`); `signal/deploy-signal.sh` ships
+it. **Remaining: on-device end-to-end testing** — first real registration/link + JVM footprint on
+the 1 GB device. Note the plugin is **archived (2022)** and pinned to signal-cli 0.8.0, which may
+need updating if Signal's servers have moved on. See `signal/BUILD-LOG.md` for the full build.
