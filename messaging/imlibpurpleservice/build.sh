@@ -71,10 +71,14 @@ echo "=== Linking $OUT ==="
 LIBDIRS="-L$LIBSTUB -L$PURPLE/lib -L$GLIB_STAGING/lib -L$TIDY/lib"
 RPATHLINK="-Wl,-rpath-link,$LIBSTUB -Wl,-rpath-link,$PURPLE/lib -Wl,-rpath-link,$GLIB_STAGING/lib -Wl,-rpath-link,$TIDY/lib"
 
-# Point the interpreter at the modern loader the Teams port installed (/lib/ld-teams.so.3); the stock
-# 2011 /lib/ld-linux.so.3 mis-resolves GNU_UNIQUE versioned symbols -> startup "symbol lookup error".
+# Point the interpreter at the wpe-glibc loader, NOT the Teams port's /lib/ld-teams.so.3. Both are
+# glibc 2.23 but different builds; the ld-teams build SIGSEGVs purple-signal's in-process JVM
+# (libjvm.so), while the wpe-glibc build runs it. Since the JVM is created in-process
+# (JNI_CreateJavaVM), the whole transport must load under the JVM-compatible glibc. imwrap.sh pairs
+# this by putting /media/internal/wpe-glibc/lib first on LD_LIBRARY_PATH so the matching libc/pthread
+# load. The stock 2011 /lib/ld-linux.so.3 mis-resolves GNU_UNIQUE symbols and is not an option either.
 $CXX $CXXFLAGS $OBJS -o "$OUT" \
-  -Wl,--dynamic-linker=/lib/ld-teams.so.3 \
+  -Wl,--dynamic-linker=/media/internal/wpe-glibc/lib/ld-linux.so.3 \
   $LIBDIRS $RPATHLINK -Wl,--allow-shlib-undefined \
   -lmojodb -lmojocore -lmojoluna -llunaservice \
   -lpurple -ltidy -lrt -lpthread \
