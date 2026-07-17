@@ -49,8 +49,14 @@ TdTransceiverImpl::TdTransceiverImpl(PurpleTdClient *owner, TdTransceiver::Updat
     m_updateCb(updateCb),
     m_lastQueryId(0)
 {
-    if (!testBackend)
+    if (!testBackend) {
+        // webOS: tdlib defaults to verbosity 5 (logs every network query + update), which floods
+        // the shared transport log (/media/internal/imstdout.log) at ~1.5MB/min and buries every
+        // other plugin's output. Cap it to 1 (fatal errors + warnings only) before creating the
+        // client. Static execute() applies process-wide to tdlib's native logger.
+        td::Client::execute({0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(1)});
         m_client = std::make_unique<td::Client>();
+    }
 }
 
 TdTransceiverImpl::~TdTransceiverImpl()
