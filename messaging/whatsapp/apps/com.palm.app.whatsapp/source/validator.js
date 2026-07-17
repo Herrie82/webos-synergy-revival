@@ -133,9 +133,11 @@ enyo.kind({
     },
 
     normalizePhone: function(v) {
-        v = (v || "").replace(/[^\d+]/g, "");
-        if (v.indexOf("+") > 0) { v = "+" + v.replace(/\+/g, ""); }
-        return v;
+        // whatsmeow identifies the account by the bare number (its device ID is
+        // e.g. "31652044684@s.whatsapp.net"); gowhatsapp errors ("username does not
+        // match the main device's ID") if the account username carries a leading '+'.
+        // So the username is DIGITS ONLY — no '+', no separators.
+        return (v || "").replace(/[^\d]/g, "");
     },
 
     validateInput: function() {
@@ -231,9 +233,10 @@ enyo.kind({
                 this.stopQRPoll();
                 this._qrActive = false;
                 this.$.qrStatus.setContent("Linked! Finishing setup…");
-                // whatsmeow has saved its session under the phone number; create the account
-                // (same phone) with a non-empty sentinel credential (imlibpurple rejects empty).
-                this.finishWithResult(this._qrUser);
+                // The confirmed credential is gowhatsapp's "deviceJID|registrationId"
+                // (transport surfaces the paired account's password as resp.token). Store it
+                // as the account password so future logins reuse the session — no re-pairing.
+                this.finishWithResult(this._qrUser, (resp && resp.token) ? resp.token : "whatsapp-link-pending");
                 break;
             case "expired":
                 this.qrExpired("That code expired.");
@@ -281,12 +284,12 @@ enyo.kind({
         this.showError(msg || "Sign-in failed.");
     },
 
-    finishWithResult: function(phone) {
+    finishWithResult: function(phone, credential) {
         var result = {
             returnValue: true,
             username: phone,
             alias: this.getAlias(phone),
-            credentials: { common: { password: "whatsapp-link-pending" } },
+            credentials: { common: { password: credential || "whatsapp-link-pending" } },
             config: {},
             template: this.template || { templateId: "com.palm.whatsapp" },
             templateId: "com.palm.whatsapp"
