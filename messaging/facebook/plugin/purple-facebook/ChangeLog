@@ -1,0 +1,197 @@
+purple-facebook-56d191003b34 (2016-09-15):
+  - Update backport to handle Gio port
+
+purple-facebook-2a8f41535c8f (2016-08-12):
+  - Update backport to handle blistnodetypes.[ch] to buddy.[ch] rename
+
+purple-facebook-66ee77378d82 (2016-04-09):
+  - Fix contacts pagination (for accounts with >500 friends)
+
+purple-facebook-92885e0456ed (2016-01-25):
+  - Fixed a crash with incoming messages from non-friends
+
+purple-facebook-25a255f32eee (2016-01-18):
+  - Add the local user to the group chat user list
+  - Fixed group chat join messages with incoming messages
+  - Fixed incorrect handling of unknown XMA types
+  - Use locally defined aliases in the group chat list
+  - Use the icon URL as a backup checksum
+
+purple-facebook-ad2ee74b913a (2016-01-07):
+  - Added an account option for self messages
+  - Attempt to silently reconnect the MQTT stream
+  - Fixed nonfunctional group chat auto-rejoining
+  - Fixed the self contact being ignored
+  - Fixed the timestamps on incoming messages not being preserved
+  - Ignore messages which are sequentially duplicated
+  - Implemented queued message sending
+  - Minor bug fixes and refactoring
+  - Properly handle optional Thrift fields and scoping
+
+purple-facebook-1852eb9052a0 (2015-12-25):
+  - Fixed broken contact counting with non-friends
+  - Trivial documentation fixes
+
+purple-facebook-078fbf8d1a4e (2015-12-21):
+  - Fixed missing link to libgio-2.0 with Windows
+
+purple-facebook-50bb40c42245 (2015-12-21):
+  - Bumped the required GLib version to 2.28
+  - Fixed groupchat self messages
+  - Fixed JSON parsing with older json-glib versions
+  - Fixed memory leak with HTTP requests
+  - Fixed non-friend contacts showing as buddies
+  - Implemented better HTTP connection handling (addresses many bugs)
+  - Migrated from Jenkins to Travis
+  - Migrated to GIO for ZLib inflation and deflation
+  - Minor code refactoring
+
+purple-facebook-6a0a79182ebc (2015-08-27):
+  - Added check to autoconf for glib-genmarshal
+  - Added missing g_get_real_time() compat function
+  - Added option to autoconf for extra compiler warnings
+  - Depend on and link to gobject-2.0
+  - Fixed deleted XMAs being fatal
+  - Fixed improper handling of queue errors
+  - Fixed possible NULL string comparison
+  - Fixed the contact query not fetching non-users
+  - Fixed the debian dependencies
+  - Implemented group chat topic change events
+  - Minor code refactoring
+
+purple-facebook-5727ffb502c7 (2015-08-21):
+  - Added missing g_get_real_time() compat function
+  - Display images and stickers in-line
+  - Fetch URLs for all message attachments
+  - Fixed the group checking on NULL buddies
+  - Fixed memory leak with HTTP error checking
+  - Ignore canceling HTTP requests
+  - Minor code refactoring
+
+purple-facebook-7201f07fe8f7 (2015-08-19):
+  - Display the thread URL for videos
+  - Fixed memory leak with contact parsing
+  - Fixed URL comparisons being overly strict
+  - Lots of code refactoring
+  - Removed debugging support from Travis CI
+
+purple-facebook-dd1528f03f59 (2015-08-15):
+  - Added GTK-Doc for the internal APIs
+  - Fixed HTTP error checks being skipped
+  - Fixed timestamps not being set for self messages
+  - Inform the user of invalid group chat names
+  - Minor code refactoring
+  - Only mark conversations as read if they been focused
+  - Periodically refetch the contact list for updates
+
+purple-facebook-3d30d24fdbef (2015-08-11):
+  - Add and alias non-friend buddies
+  - Added support for all XMA messages
+  - Depend on autoconf-2.64
+  - Fixed account information not being set correctly
+  - Fixed all JSON arrays being required
+  - Fixed issues and leaks with API error handling
+  - Fixed several issues with room lists
+  - Fixed the printing of invalid JSON type names
+  - Handle group chat events (additions/removals)
+  - Implemented self messages
+  - Implemented the invisible presence state
+  - Implemented the retrieval of unread messages
+  - Lots of code refactoring
+  - Removed an extra and unneeded contacts fetch request
+  - Removed some debugging messages
+  - Updated GraphQL queries
+  - Updated the MQTT version to MQTToT
+
+purple-facebook-9e3520d6ec49 (2015-08-05):
+  - Cleaned up the libpurple includes
+  - Fixed non-friends being added as buddies
+  - Fixed propagation of MQTT SSL errors
+  - Implemented handling of message attachments
+  - Merged the local glibcompat.h into libpurple
+  - Refactored error propagation
+  - Refactored the parsing of JSON values
+
+purple-facebook-27833e4fcb1f (2015-07-30):
+  - Added additional tooltip pairs
+  - Fixed Makefile.mingw not removing marshal sources
+
+purple-facebook-7c454f51b56b (2015-07-27):
+  - Handle authentication errors
+
+purple-facebook-f80258f7ce6f (2015-07-26):
+  - Added debian support
+  - Added NULL Away state for compatibility
+  - Fixed double free with MQTT SSL errors
+  - Fixed logic error with error detection
+  - Fixed out of tree updating with update.sh
+  - Implemented marking threads as read
+  - Open new group chats with incoming messages
+
+purple-facebook-565fbae05259 (2015-07-18):
+  - Dropped required glib version to 2.20.0
+  - Fixed libpurple check within autoconf
+  - Fixed memory leak with HTTP requests
+  - Fixed the fetching of large amounts of contacts
+  - Migrated all instructions from the README to the wiki
+  - Migrated from FQL to GraphQL
+  - Removed useless CFLAGS options from autoconf
+
+purple-facebook-305f27dd23c0 (2015-07-15):
+  - Added debugging log information to the README
+  - Added HTTP statues to debug messages
+  - Added option to install additional CA certs
+  - Fixed dumping of empty HTTP data
+
+purple-facebook-4098e875ebcb (2015-07-12):
+  - Added HTTP debug messages
+  - Allow offline messages to buddies
+
+purple-facebook-dc35ba3e7fac (2015-07-12):
+  - Added Travis CI support
+  - Escape and unescape HTML within messages
+  - Fixed all errors being marked as fatal
+  - Fixed incorrect usage of AC_REQUIRE()
+  - Refactored the README for clarity
+  - Use persistent chat identifiers (prevents duplicate chats)
+
+purple-facebook-a34b993324e4 (2015-07-06):
+  - Added a newline to debug messages
+  - Better version handling
+  - Fixed broken logging levels
+  - Fixed erroneous JSON parsing
+  - Fixed updated internal settings not saving
+
+purple-facebook-6e3ee8e18697 (2015-07-05):
+  - Fixed chats not being able to be added
+
+purple-facebook-2a5decfdeb7b (2015-07-05):
+  - Added kicking/leaving for group chats
+  - Use proper type checks
+
+purple-facebook-0bd9b2c3f5b7 (2015-06-30):
+  - Do not error on icon retrieval failtures
+  - Only show "Initiate Chat" with buddies
+
+purple-facebook-602a1c64670a (2015-06-27):
+  - Fixed disabled contacts causing JSON parse errors
+  - Fixed truncated HTTP responses
+
+purple-facebook-3ee1b27dacc4 (2015-06-27):
+  - Added debugging support
+  - Added queued icon downloads (fixes lag on load)
+  - Allow revision overriding with update.sh
+  - Fixed Makfile.mingw for older make versions
+  - Fixed noncompliant hg (mercurial) check
+
+purple-facebook-9e295f087bf6 (2015-06-25):
+  - Distribute license information
+  - Fixed segmentation fault when retrieving icons
+
+purple-facebook-b9aca76e0549 (2015-06-24):
+  - Enabled the setting of statuses
+  - Fixed HTTP memory leaks
+  - Internal code refactoring
+
+purple-facebook-5e83f57d97f3 (2015-06-23):
+  - Initial release

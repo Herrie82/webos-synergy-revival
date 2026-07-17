@@ -1,0 +1,57 @@
+# signal — Signal IM for webOS (TouchPad 3.0.5) — **scaffold / not functional**
+
+> **Status: does not work on the device yet.** The Synergy surface (account template +
+> setup app) and a full ARM cross-compile of the plugin exist, but Signal **cannot sign
+> in** on the TouchPad. See `BUILD-LOG.md` for the complete attempt and evidence.
+
+The prpl is **hoehermann/purple-signal** (`prpl-hehoe-signal`), vendored under
+`plugin/purple-signal/` with its submodules. Unlike Teams/Discord/Telegram/Facebook it is
+**not** a self-contained C plugin:
+
+```
+libpurple → purple-signal (C++/JNI) → embedded JVM → signal-cli (Java) → libsignal_jni (Rust)
+```
+
+## Why it doesn't run here
+Two hard **runtime** walls on webOS ARMv7 / glibc 2.23 — both independent of build success:
+
+1. **No suitable ARMv7 `libjvm.so` staged.** The plugin calls `JNI_CreateJavaVM` to spin up a
+   JVM inside the messaging process; the cross-compiled `.so` carries that as an unresolved
+   symbol needing an ARM `libjvm.so` at load time, and none is present. A JVM *has* run on
+   armv7 webOS before (homebrew Java; OpenJDK has an arm32 port), but signal-cli 0.8.0 needs
+   **Java 11+** with the JNI invocation API — the old webOS homebrew builds are too old. So
+   this needs a modern OpenJDK 11+ cross-built for armv7/glibc-2.23: heavy, not impossible.
+2. **No ARMv7 `libsignal_jni` — but this one is *moderate*.** signal-cli 0.8.0 needs the
+   native Rust libsignal (`signal-client-java 0.2.3` → `libsignal_jni`, + `zkgroup 0.7.0`).
+   It's **pure-Rust** (no ring/BoringSSL), Rust ships official `std` for the exact
+   `armv7-unknown-linux-gnueabi`/glibc target, and it just needs the pinned `nightly-2020-11-09`.
+   Cross-buildable from source (see `BUILD-LOG.md`).
+
+Plus: the plugin is **archived (2022)** and pinned to signal-cli 0.8.0, which may not register
+against current Signal servers even with the runtime in place.
+
+## What builds (the attempt)
+```bash
+cd messaging/signal
+./build-signal.sh     # Stage 1: purple_signal.jar + JNI header (host JDK, downloads signal-cli)
+                      # Stage 2: full ARM cross-compile -> build-arm/purple-signal.so
+```
+Both stages succeed: the Java jar builds on the host JDK, and all 18 C++ TUs cross-compile
+and link into a valid ARM `purple-signal.so` exporting `purple_init_plugin`. It just can't
+load on-device (see wall #1).
+
+## Install (surface only)
+```bash
+./deploy-signal.sh    # pushes the account template + setup app; SKIPS the non-loadable .so
+```
+The Signal entry then appears under Settings → Accounts → Add, but sign-in cannot complete.
+
+## The realistic path to Signal on webOS
+Two routes, both large but neither fundamentally walled:
+1. **Make purple-signal work** — cross-build a modern OpenJDK 11+ `libjvm.so` for armv7/webOS
+   (wall #1) *and* the Rust `libsignal_jni` (wall #2), then ship both + the signal-cli jars.
+   Heaviest runtime (a JVM in the messaging process on a 1 GB device).
+2. **Skip the JVM** — a native, JVM-free prpl built directly on the Rust `libsignal`
+   (wall #2 only). Lighter and more future-proof, but a from-scratch plugin.
+The abandoned pure-C `libsignal-protocol-c` won't talk to current Signal servers, so it's not
+a shortcut. Tracked here as a wired-up placeholder for that future work.
