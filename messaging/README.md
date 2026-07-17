@@ -49,12 +49,12 @@ The superseded tgl-based `telegram-purple` / `purple-telegram` and the abandoned
 **builds** — the Java jar compiles on a host JDK and all 18 C++ TUs cross-compile into a valid
 ARM `purple-signal.so`. It just **can't run on-device yet**, because it is not a self-contained C
 plugin: its stack is `C++ plugin → embedded JVM → signal-cli (Java) → Rust libsignal_jni.so`.
-Two heavy (but not fundamentally walled) sub-projects remain:
-1. a **modern Java-11+ `libjvm.so` cross-built for armv7 / glibc-2.23** — a JVM has run on webOS
-   armv7 before, but the old homebrew builds are too old for signal-cli 0.8.0; and
+Remaining work, of which the hard part is now done:
+1. ~~a modern Java-11+ `libjvm.so` for armv7~~ — **✅ done**: `signal/build-jvm.sh` cross-compiles
+   **OpenJDK 11 (Zero, headless, softfp)** and `jlink`s a ~25 MB ARM JRE (`build-output/openjdk-arm-jre/`);
 2. the **Rust `libsignal_jni`** (moderate — pure-Rust, official std for the target, pinned
-   `nightly-2020-11-09`).
+   `nightly-2020-11-09`); then on-device wiring + testing.
 
-The repo is also **archived (2022)** and pinned to signal-cli 0.8.0. The lighter long-term path is
-a JVM-free native prpl on Rust `libsignal` (sub-project 2 only). See `signal/BUILD-LOG.md` for the
-full attempt log, versions, and evidence.
+The repo is also **archived (2022)** and pinned to signal-cli 0.8.0. A lighter long-term path is a
+JVM-free native prpl on Rust `libsignal` (item 2 only). See `signal/BUILD-LOG.md` for the full log,
+versions, and evidence.

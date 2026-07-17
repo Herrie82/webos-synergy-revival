@@ -43,20 +43,29 @@ JNI side; the only include the C++ needs from Stage 1 is the generated native he
 
 ### The two RUNTIME walls (neither solvable at build time)
 
-**Wall 1 — needs a modern ARMv7 `libjvm.so` (Java 11+) that isn't staged. ← the heavy one.**
+**Wall 1 — needed a modern ARMv7 `libjvm.so` (Java 11+). ✅ NOW SOLVED — built from source.**
 The linked `.so` carries exactly **one unresolved dynamic symbol: `JNI_CreateJavaVM`**
-(verified with `nm -D -u`). At `g_module_open()` time the loader must satisfy it from an
-ARM `libjvm.so`, and there is **no `libjvm.so`/`jni.h` anywhere** in the current ARM sysroot
-or staging. This is *not* a fundamental impossibility — a JVM has run on armv7 webOS before
-(community homebrew Java: JamVM/cacao, and OpenJDK has an arm32 zero/client port). The
-constraint is **suitability**:
-- purple-signal embeds a VM in-process via the JNI **invocation API** (`JNI_CreateJavaVM`),
-  so it needs a real `libjvm.so`, not a Java-ME/phoneME runtime.
-- **signal-cli 0.8.0 requires Java 11+**, so the old Java-6/7-era webOS homebrew builds are
-  too old to run it even if present.
-- So the actual task is to **cross-compile / stage a modern (Java 11+), invocation-capable
-  `libjvm.so` for armv7 / glibc 2.23** (an OpenJDK 11+ arm32 port against the old glibc) —
-  a large sub-project, plus its memory footprint on a 1 GB device. Heavy, not walled.
+(verified with `nm -D -u`), which `g_module_open()` must satisfy from an ARM `libjvm.so`.
+None was staged — so we **cross-compiled OpenJDK 11 for the exact device ABI** (see
+`build-jvm.sh`):
+- **OpenJDK 11.0.32** (`jdk11u`), **Zero** interpreter variant, **headless-only**, built with
+  the same `arm-unknown-linux-gnueabi-gcc125` toolchain used for the prpls.
+- Output `libjvm.so`: **ELF32 ARM**, exports **`JNI_CreateJavaVM`** + `JNI_GetDefaultJavaVMInitArgs`,
+  and — critically — **softfp** (`readelf -A` shows `Tag_ABI_VFP_args` **absent**, CPU arch v7).
+  This is why we build from source: Temurin's prebuilt arm32 is **hardfp** and cannot load into
+  the softfp imlibpurpletransport process.
+- Runtime NEEDED: libdl, libpthread, **libffi.so.8** (WPE staging, already on device), libm,
+  libc, ld-linux.so.3 — all satisfiable on-device.
+- A full headless JDK image builds (`build-output/openjdk-arm/`, ~453 MB); `jlink` then
+  cross-links a **~25 MB minimal JRE** (`build-output/openjdk-arm-jre/`) with just the modules
+  signal-cli needs — small enough for the TouchPad.
+- Build notes: Zero needs libffi (staging). `--enable-headless-only` still probes X11/cups/
+  fontconfig/alsa; since no ARM builds of those exist and signal-cli never uses them, they are
+  satisfied with header-only extracts + **ARM stub libs** (X11, libasound) that only need to
+  pass the configure/link gates — inert at runtime.
+
+So the JVM to host signal-cli now exists. What remains for a *running* Signal is Wall 2 plus
+on-device wiring (deploy the JRE, build libsignal_jni, point purple-signal at both) and testing.
 
 **Wall 2 — the Rust `libsignal_jni` — actually MODERATE, not the blocker.**
 signal-cli 0.8.0 needs the native Rust libsignal for non-x86_64 (INSTALL.md: *"No known
@@ -78,24 +87,22 @@ public build available"*). Investigated concretely:
   infeasible here.
 
 ## Bottom line
-Neither piece is a *fundamental* wall — both are large cross-compile sub-projects:
-- **Wall 1 (JVM):** stage a modern Java-11+ invocation-capable `libjvm.so` for armv7/glibc-2.23
-  (OpenJDK arm32 port). Historically a JVM has run on webOS armv7, just not one new enough for
-  signal-cli 0.8.0.
+**Wall 1 (the JVM) is solved** — a softfp ARMv7 OpenJDK 11 now exists (`build-jvm.sh`). What
+remains before Signal actually connects:
 - **Wall 2 (Rust libsignal):** moderate — pure-Rust, official std for the target, needs the
-  pinned `nightly-2020-11-09`.
+  pinned `nightly-2020-11-09`. Cross-build `libsignal_jni` (libsignal-client `java-0.2.3`) +
+  zkgroup 0.7.0. Not yet done.
+- **On-device wiring:** deploy the minimal JRE (`build-output/openjdk-arm-jre/`), the
+  signal-cli jars, `libsignal_jni.so`, `purple_signal.jar`, and the prpl; point purple-signal's
+  JVM/signal-cli-path settings at them; then test registration against Signal servers (noting
+  the plugin is archived and pinned to signal-cli 0.8.0, which may fail against current servers).
 
-Two realistic routes, both substantial:
-1. **Make purple-signal work as-is** — port OpenJDK 11+ to armv7/webOS (Wall 1) *and*
-   cross-build libsignal_jni (Wall 2), then ship both plus the signal-cli jars. Heaviest
-   runtime (a JVM inside the messaging process on a 1 GB device) and pinned to archived
-   signal-cli 0.8.0.
-2. **Skip the JVM** — write a JVM-free native prpl directly on the Rust `libsignal` (Wall 2
-   only). Lighter and more future-proof, but a from-scratch plugin.
+Alternative still worth considering: a **JVM-free native prpl on Rust `libsignal`** (Wall 2
+only) — now that we know Wall 2 is the tractable piece, this is lighter long-term. The pure-C
+`libsignal-protocol-c` is *not* a shortcut: it's abandoned and rejected by current Signal servers.
 
-Tracked here as a wired-up placeholder (template + app + backend mapping + this log) for
-whichever route is taken. The pure-C `libsignal-protocol-c` is *not* a shortcut: it's
-abandoned and rejected by current Signal servers.
+Progress is wired up in-tree: template + app + backend mapping + `build-signal.sh` (jar + ARM
+`.so`) + `build-jvm.sh` (the OpenJDK cross-build) + this log.
 
 ## Files
 - `build-signal.sh` — Stage 1 (host JDK jar + header) + Stage 2 (ARM C++ .so). Builds, not deployable.

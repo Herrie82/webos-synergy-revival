@@ -15,12 +15,12 @@ libpurple → purple-signal (C++/JNI) → embedded JVM → signal-cli (Java) →
 ## Why it doesn't run here
 Two hard **runtime** walls on webOS ARMv7 / glibc 2.23 — both independent of build success:
 
-1. **No suitable ARMv7 `libjvm.so` staged.** The plugin calls `JNI_CreateJavaVM` to spin up a
-   JVM inside the messaging process; the cross-compiled `.so` carries that as an unresolved
-   symbol needing an ARM `libjvm.so` at load time, and none is present. A JVM *has* run on
-   armv7 webOS before (homebrew Java; OpenJDK has an arm32 port), but signal-cli 0.8.0 needs
-   **Java 11+** with the JNI invocation API — the old webOS homebrew builds are too old. So
-   this needs a modern OpenJDK 11+ cross-built for armv7/glibc-2.23: heavy, not impossible.
+1. ~~No suitable ARMv7 `libjvm.so`.~~ **✅ SOLVED.** The plugin calls `JNI_CreateJavaVM` to spin
+   up a JVM inside the messaging process. We cross-compiled **OpenJDK 11.0.32 (Zero, headless)**
+   for the exact device ABI — see `build-jvm.sh`. The resulting `libjvm.so` is ELF32 ARM,
+   exports `JNI_CreateJavaVM`, and is **softfp** (so it loads into the softfp messaging process,
+   unlike Temurin's hardfp arm32). A `jlink`'d **~25 MB minimal JRE** for signal-cli is staged at
+   `build-output/openjdk-arm-jre/`.
 2. **No ARMv7 `libsignal_jni` — but this one is *moderate*.** signal-cli 0.8.0 needs the
    native Rust libsignal (`signal-client-java 0.2.3` → `libsignal_jni`, + `zkgroup 0.7.0`).
    It's **pure-Rust** (no ring/BoringSSL), Rust ships official `std` for the exact
