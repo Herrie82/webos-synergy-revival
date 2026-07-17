@@ -225,8 +225,12 @@ enyo.kind({
                 this.stopQRPoll();
                 this._qrActive = false;
                 this.$.qrStatus.setContent("Linked! Finishing setup…");
-                // Signal identifies the account by UUID; presage reports it as resp.token.
-                this.finishWithResult((resp && resp.token) ? resp.token : this._qrUser);
+                // Create the account with the SAME username used for linking (the phone number),
+                // not the UUID: presage keys its session store by username (presage/<username>.db),
+                // so the linked session lives under the phone. Creating the account with the UUID
+                // instead opens a DIFFERENT, empty store and presage re-links (stuck "signing in").
+                // presage tolerates the phone!=uuid mismatch (see qrcode.c presage_handle_uuid).
+                this.finishWithResult(this._qrUser);
                 break;
             case "expired":
                 this.qrExpired("That code expired.");
