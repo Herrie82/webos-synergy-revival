@@ -52,6 +52,12 @@ namespace AccountOptions {
 
 namespace BuddyOptions {
     constexpr const char *ProfilePhotoId = "tdlib-profile-photo-id";
+    // webOS: extra profile fields stashed on the buddy blist node so the transport can enrich the db8
+    // contact (the transport reads these keys as literals - keep the strings in sync).
+    constexpr const char *Phone     = "tdlib-phone";
+    constexpr const char *Username  = "tdlib-username";
+    constexpr const char *FirstName = "tdlib-first-name";
+    constexpr const char *LastName  = "tdlib-last-name";
 };
 
 unsigned getAutoDownloadLimitKb(PurpleAccount *account);

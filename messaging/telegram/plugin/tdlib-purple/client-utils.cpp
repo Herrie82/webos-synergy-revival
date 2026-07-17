@@ -350,6 +350,28 @@ void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, con
             purple_buddy_icons_set_for_user(account.purpleAccount, purpleUserName.c_str(), NULL, 0, NULL);
         }
     }
+
+    // webOS: stash the user's extra profile info on the buddy node (both new + existing buddies) so the
+    // transport can enrich the db8 contact (phone, @username, first/last name). tdlib exposes these but
+    // stock tdlib-purple only surfaces them in the user-info popup. Cleared when a field is empty.
+    {
+        PurpleBlistNode *node = PURPLE_BLIST_NODE(buddy);
+        auto setOrClear = [node](const char *key, const std::string &val) {
+            if (!val.empty())
+                purple_blist_node_set_string(node, key, val.c_str());
+            else
+                purple_blist_node_remove_setting(node, key);
+        };
+        std::string uname;
+        if (user.usernames_)
+            uname = !user.usernames_->editable_username_.empty() ? user.usernames_->editable_username_
+                    : (!user.usernames_->active_usernames_.empty() ? user.usernames_->active_usernames_.front()
+                                                                    : std::string());
+        setOrClear(BuddyOptions::Phone,     user.phone_number_);
+        setOrClear(BuddyOptions::Username,  uname);
+        setOrClear(BuddyOptions::FirstName, user.first_name_);
+        setOrClear(BuddyOptions::LastName,  user.last_name_);
+    }
 }
 
 static void updateGroupChat(TdAccountData &account, const td::td_api::chat &chat,
