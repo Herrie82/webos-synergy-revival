@@ -28,7 +28,11 @@ enyo.kind({
 
     SERVICE_NAME: "type_whatsapp",
     QR_POLL_MS: 2000,
-    QR_TIMEOUT_MS: 130000,   // whatsmeow QR TTL (~20s each, several rotations) + grace
+    // Must match the transport's QR-preview connect grace (QR_CONNECT_TIMEOUT_SECONDS=300).
+    // The pairing-CODE flow (type an 8-char code on the phone) is much slower than a QR scan,
+    // and at 130s the poll expired ~8s BEFORE the pair/confirm landed -> the confirmed state
+    // was never caught and pairing restarted. 300s covers the code flow with margin.
+    QR_TIMEOUT_MS: 300000,
 
     components: [
         { kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
@@ -129,7 +133,8 @@ enyo.kind({
 
     getAlias: function(phone) {
         var n = this.trim(this.$.displayName.getValue());
-        return n || phone;
+        // strip the "@s.whatsapp.net" JID suffix for a readable display name
+        return n || String(phone || "").replace(/@s\.whatsapp\.net$/, "");
     },
 
     normalizePhone: function(v) {
@@ -163,7 +168,10 @@ enyo.kind({
         this.showError("");
         this.$.signInButton.setActive(true);
         this.$.signInButton.setDisabled(true);
-        this.startQRSignIn(phone);
+        // gowhatsapp compares the account username against whatsmeow's device ID
+        // (device.ID.ToNonAD().String() == "31652044684@s.whatsapp.net"), so the account
+        // username must be the full JID, not just the digits, or it errors right after pair.
+        this.startQRSignIn(phone + "@s.whatsapp.net");
     },
 
     // ---- create-after-confirm QR flow ---------------------------------------
