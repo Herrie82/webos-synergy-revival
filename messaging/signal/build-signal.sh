@@ -1,25 +1,21 @@
 #!/bin/bash
-# build-signal.sh — ATTEMPT to cross-compile the Signal prpl (hoehermann/purple-signal
+# build-signal.sh — cross-compile the Signal prpl (hoehermann/purple-signal
 # -> purple-signal.so) for webOS 3.0.5 ARM (HP TouchPad).
 #
 # ============================================================================
-#  !!  THIS PRODUCES A .so THAT CANNOT RUN ON THE DEVICE  !!
+#  STATUS: WORKS ON DEVICE. Both "hard walls" that once blocked this are solved:
 # ----------------------------------------------------------------------------
 #  purple-signal is a C++/JNI shim that embeds a Java VM in-process
 #  (JNI_CreateJavaVM) and drives signal-cli (Java); signal-cli's crypto is the
 #  Rust libsignal (signal-client-java 0.2.3 -> libsignal_jni, + zkgroup 0.7.0).
-#  BOTH stages below build fine cross-arch, but there are two hard RUNTIME walls
-#  on webOS ARMv7 (glibc 2.23), neither solvable at build time:
-#    1. NO ARMv7 JVM for webOS. The compiled .so carries an unresolved
-#       JNI_CreateJavaVM that g_module_open() must satisfy from an ARM libjvm.so
-#       — none exists. The plugin will not load.
-#    2. NO ARMv7 libsignal_jni. signal-cli needs the native Rust libsignal
-#       (v0.2.3) + zkgroup (0.7.0) built for armv7/old-glibc; upstream states
-#       "No known public build available" and a from-source cross-build is
-#       impractical (see BUILD-LOG.md).
-#  This script exists to (a) show exactly how far a cross-compile gets — both the
-#  Java jar and the full ARM C++ .so DO build — and (b) keep the plugin wired
-#  into the tree for the day a native (JVM-free) Signal path exists.
+#    1. ARMv7 JVM: built as OpenJDK 11 Zero, softfp (build-jvm.sh). The in-process
+#       JVM SIGSEGVs under the Teams-port loader /lib/ld-teams.so.3 but runs under
+#       the wpe-glibc loader, so imlibpurpletransport is linked against that loader
+#       (see imlibpurpleservice/build.sh --dynamic-linker + imwrap.sh).
+#    2. ARMv7 libsignal_jni + zkgroup: cross-built for armv7/glibc-2.23
+#       (build-libsignal.sh) and swapped into the signal-cli jars as resources.
+#  IMPORTANT: link ALL of c/ (incl. c/handler/*, c/purplesignal/*) — a partial
+#  link leaves PurpleSignal::close() undefined and the plugin will not load.
 # ============================================================================
 set -e
 
@@ -107,4 +103,7 @@ echo "purple_init_plugin: $(arm-unknown-linux-gnueabi-nm -D "$BUILD/purple-signa
 echo "NEEDED libjvm: $(arm-unknown-linux-gnueabi-readelf -d "$BUILD/purple-signal.so" | grep -c 'libjvm.so')  (1 = JNI_CreateJavaVM will resolve from the JRE)"
 echo "rpath: $(arm-unknown-linux-gnueabi-readelf -d "$BUILD/purple-signal.so" | grep -oE 'RUNPATH.*|RPATH.*' | head -1)"
 echo ""
-echo "!! Built (jar + ARM .so), but NOT deployable: no ARMv7 JVM and no ARMv7 libsignal_jni. See BUILD-LOG.md. !!"
+# Verify the full link: PurpleSignal::close() must be DEFINED (T), not undefined (U). A partial
+# link (top-level c/*.cpp only) leaves it undefined and the plugin fails to load on device.
+echo "PurpleSignal::close(): $(arm-unknown-linux-gnueabi-nm -C "$BUILD/purple-signal.so" | grep -E 'T PurpleSignal::close' | head -1 || echo 'MISSING -> partial link!')"
+echo "== Built. Deploy purple-signal.so via deploy-signal.sh (needs the wpe-glibc-linked transport). =="
