@@ -1,4 +1,4 @@
-/*global GraphApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listAlbums - Photos-aggregator contract. args: { accountId }
  * Surfaces the OneDrive Camera Roll as one album:
  *   { returnValue:true, albums:[ { aid, name, size:{images:N} } ] }
@@ -19,7 +19,7 @@ ListAlbumsCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var call = GraphApi.listSpecialChildren(creds, PhotoLib.ALBUM_FOLDER,
+			var call = Adapter.listSpecialChildren(creds, PhotoLib.ALBUM_FOLDER,
 				function (nc) { renewed = nc; });
 			call.then(self, function () {
 				var data;

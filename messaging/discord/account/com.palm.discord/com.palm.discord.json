@@ -30,6 +30,7 @@
             "capability": "MESSAGING",
             "capabilitySubtype": "IM",
             "id": "com.palm.discord.im",
+            "alwaysOn": true,
             "loc_shortName": "Discord",
             "icon": {
                 "loc_32x32": "images/discord-32x32.png",

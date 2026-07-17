@@ -9,11 +9,56 @@
 // The framework then shows its standard "Create Account" confirmation view and
 // calls palm://com.palm.service.accounts/createAccount. On creation the
 // MESSAGING/IM capability's onEnabled fires -> imlibpurpletransport logs the
-// account in via prpl-teams (libteams). teams_login() sees an EMPTY password
-// (no refresh_token) and starts the OAuth2 *device-code* flow, surfacing the
-// one-time code + https://microsoft.com/devicelogin link into the Messaging app
-// (purple_serv_got_im on the "TeamsLogin" buddy). So the setup UI itself does no
-// Microsoft HTTPS -- it only collects the email and creates the account.
+// account in via prpl-teams (libteams).
+//
+// --- TWO WAYS TO AUTHENTICATE ------------------------------------------------
+// 1. BROWSER SIGN-IN (default): the Microsoft OAuth2 login page is rendered INLINE
+//    here in an embedded Atlas WebView (enyo.BasicWebView with its plugin mime swapped
+//    to application/x-atlas-browser -> BrowserServer-atlas = WPE + modern WebKit + TLS
+//    1.3). The 2011-era system webview can't run Microsoft's modern login JS, and WPE
+//    can't load the msauth.* native redirect scheme, so the backend intercepts the
+//    post-login navigation to that scheme and fires actionData("oauthRedirect", url);
+//    we capture the ?code= there and hand the raw URL to the plugin as a "webauth:"
+//    credential -- the plugin does the TLS 1.3 code->token exchange and persists the
+//    refresh_token. (Replaces the old flow: launch Atlas as a SEPARATE card + poll a
+//    com.palm.systemservice pref for the captured redirect.)
+// 2. DEVICE CODE (fallback): create the account with a "devicecode" sentinel password;
+//    teams_login() runs the OAuth2 device-code flow and messages the one-time code +
+//    https://microsoft.com/devicelogin link into the Messaging app.
+
+// --- Atlas engine embed (inline OAuth2 sign-in) ------------------------------
+// enyo 0.10 ships enyo.BasicWebView (an NPAPI-plugin control). Swapping its plugin mime
+// to application/x-atlas-browser routes it to OUR BrowserServer-atlas (WPE, modern WebKit).
+// We embed such a WebView INLINE in the validator (no separate card) to host the Microsoft
+// sign-in page. The engine intercepts the msauth.* redirect (WPE can't load that scheme) and
+// fires actionData("oauthRedirect", url) on the WebView instance; we walk the owner chain to
+// the Validator's engineOAuthRedirect and redeem the ?code= there. (Same embed + atlas-simple
+// viewport the Discord captcha uses; reusable across every OAuth2 account UI.)
+(function () {
+    function patch() {
+        if (!(window.enyo && enyo.BasicWebView && enyo.BasicWebView.prototype)) { return false; }
+        if (enyo.BasicWebView.prototype.__atlasPatched) { return true; }
+        enyo.BasicWebView.prototype.__atlasPatched = true;
+        var origCreate = enyo.BasicWebView.prototype.create;
+        enyo.BasicWebView.prototype.create = function () {
+            origCreate.apply(this, arguments);
+            this.domAttributes.type = "application/x-atlas-browser";
+        };
+        enyo.BasicWebView.prototype.actionData = function (dataType, data) {
+            if (dataType === "oauthRedirect" && data) {
+                var c = this, n = 0;
+                while (c && n < 12) {
+                    if (typeof c.engineOAuthRedirect === "function") { c.engineOAuthRedirect(data); break; }
+                    c = c.owner || c.parent || c.container; n++;
+                }
+            }
+        };
+        return true;
+    }
+    if (!patch() && window.enyo) {
+        var t = setInterval(function () { if (patch()) { clearInterval(t); } }, 50);
+    }
+})();
 
 enyo.kind({
     name: "Validator",
@@ -26,23 +71,8 @@ enyo.kind({
             { kind: "Control", name: "title", content: "Microsoft Teams" }
         ]},
         { className: "accounts-header-shadow" },
-        // Teams OAuth redirect-capture channel: the browser sign-in path hands the captured
-        // redirect URL back through a com.palm.systemservice preference we subscribe to here
-        // (Atlas writes it; no custom db8 kind needed). See BrowserApp.js checkOAuthRedirect.
-        { name: "sysPrefsGet", kind: "PalmService", service: "palm://com.palm.systemservice/",
-          method: "getPreferences", onSuccess: "gotOAuthResult", onFailure: "oauthChannelError" },
-        { name: "sysPrefsSet", kind: "PalmService", service: "palm://com.palm.systemservice/",
-          method: "setPreferences" },
-        { name: "appLaunch", kind: "PalmService", service: "palm://com.palm.applicationManager/",
-          method: "launch", onFailure: "atlasLaunchFailed" },
-        // Close the Atlas sign-in card once we have the result. A card can't close itself via
-        // applicationManager/close, but we (a separate app) can close it by processId — which we
-        // look up via applicationManager/running.
-        { name: "appRunning", kind: "PalmService", service: "palm://com.palm.applicationManager/",
-          method: "running", onSuccess: "gotRunningApps", onFailure: "gotRunningApps" },
-        { name: "appClose", kind: "PalmService", service: "palm://com.palm.applicationManager/",
-          method: "close" },
-        { kind: "Scroller", flex: 1, components: [
+        // Entry form (email + buttons). Hidden while the inline OAuth webview is showing.
+        { name: "entryView", kind: "Scroller", flex: 1, components: [
             { className: "box-center", components: [
                 { kind: "RowGroup", caption: "DISPLAY NAME (OPTIONAL)", className: "accounts-group", components: [
                     { kind: "Input", name: "displayName", hint: "e.g. LuneOS Test", spellcheck: false,
@@ -57,14 +87,24 @@ enyo.kind({
                     { name: "errorMessage", className: "enyo-text-error", flex: 1 }
                 ]},
                 { className: "accounts-body-text", style: "padding: 12px 16px; line-height: 1.4;", allowHtml: true,
-                  content: "Tap <b>Sign In</b> to open the Microsoft sign-in page in your browser. After you approve, you'll be returned here automatically." },
+                  content: "Tap <b>Sign In</b> to sign in to Microsoft right here. After you approve, you'll be returned automatically." },
                 { kind: "ActivityButton", name: "signInButton", caption: "Sign In", disabled: true, active: false,
                   className: "enyo-button-dark accounts-btn", onclick: "performBrowserSignIn" },
                 { className: "accounts-body-text", style: "padding: 4px 16px 12px; line-height: 1.4; opacity: 0.7;", allowHtml: true,
-                  content: "No browser? Use a <b>one-time device code</b> instead — Teams will message it to you in the Messaging app." },
+                  content: "Trouble signing in? Use a <b>one-time device code</b> instead — Teams will message it to you in the Messaging app." },
                 { kind: "Button", name: "deviceCodeButton", caption: "Use device code instead", disabled: true,
                   className: "accounts-btn", onclick: "performSignIn" }
             ]}
+        ]},
+        // Inline OAuth2 sign-in view. The Atlas-routed WebView is created lazily in
+        // performBrowserSignIn() so we don't spin up a WPE WebProcess unless it's used.
+        { name: "oauthBox", kind: "VFlexBox", flex: 1, showing: false, components: [
+            // Thin page-load progress bar (like the Atlas browser's), driven by onLoadProgress.
+            { name: "oauthProgressWrap", style: "height:3px; background:transparent;", components: [
+                { name: "oauthProgress", style: "height:3px; width:0%; background:#3b82f6; -webkit-transition:width 0.25s ease-out;" }
+            ]},
+            { name: "oauthStatus", className: "accounts-body-text", style: "padding: 8px 16px; line-height: 1.3;",
+              content: "Loading Microsoft sign-in…" }
         ]},
         { className: "accounts-footer-shadow" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
@@ -75,7 +115,7 @@ enyo.kind({
 
     create: function() {
         this.inherited(arguments);
-        this.log("teams prefs: params=" + enyo.json.stringify(enyo.windowParams));
+        this.log("teams: params=" + enyo.json.stringify(enyo.windowParams));
         this.handleLaunch(enyo.windowParams || {});
     },
 
@@ -123,7 +163,7 @@ enyo.kind({
     checkForEnter: function(inSender, e) {
         if (e && e.keyCode === 13 && !this.$.signInButton.getDisabled()) {
             this.$.username.forceBlur();
-            this.performSignIn();
+            this.performBrowserSignIn();
         }
     },
 
@@ -132,12 +172,12 @@ enyo.kind({
         if (msg) { this.$.errorBox.show(); } else { this.$.errorBox.hide(); }
     },
 
+    // --- Device-code fallback -------------------------------------------------
     performSignIn: function() {
         var email = (this.$.username.getValue() || "").replace(/^\s+|\s+$/g, "");
         if (!email) { return; }
         this.showError("");
-        this.$.signInButton.setActive(true);
-        this.$.signInButton.setDisabled(true);
+        this.$.deviceCodeButton.setDisabled(true);
 
         // Store the "devicecode" sentinel as the password. It MUST be non-empty:
         // imlibpurpletransport (getCredentialsResult) rejects an empty password as
@@ -145,20 +185,10 @@ enyo.kind({
         // patched teams_login() treats this sentinel (or empty) as "run the OAuth2
         // device-code flow" instead of as a refresh_token. The code + devicelogin
         // link then arrive as a Messaging chat from the "TeamsLogin" buddy.
-        var result = {
-            returnValue: true,
-            username: email,
-            alias: this.getAlias(email),
-            credentials: { common: { password: "devicecode" } },
-            config: {},
-            template: this.template || { templateId: "com.palm.teams" },
-            templateId: "com.palm.teams"
-        };
-        this.log("teams prefs: returning create result for " + email);
-        this.$.crossAppResult.sendResult(result);
+        this.finishWithCredential("devicecode", email);
     },
 
-    // --- Browser sign-in (Atlas simple-mode OAuth redirect-capture) -----------
+    // --- Browser sign-in OAuth2 constants ------------------------------------
     //
     // These OAuth constants MUST match the deployed purple-teams plugin flavor so the
     // authorization code we capture is redeemable by its teams_oauth_with_code(). The
@@ -170,7 +200,6 @@ enyo.kind({
     OAUTH_CLIENT_ID:  "8ec6bc83-69c8-4392-8f08-b3c986009232",
     OAUTH_REDIRECT:   "msauth.com.microsoft.teams://auth",
     OAUTH_SCOPE:      "https://mtsvc.fl.teams.microsoft.com/teams.mt.readwrite openid profile offline_access",
-    OAUTH_RESULT_KEY: "x_teams_oauth_result",
 
     buildAuthorizeUrl: function(email) {
         // Personal/MSA accounts REQUIRE the v2.0 protocol: v1 /oauth2/authorize renders the login but
@@ -179,7 +208,7 @@ enyo.kind({
         // NATIVE redirect msauth.com.microsoft.teams://auth — every web redirect (nativeclient,
         // live.com/oauth20_desktop.srf) gets invalid_request (curl-verified against MS). WPE can't load
         // that custom scheme, so the backend intercepts the post-login navigation to it and hands the
-        // code back via msgActionData("oauthRedirect"). teams_oauth_with_code redeems at /oauth2/v2.0/
+        // code back via actionData("oauthRedirect"). teams_oauth_with_code redeems at /oauth2/v2.0/
         // token with the SAME redirect_uri (TEAMS_OAUTH_REDIRECT_URI, personal build = msauth...).
         var u = "https://login.microsoftonline.com/" + encodeURIComponent(this.OAUTH_TENANT) +
             "/oauth2/v2.0/authorize" +
@@ -200,109 +229,144 @@ enyo.kind({
         return u;
     },
 
+    // --- Inline embedded-WebView browser sign-in ------------------------------
     performBrowserSignIn: function() {
         var email = (this.$.username.getValue() || "").replace(/^\s+|\s+$/g, "");
         if (!email) { return; }
         this.oauthEmail = email;
         this.oauthDone = false;
+        this._oauthLoaded = false;
+        this._authUrl = this.buildAuthorizeUrl(email);
         this.showError("");
         this.$.signInButton.setActive(true);
         this.$.signInButton.setDisabled(true);
-        this.$.deviceCodeButton.setDisabled(true);
 
-        // 1) Clear any stale result, 2) launch Atlas, 3) POLL for the captured code. We poll rather
-        // than rely on getPreferences subscribe-push (which did not deliver the change here); each
-        // poll is a one-shot getPreferences -> gotOAuthResult.
-        var prefsClear = {}; prefsClear[this.OAUTH_RESULT_KEY] = "";
-        this.$.sysPrefsSet.call(prefsClear);
-
-        this.log("teams prefs: launching Atlas browser sign-in for " + email);
-        this.$.appLaunch.call({
-            id: "org.webosports.app.atlas",
-            params: {
-                mode: "simple",
-                url: this.buildAuthorizeUrl(email),
-                oauthRedirectPrefix: this.OAUTH_REDIRECT,
-                oauthResultKey: this.OAUTH_RESULT_KEY
-            }
-        });
-
-        this._oauthPollCount = 0;
-        this.stopOAuthPoll();
-        var self = this;
-        this._oauthPoll = window.setInterval(function () { self.pollOAuthResult(); }, 1500);
-    },
-
-    // Poll systemservice for the captured redirect the Atlas card writes. Robust against the
-    // getPreferences subscription not pushing changes.
-    pollOAuthResult: function() {
-        if (this.oauthDone) { this.stopOAuthPoll(); return; }
-        this._oauthPollCount = (this._oauthPollCount || 0) + 1;
-        if (this._oauthPollCount > 160) {   // ~4 minutes
-            this.stopOAuthPoll();
-            this.$.signInButton.setActive(false);
-            this.validateInput();
-            this.showError("Sign-in timed out — please try again.");
-            return;
+        // Switch to the inline OAuth webview.
+        this.$.entryView.hide();
+        this.$.oauthBox.show();
+        this.$.oauthStatus.setContent("Loading Microsoft sign-in…");
+        if (!this.$.oauthWeb) {
+            this.$.oauthBox.createComponent({
+                name: "oauthWeb", kind: "WebView", width: "100%", height: "600px",
+                // atlas-simple (MODE-2) viewport: a screen-sized render buffer -> correct tap coordinates,
+                // legible layout, AND fast load (no 1024x3072 tall-buffer full readback). Requires the
+                // BrowserServer-atlas fix that makes setWindowSize's width-change path respect m_simpleMode
+                // (else the buffer desyncs -> onFrame drops -> white). Seed the URL with the marker so the
+                // FIRST ensureWebView builds the mult=1 viewport.
+                url: "atlas-simple:about:blank",
+                onConnected: "oauthConnected", onError: "oauthWebError",
+                onLoadStarted: "oauthLoadStarted", onLoadProgress: "oauthLoadProgress",
+                onLoadComplete: "oauthLoadDone", onLoadStopped: "oauthLoadDone"
+            }, { owner: this });
+            this.$.oauthBox.render();
+        } else {
+            this.oauthConnected();
         }
-        this.$.sysPrefsGet.call({ keys: [this.OAUTH_RESULT_KEY] });
+        // Fallback: the Atlas-routed adapter may not fire onConnected the way the stock plugin does.
+        // (enyo 0.10 has no startJob/stopJob — use plain window timers.)
+        this.clearOAuthLoadTimer();
+        var self = this;
+        this._oauthLoadTimer = window.setTimeout(function () { self.oauthConnected(); }, 3000);
+        // Wall-clock timeout for the whole flow (~4 min).
+        if (this._oauthDeadline) { window.clearTimeout(this._oauthDeadline); }
+        this._oauthDeadline = window.setTimeout(function () { self.oauthTimeout(); }, 240000);
     },
 
-    stopOAuthPoll: function() {
-        if (this._oauthPoll) { window.clearInterval(this._oauthPoll); this._oauthPoll = null; }
+    clearOAuthLoadTimer: function() {
+        if (this._oauthLoadTimer) { window.clearTimeout(this._oauthLoadTimer); this._oauthLoadTimer = null; }
     },
 
-    // Fires on every getPreferences update. Ignore the initial/cleared empty value; act
-    // only on a captured redirect URL (carries ?code=...). We hand the raw URL to the
-    // plugin as a "webauth:" credential — the plugin does the TLS 1.3 token exchange
-    // (this legacy webview can't) and persists the resulting refresh_token itself.
-    gotOAuthResult: function(inSender, resp) {
-        if (this.oauthDone) { return; }
-        // systemservice getPreferences returns values at the TOP LEVEL (resp[key]), NOT under a
-        // "preferences" object — reading resp.preferences[key] was the "spins forever" bug.
-        var url = resp && resp[this.OAUTH_RESULT_KEY];
-        if (!url || url.indexOf("code=") < 0) { return; }   // empty/cleared or not-yet-captured
-        this.oauthDone = true;
-        this.stopOAuthPoll();
-        this.oauthCapturedUrl = url;
-        this.log("teams prefs: captured OAuth redirect, creating account");
-        // Consume the pref so a later account-add can't replay this one-time code.
-        var prefsClear = {}; prefsClear[this.OAUTH_RESULT_KEY] = "";
-        this.$.sysPrefsSet.call(prefsClear);
-        // Close the Atlas sign-in card, then create the account (in gotRunningApps).
-        this.$.appRunning.call({});
+    clearOAuthTimers: function() {
+        this.clearOAuthLoadTimer();
+        if (this._oauthDeadline) { window.clearTimeout(this._oauthDeadline); this._oauthDeadline = null; }
     },
 
-    // Close every Atlas card (should be just the sign-in one), then finish account creation.
-    gotRunningApps: function(inSender, resp) {
+    // Adapter connected -> enter atlas-simple viewport then navigate to the authorize URL. Guarded so
+    // onConnected + the 3s fallback don't double-navigate.
+    oauthConnected: function() {
+        if (this._oauthLoaded || !this._authUrl || !this.$.oauthWeb) { return; }
+        this._oauthLoaded = true;
+        this.clearOAuthLoadTimer();
         try {
-            var list = (resp && resp.running) || [];
-            for (var i = 0; i < list.length; i++) {
-                var app = list[i];
-                if (app && app.id === "org.webosports.app.atlas" && app.processid) {
-                    this.log("teams prefs: closing Atlas card processId=" + app.processid);
-                    this.$.appClose.call({ processId: String(app.processid) });
-                }
-            }
-        } catch (e) { this.log("teams prefs: close Atlas err " + e); }
-        this.finishWithCredential("webauth:" + this.oauthCapturedUrl, this.oauthEmail);
+            this.$.oauthWeb.callBrowserAdapter("openURL", ["atlas-simple:" + this._authUrl]);
+        } catch (e) {
+            this.log("teams: openURL failed: " + e);
+            this._oauthLoaded = false;
+            this.oauthWebError();
+        }
     },
 
-    oauthChannelError: function() {
-        // Result channel unavailable — degrade gracefully to the device-code flow.
+    // ---- page-load progress bar --------------------------------------------
+    setProgress: function(pct) {
+        if (this.$.oauthProgress) { this.$.oauthProgress.applyStyle("width", pct + "%"); }
+    },
+    oauthLoadStarted: function() {
         if (this.oauthDone) { return; }
-        this.log("teams prefs: OAuth result channel error, offer device code");
-        this.$.signInButton.setActive(false);
-        this.validateInput();
-        this.showError("Could not open browser sign-in. Try 'Use device code instead'.");
+        this.setProgress(8);
+        if (this.$.oauthStatus) { this.$.oauthStatus.setContent(""); }
+    },
+    oauthLoadProgress: function(inSender, inProgress) {
+        if (this.oauthDone) { return; }
+        var p = (inProgress <= 1) ? inProgress * 100 : inProgress;   // normalize 0-1 or 0-100
+        if (p < 8) { p = 8; } if (p > 100) { p = 100; }
+        this.setProgress(p);
+    },
+    oauthLoadDone: function() {
+        this.setProgress(100);
+        var self = this;
+        window.setTimeout(function() { self.setProgress(0); }, 350);
     },
 
-    atlasLaunchFailed: function(inSender, err) {
+    // Atlas engine captured the msauth.* redirect carrying ?code=... . We hand the raw URL to the
+    // plugin as a "webauth:" credential — the plugin does the TLS 1.3 token exchange (this legacy
+    // webview can't) and persists the resulting refresh_token itself.
+    engineOAuthRedirect: function(url) {
+        if (this.oauthDone || !url) { return; }
+        if (url.indexOf("code=") < 0) { return; }   // ignore intermediate navigations
+        this.oauthDone = true;
+        this.clearOAuthTimers();
+        this.log("teams: captured OAuth redirect, creating account");
+        // DEFER teardown OUT of the WebView's own nav/actionData callback: destroying the plugin
+        // synchronously from inside its event dispatch re-enters the dying webview and crashes the
+        // host (LunaSysMgr restart). setTimeout(0) runs it on a fresh stack after the event unwinds.
+        var self = this;
+        window.setTimeout(function () {
+            self.destroyOAuthWeb();
+            self.finishWithCredential("webauth:" + url, self.oauthEmail);
+        }, 0);
+    },
+
+    oauthWebError: function() {
         if (this.oauthDone) { return; }
-        this.log("teams prefs: Atlas launch failed: " + enyo.json.stringify(err));
+        this.log("teams: oauth webview error");
+        this.abortOAuth("Could not open the sign-in page. Try 'Use device code instead'.");
+    },
+
+    oauthTimeout: function() {
+        if (this.oauthDone) { return; }
+        this.abortOAuth("Sign-in timed out — please try again.");
+    },
+
+    // Return to the entry form (on error/timeout) and release the webview.
+    abortOAuth: function(msg) {
+        this.clearOAuthTimers();
+        this.destroyOAuthWeb();
+        this.$.oauthBox.hide();
+        this.$.entryView.show();
         this.$.signInButton.setActive(false);
         this.validateInput();
-        this.showError("Browser not available. Use 'Use device code instead'.");
+        this.showError(msg || "");
+    },
+
+    destroyOAuthWeb: function() {
+        this.clearOAuthLoadTimer();
+        this._oauthLoaded = false;
+        if (this.$.oauthWeb) {
+            // Release the WPE WebProcess so it doesn't leak past the validator's short life.
+            try { this.$.oauthWeb.callBrowserAdapter("disconnectBrowserServer", []); } catch (e) {}
+            try { this.$.oauthWeb.destroy(); } catch (e2) {}
+            this.$.oauthWeb = null;
+        }
     },
 
     finishWithCredential: function(password, email) {
@@ -319,7 +383,8 @@ enyo.kind({
     },
 
     cancel: function() {
-        this.stopOAuthPoll();
+        this.clearOAuthTimers();
+        this.destroyOAuthWeb();
         // returnValue:false -> Accounts framework returns to the "Add Account" list.
         this.$.crossAppResult.sendResult({ returnValue: false });
     }

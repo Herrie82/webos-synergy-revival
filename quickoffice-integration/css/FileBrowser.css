@@ -1,0 +1,573 @@
+body {
+    font-family         : Prelude, Prelude Medium, Segoe UI, Arial, Helvetica, Sans-Serif;
+    font-size           : 14pt;
+    cursor              : default;
+    background-color    : #ffffff;
+    -webkit-user-select : none;
+}
+
+.ellipsis {
+    white-space         : nowrap;
+    overflow            : hidden;
+    text-overflow       : ellipsis;
+}
+
+/*File Browser panels Shadow CSS */
+
+.center-shadow {
+    background          : transparent url(../images/panel-dropShadow.png) repeat-y;
+    background-position : left;
+    position            : absolute;
+    width               : 11px; 
+    height              : 100%;
+    top                 : 0px;
+    left                : 274px;
+    pointer-events      : none;
+}
+
+
+/* Common Header & Footer CSS Styles*/
+.pane-header {
+    font-size         : 20px;
+    color             : #FFFFFF;
+    text-align        : left;
+    padding-left      : 12px;
+    height: 54px;
+}
+
+.pane-footer {
+    height: 54px;
+}
+
+/** All AccountsPane CSS Styles **/
+
+/* Accounts Pane Header & Footer Components */
+
+.accounts-pane .add-account {
+    font-size   : 14px;
+    font-weight : normal;
+    text-align: center;
+}
+
+/* Accounts List */
+.accounts-pane {
+    background-color : #F1F1F1;
+    z-index          : 3;
+}
+
+/* Accounts Components */
+
+.source-spinner {
+    bottom   : 40%;
+    float    : left;
+    left     : 40%;
+    z-index  : 4;
+    position : absolute;
+}
+
+.accounts-pane .enyo-scroller {
+    z-index : 0;
+}
+
+.accounts-pane .accounts-list {
+    z-index : 0;
+}
+
+.accounts-pane .account-item {
+    height      : 70px;
+    width       : 250px;
+    padding     : 0 1px 0 0;
+    font-size   : 17pt;
+    color       : #333333;
+    /*border-top  : 1px solid #FFFFFF;*/
+}
+
+.accounts-pane .account-item-container {
+    margin : 10px;
+}
+
+.accounts-pane .account-item-icon {
+    margin            : 2px 14px 0px 4px;
+    height            : 48px;
+    width             : 48px;
+    background-size   : 100%;
+    background-repeat : no-repeat;
+}
+
+.accounts-pane .account-item-label {
+    width          : 195px;
+}
+
+.accounts-pane .account-item-caption {
+    font-size     : 17px;
+    color         : #333333;
+    margin-top    : 6px;
+    margin-bottom : 2px;
+    width         : 195px;
+}
+
+.accounts-pane .account-username-caption {
+    font-family : Prelude Medium;
+    font-weight : normal;
+    font-size   : 15px;
+    color       : #636363;
+    width       : 191px;
+}
+
+/* File List Header & Footer */
+.folder-contents-pane .pane-header {
+    /*border-left : 1px solid #f00;*/
+}
+
+.folder-contents-pane .pane-footer {
+    /*padding : 16px 14px;*/
+}
+
+/*R* Need to fix this once the Frame work fixes the enyo-down option*/
+
+.accounts-pane .account-item-down {
+     border-top-color           : transparent;
+     background                 : transparent url(../images/highlight-bg.png) left top no-repeat;
+     -webkit-background-size    : 100% 100%;
+}
+
+.accounts-pane .account-item-held {
+     border-top-color           : transparent;
+     background                 : transparent url(../images/highlight-bg.png) left top no-repeat;
+     -webkit-background-size    : 100% 100%;
+}
+
+/* Folder Contents Pane */
+
+.folder-contents-pane {
+    background-color        : #ffffff;
+}
+
+.folder-contents-pane .browsing-caption {
+    max-width         : 320px;
+    margin-right    : 10px;
+}
+
+.folder-contents-pane .header-spinner {
+    margin-top: -6px;
+    margin-left: 2px;
+}
+
+.header-spinner-account {
+    margin-left: 4px;
+    margin-top: -2px;
+}
+
+
+/*** List Selector customization ***/
+
+.folder-contents-pane .list-selector {
+    text-transform          : none;
+    font-weight             : normal;
+    padding                 : 0px;
+}
+
+.folder-contents-pane .custom-list-selector {
+    margin                  : -8px 0px 0px;
+}
+
+.folder-contents-pane .enyo-menucheckitem-caption {
+    padding : 4px 0px 0px 8px;
+    color: #ffffff;
+}
+
+.folder-contents-pane .enyo-listselector-arrow {
+    margin-right : 5px;
+    margin-top : 5px;
+    background: url(../images/down-arrow.png) no-repeat 100% 50%;
+}
+
+.newfile-popup {
+    bottom: 38px;
+    right: 18px;
+    top: auto;
+    left: auto;
+    min-width: 190px;
+}
+
+.newfile-popup-list {
+    width: 170px;
+    height: 135px;
+    margin-left: -14px;
+    margin-right: -14px;
+}
+
+.newfile-popup-list-elements {
+    font-family: "Prelude Medium";
+    font-size: 18px;
+    padding-left: 17px;
+}
+
+.folder-contents-pane .send-to {
+    line-height          : 32px;
+    -webkit-border-image : none;
+    background-size      : 100%;
+    margin-right         : 12px;
+}
+
+/* Folder Contents List */
+
+.folder-contents-pane {
+    background-color      : #F1F1F1;
+    /*border-left      : 1px solid silver; *//*R* Delete me for vertical Shadow is done*/
+}
+
+/* Folder Contents List Components */
+
+.folder-contents-list .enyo-item {
+}
+
+/* Overlay for the Loading files.....*/
+
+.folder-contents-list .overlay {
+    color               : #A0A0A0;
+    margin-left         : 14px;
+    margin-right        : auto;
+    margin-top          : 15px;
+    width               : 80%;
+}
+
+/** Search customization **/
+
+.folder-contents-list .enyo-rounded-box.square-search {
+    margin: 0px 8px;
+}
+
+.folder-contents-list .enyo-rounded-box-inner {
+    margin: 8px 0px 0px;
+}
+
+.folder-contents-list .enyo-rounded-input.square-search .enyo-rounded-box {
+	-webkit-border-image: url('../images/top_of_list_search.png') 0 8 stretch stretch;
+	-webkit-box-sizing: border-box;
+	border-width: 0px 10px;
+	height:40px;
+        padding: 0 6px;
+}
+
+.searchBottomShadow {
+    height           : 2px;
+    background-image : url(../images/list-drop-shadow.png);
+}
+
+
+/* Folder Contents List items */
+
+.folder-contents-list {
+    background : #FFFFFF;
+}
+
+.folder-contents-list .file-item {
+    background-color : #FFFFFF;
+    color            : #333333;
+    /* The row icon is float:left (36x36 + 2px margin = 38px) so it does NOT expand the row, which
+       is otherwise sized by its single line of text (~26px). Without a floor the icon overflowed
+       ~12px into the next row, whose white background then hid its lower edge ("icon behind the
+       next line"); the download state only looked right because its progress bar made the text
+       column tall enough. Floor the row so it always contains the icon. */
+    min-height       : 44px;
+}
+
+/* Reserve the date line for dateless rows (e.g. Dropbox folders) with a non-breaking space, so
+   they render at the same TWO-line height as dated rows (real content = white, VirtualList-safe,
+   no dark gap) instead of a short single line. This is pure CSS keyed on the actual per-row DOM
+   (:empty), so it's reliable - unlike a JS class, which VirtualList's row recycling misapplies. */
+.folder-contents-list .file-time:empty::before {
+    content: "\00a0";
+}
+
+.folder-contents-list .enyo-disabled {
+    color : #adadad;
+}
+
+.qowt-swipe-to-delete {
+  opacity: 1 !important;
+}
+
+.folder-contents-list .enyo-selected {
+    background-color : #cae2f5;
+}
+
+.folder-contents-list .icon-image {
+    /* float:left keeps the icon beside the text (removing it stacks the icon ABOVE the text and
+       triples the row height). margin-top ~centers the 36px icon within the 44px row floor so
+       single-line rows (folders, dateless files) look balanced instead of top-heavy. */
+    float: left;
+    margin-top  : 6px;   /* sit the icon near the top line so it lines up with the name (which is on
+                            the first line - the reserved second line is blank for dateless rows) */
+}
+
+.file-display-box {
+  background: transparent;
+}
+
+.file-display-box.downloading {
+  position: relative;
+}
+
+.file-display-box .download-cancel {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  display: none;
+}
+
+.file-display-box.downloading .download-cancel {
+  display: block;
+}
+
+.file-display-box.downloading .file-size {
+  visibility: hidden;
+}
+
+/* DIV containing filename and extension DIVs */
+/* Rukhsana, How will we handle text-overflow when filename is in two separate DIVs (e.g. "filename" ".extension")? */
+.folder-contents-list .file-display-name {
+    text-align: left;
+    margin-left   : 4px;
+    margin-bottom : 3px;
+    font-size     : 17px;
+    max-width: 350px;
+}
+
+/* DIV containing filename (without extension) */
+.folder-contents-list .file-name {
+    display: inline;
+    width: 60%;
+    
+}
+
+/* DIV containing dot plus extension */
+.folder-contents-list .file-extension {
+    font-family : 'Prelude Medium';
+    font-weight   : normal;
+    font-size: 17px;
+    color: #808080;
+    display: inline;
+}
+
+.folder-contents-list .file-size {
+    visibility: visible;
+    font-family : Prelude Medium;
+    margin-top  : -14px;
+    float       : right;
+    font-size   : 14px;
+    color       : #707070;
+}
+
+.folder-contents-list .file-time {
+    margin-left : 50px;
+    margin-top  : -2px;
+    font-family : Prelude Medium;
+    font-size   : 14px;
+    color       : #939393;
+}
+
+
+.enyo-toolbar-draghandle {
+    margin-left: 3px;
+    z-index : auto;
+}
+
+/* need to verify */
+
+.enyo-slider-group {
+    z-index : 100;
+}
+
+/* Get rid of the FPS notes for virtual scroller */
+/*.enyo-scroller-fps {
+    display : none;
+}*/
+
+.download-cancel {
+    position   : absolute;
+    right      : 0;
+    z-index    : 1;
+    margin-top : -11px;
+    width      : 36px;
+    height     : 48px;
+    background : url(../images/download-cancel.png) right center no-repeat;
+}
+
+.file-progress-bar {
+    position             : absolute;
+    background-color     : #dedede;
+    border-width         : 15px;
+    height               : 58px;
+    width                : 100%;
+    margin-left: -14px;
+    margin-top: -8px;
+    opacity: 0.5;    
+    -webkit-border-image : url(../images/download-background.png) 15 15 15 15 stretch stretch;
+}
+
+.file-progress-bar > .enyo-progress-bar-inner {
+    height               : 28px;
+    margin-top           : -15px;
+    margin-left          : -15px;
+    left                 : 0px;
+    background-color     : #ececec;
+    border-width         : 15px;
+    opacity: 0.7;
+    -webkit-border-image : url(../images/download-progress.png) 15 15 15 15 stretch stretch;
+}
+
+.vertical-seperator {
+    border-left  : 2px solid silver;
+    border-right : 1px solid white;
+}
+
+.box {
+    border  : 1px solid gray;
+    /*padding : 4px;*/
+}
+
+.enyo-slider-button {
+    z-index : auto;
+}
+
+/* In SaveAs dialog, the 2nd line of the account */
+.account-detail {
+    font-size   : 13px;
+    color       : #707070;
+}
+
+/* CSS for registration dialog */
+
+.registration-item {
+    margin-left  : 15%;
+    margin-right : 15%;
+}
+
+.registration-imageQO {
+    width       : 70%;
+    margin-left : 15%;
+    margin-top  : 5px;
+    margin-bottom  : 5px;
+}
+
+.registration-imageAR {
+    width       : 25%;
+    margin-left : 37%;
+    margin-top  : 5px;
+    margin-bottom  : 5px;
+}
+
+.registration-title {
+    font-size   : 25px;
+    margin-top  : 5px;
+    margin-bottom  : 5px;
+    margin-left : 16%;
+}
+
+.registration-input {
+    font-size   : 20px;
+    margin-top  : 5px;
+}
+
+.registration-country {
+    margin-top  : 5px;
+}
+
+.registration-text {
+    font-size   : 17px;
+    margin-bottom  : 5px;
+    margin-top  : 5px;
+    margin-left : 16%;
+    width       : 68%;
+}
+
+.registration-error {
+    font-size   : 14px;
+    color       : red;
+    margin-bottom  : 5px;
+    margin-top  : 5px;
+    margin-left : 16%;
+}
+
+.registration-boxflex {
+    margin-left : 15%;
+    margin-top  : 10px;
+}
+
+.registration-box {
+    margin-left : 10px;
+}
+
+.registration-boxtext {
+    margin-left : 10px;
+    font-size   : 18px;
+    margin-top  : 3px;
+}
+
+.registration-button {
+    font-size   : 20px;
+    margin-top  : 10px;
+    margin-bottom   : 5px;
+}
+
+.registration-thanks {
+    margin-top  : 20px;
+    margin-bottom  : 20px;
+}
+
+/* enyo held cutomization *R* Remove once fixed from framework*/
+
+.enyo-item.enyo-held {
+     border-top-color           : transparent;
+     background                 : transparent url(../images/highlight-bg.png) left top no-repeat;
+     -webkit-background-size    : 100% 100%;
+}
+
+.enyo-item.enyo-hflexbox.enyo-held {
+     border-top-color           : transparent;
+     background                 : transparent url(../images/highlight-bg.png) left top no-repeat;
+     -webkit-background-size    : 100% 100%;
+}
+
+.dark-swipeable-client {
+  padding: 8px 12px 8px 14px;
+
+  /*from enyo-item*/            
+  border-top: 1px solid rgba(255,255,255,0.5);
+  border-bottom: 1px solid rgba(0,0,0,0.2);
+  height: auto; /* 32 || 48 || 60 */
+  font-size: .9rem;
+}
+
+.dark-swipeable-client,
+.enyo-confirmprompt {
+  margin:-20px 0px;
+}
+
+.first .dark-swipeable-client,
+.first .enyo-confirmprompt {
+  margin:-3px 0px -20px 0px;
+}
+
+.enyo-held .dark-swipeable-client {
+  border-top-color: transparent;
+  background: transparent url(../images/highlight-bg.png) left top no-repeat;
+  -webkit-background-size: 100% 100%;
+}
+
+.dark-swipeable {
+  padding: 0px;
+}
+
+/* SaveAs "Choose a location to save" list: taller rows so the provider icons have breathing
+   room (they were nearly touching) - matching the Photos app Libraries list. enyo.VirtualList
+   packs rows at this measured height, and SaveAs.js _sizeListToContent sizes the list container
+   with the same value (ROWH = 60) so it still grows-to-fit then scrolls. */
+.saveas-location-list .file-item {
+    height         : 54px;
+    padding-top    : 3px;
+    padding-bottom : 3px;
+    box-sizing     : border-box;
+}

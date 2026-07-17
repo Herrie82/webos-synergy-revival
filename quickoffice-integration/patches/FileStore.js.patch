@@ -1,5 +1,5 @@
---- a/source/FileStore.js	2026-07-16 05:48:21.392689528 +0200
-+++ b/source/FileStore.js	2026-07-16 05:48:21.394689555 +0200
+--- a/source/FileStore.js
++++ b/source/FileStore.js
 @@ -300,6 +300,37 @@
          }
      ],
@@ -38,44 +38,100 @@
      /**
       * Assigns a delegate to (or clears) the watch callback
       *
-@@ -694,11 +725,40 @@
+@@ -683,6 +714,22 @@
+         this.addUpdateAccountCallback(accountIndex);
+     },
  
-         switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
++    // MODERN REROUTE (webos-synergy-revival): return the palm://com.palm.service.* URI that
++    // implements this account's DOCUMENTS capability, or null for a legacy (MX) account. This
++    // single check replaces the old per-provider loc_name switch: any account whose DOCUMENTS
++    // capability is served by a _cloudcore service is handled generically, with no case needed.
++    _modernServiceUri: function(acct) {
++        var cps = acct && acct.capabilityProviders;
++        if (!cps) { return null; }
++        for (var i = 0; i < cps.length; i++) {
++            if (cps[i] && cps[i].capability === "DOCUMENTS" && cps[i].implementation &&
++                cps[i].implementation.indexOf("palm://com.palm.service.") === 0) {
++                return cps[i].implementation;
++            }
++        }
++        return null;
++    },
++
+     /**
+      * Callback function called when a new account is added to our account cache.
+      *
+@@ -690,34 +737,47 @@
+      *                                account information object.
+      */
+     addUpdateAccountCallback: function(inAccountIndex) {
++        var acct = this.accountsCache[inAccountIndex];
+         var accountType, mxId;
  
-+        // "box" = the webos-synergy-revival Box template (loc_name "Box"); "box.net" = stock.
-+        case "box":
-         case "box.net":
-             accountType = Account.kACCT_TYPE_BOXNET;
-             mxId        = Account.kMXID_BOXNET;
-             break;
+-        switch (this.accountsCache[inAccountIndex].loc_name.toLowerCase()) {
+-
+-        case "box.net":
+-            accountType = Account.kACCT_TYPE_BOXNET;
+-            mxId        = Account.kMXID_BOXNET;
+-            break;
+-
+-        case "google":
+-            accountType = Account.kACCT_TYPE_GOOGLE_DOCS;
+-            mxId        = Account.kMXID_GOOGLE_DOCS;
+-            break;
+-
+-        case "dropbox":
+-            accountType = Account.kACCT_TYPE_DROP_BOX;
+-            mxId        = Account.kMXID_DROP_BOX;
+-            break;
+-
+-        case "mobileme":
+-            accountType = Account.kACCT_TYPE_MOBILE_ME;
+-            mxId        = Account.kMXID_MOBILE_ME;
+-            break;
+-
+-        default:
+-            console.error("Location of account not recognized!");
+-            console.error(this.accountsCache[inAccountIndex].loc_name.toLowerCase());
+-            break;
++        // MODERN REROUTE (webos-synergy-revival): if this account's DOCUMENTS capability is
++        // served by a _cloudcore service, register _id -> serviceUri so RemoteFileService can
++        // route to it, and mark it generically. accountType/mxId are inert for modern accounts
++        // (the modern path is keyed on _id and bypasses the MX account-type/mxId logic).
++        var svcUri = this._modernServiceUri(acct);
++        if (svcUri) {
++            QOWT.MX.modernServiceByAccountId = QOWT.MX.modernServiceByAccountId || {};
++            QOWT.MX.modernServiceByAccountId[acct._id] = svcUri;
++            accountType = "modernCloudAccount";
++            mxId        = "modern";
++        } else {
++            // Legacy stock providers still resolve through the (now-dead) MX proxy path.
++            switch (acct.loc_name.toLowerCase()) {
++            case "google":
++                accountType = Account.kACCT_TYPE_GOOGLE_DOCS;
++                mxId        = Account.kMXID_GOOGLE_DOCS;
++                break;
++
++            case "dropbox":
++                accountType = Account.kACCT_TYPE_DROP_BOX;
++                mxId        = Account.kMXID_DROP_BOX;
++                break;
++
++            case "box.net":
++                accountType = Account.kACCT_TYPE_BOXNET;
++                mxId        = Account.kMXID_BOXNET;
++                break;
++
++            case "mobileme":
++                accountType = Account.kACCT_TYPE_MOBILE_ME;
++                mxId        = Account.kMXID_MOBILE_ME;
++                break;
++
++            default:
++                console.error("Location of account not recognized!");
++                console.error(acct.loc_name.toLowerCase());
++                break;
++            }
+         }
  
-+        // webos-synergy-revival: OneDrive / Google Drive templates (loc_name "OneDrive",
-+        // "Google Drive"). These weren't QuickOffice providers, so use literal mxIds that the
-+        // RemoteFileService modern reroute recognizes. accountType is inert here (the modern
-+        // path bypasses the MX account-type logic entirely).
-+        case "onedrive":
-+            accountType = "onedriveAccount";
-+            mxId        = "onedrive";
-+            break;
-+
-+        case "google drive":
-+            accountType = "gdriveAccount";
-+            mxId        = "gdrive";
-+            break;
-+
-+        // webos-synergy-revival: pCloud / Yandex Disk templates (loc_name "pCloud",
-+        // "Yandex Disk"). Same as above - literal mxIds the RemoteFileService modern reroute
-+        // recognizes; accountType is inert (modern path bypasses MX account-type logic).
-+        case "pcloud":
-+            accountType = "pcloudAccount";
-+            mxId        = "pcloud";
-+            break;
-+
-+        case "yandex disk":
-+            accountType = "yandexAccount";
-+            mxId        = "yandex";
-+            break;
-+
-         case "google":
-             accountType = Account.kACCT_TYPE_GOOGLE_DOCS;
-             mxId        = Account.kMXID_GOOGLE_DOCS;
+         // Call the Accounts Found delegate with information about the specified account.

@@ -44,7 +44,17 @@ var Config = {
 	LIST_LIMIT:    200,        // resources?limit=
 
 	// Space-separated. disk.read/write/info = files; login:email/info = account identity.
-	SCOPE:         "cloud_api:disk.read cloud_api:disk.write cloud_api:disk.info login:email login:info"
+	SCOPE:         "cloud_api:disk.read cloud_api:disk.write cloud_api:disk.info login:email login:info",
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.yandexdisk",
+	DISPLAY_NAME:  "Yandex Disk",
+	STATE:         "yandex",
+	ROOT_FOLDER:   "disk:/",                  // generic commands' default folderId (= ROOT_PATH)
+	AUTHORIZE_EXTRA:  "&force_confirm=yes",   // Yandex: force the consent screen
+	TOKEN_SEND_SCOPE: false,                  // Yandex derives scope from the grant
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"]
 };
 
 if (typeof exports !== "undefined") { exports.Config = Config; }

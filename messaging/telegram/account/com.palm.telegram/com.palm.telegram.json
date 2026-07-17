@@ -32,6 +32,7 @@
             "capability": "MESSAGING",
             "capabilitySubtype": "IM",
             "id": "com.palm.telegram.im",
+            "alwaysOn": true,
             "loc_shortName": "Telegram",
             "icon": {
                 "loc_32x32": "images/telegram-32x32.png",

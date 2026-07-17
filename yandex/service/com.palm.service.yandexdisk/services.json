@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.yandexdisk",
 			"description": "Yandex Disk Service",
-			"assistant": "YandexdiskService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

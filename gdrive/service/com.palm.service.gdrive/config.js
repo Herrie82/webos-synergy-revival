@@ -40,9 +40,20 @@ var Config = {
 	ROOT_FOLDER:   "root",                                        // Drive root alias id
 
 	// Full drive access (RESTRICTED): browse + download + upload. Switch to
-	// ".../auth/drive.readonly" for a lower-risk read-only build (breaks upload). Refresh
-	// tokens come from access_type=offline + prompt=consent (set in oauth2.js), not a scope.
-	SCOPE:         "https://www.googleapis.com/auth/drive"
+	// ".../auth/drive.readonly" for a lower-risk read-only build (breaks upload).
+	SCOPE:         "https://www.googleapis.com/auth/drive",
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.gdrive",
+	DISPLAY_NAME:  "Google Drive",          // exchangeCode username fallback
+	STATE:         "gdrive",                 // OAuth `state` + Atlas result-key stem
+	// Appended verbatim to the authorize URL. Google needs these to issue/re-issue a refresh
+	// token; Google must NOT get scope on the token calls, so TOKEN_SEND_SCOPE stays off.
+	AUTHORIZE_EXTRA:  "&access_type=offline&prompt=consent",
+	TOKEN_SEND_SCOPE: false,
+	// Caller allow-lists enforced by _cloudcore/acl.js.
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"]
 };
 
 if (typeof exports !== "undefined") { exports.Config = Config; }

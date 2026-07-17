@@ -430,11 +430,20 @@ typedef struct {
 
 #ifdef USE_QRCODE_AUTH
 	gboolean running_auth_qrcode;
+	gchar *qr_ticket;          /* remote-auth "ticket": kept so we can re-POST the
+	                              ticket->token exchange after solving a captcha */
+	gchar *captcha_rqtoken;    /* hCaptcha rqtoken from a captcha-required response */
+	gint captcha_attempts;     /* guard against an infinite captcha->captcha loop */
 #endif
 
 } DiscordAccount;
 
 #ifdef USE_QRCODE_AUTH
+/* Both defined later in libdiscord.c; discord_rsa.c's captcha-submit cb re-invokes them
+ * (DiscordProxyCallbackFunc is not typedef'd yet here, so spell the callback type out). */
+static void discord_fetch_token_and_start_socket(DiscordAccount *da, JsonNode *node, gpointer user_data);
+static void discord_fetch_url(DiscordAccount *da, const gchar *url, const gchar *postdata,
+                              void (*callback)(DiscordAccount *, JsonNode *, gpointer), gpointer user_data);
 #	include "discord_rsa.c"
 #endif
 
@@ -6332,6 +6341,12 @@ discord_close(PurpleConnection *pc)
 	da->session_id = NULL;
 	g_free(da->self_username);
 	da->self_username = NULL;
+#ifdef USE_QRCODE_AUTH
+	g_free(da->qr_ticket);
+	da->qr_ticket = NULL;
+	g_free(da->captcha_rqtoken);
+	da->captcha_rqtoken = NULL;
+#endif
 	g_free(da);
 }
 
@@ -6343,13 +6358,54 @@ discord_fetch_token_and_start_socket(DiscordAccount *da, JsonNode *node,
 {
 	if (node == NULL) {
 		purple_debug_error("discord", "no json node\n");
+		purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
+		                        _("Discord login failed (no response)"));
 		return;
 	}
 
 	JsonObject *response = json_node_get_object(node);
+
+	/* Discord may gate the ticket->token exchange behind an hCaptcha. The response
+	 * then carries captcha_sitekey/_service/_rqdata/_rqtoken and NO encrypted_token
+	 * (captcha_key = ["captcha-required"]). Surface the captcha to the UI so the user
+	 * can solve it in an embedded browser; the solved key comes back via
+	 * discord_captcha_submit_cb, which re-POSTs remote-auth/login with
+	 * {ticket, captcha_key, captcha_rqtoken}. Previously this path dereferenced a NULL
+	 * encrypted_token and crashed the transport. */
+	if (json_object_has_member(response, "captcha_sitekey")) {
+		if (da->captcha_attempts++ >= 3) {
+			purple_debug_error("discord", "captcha still required after %d attempts; giving up\n", da->captcha_attempts);
+			purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
+			                        _("Discord captcha verification failed"));
+			discord_qrauth_free_keys(da);
+			return;
+		}
+		const gchar *sitekey = json_object_get_string_member(response, "captcha_sitekey");
+		const gchar *service = json_object_has_member(response, "captcha_service")
+		                       ? json_object_get_string_member(response, "captcha_service") : "hcaptcha";
+		const gchar *rqdata  = json_object_has_member(response, "captcha_rqdata")
+		                       ? json_object_get_string_member(response, "captcha_rqdata") : "";
+		const gchar *rqtoken = json_object_has_member(response, "captcha_rqtoken")
+		                       ? json_object_get_string_member(response, "captcha_rqtoken") : "";
+		g_free(da->captcha_rqtoken);
+		da->captcha_rqtoken = g_strdup(rqtoken);
+		purple_debug_info("discord", "remote-auth requires captcha (service=%s sitekey=%s) -> surfacing to UI\n",
+		                  service ? service : "?", sitekey ? sitekey : "?");
+		discord_display_captcha(da->pc, service, sitekey, rqdata, rqtoken);
+		return;
+	}
+
+	if (!json_object_has_member(response, "encrypted_token")) {
+		purple_debug_error("discord", "remote-auth login: no encrypted_token in response\n");
+		purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
+		                        _("Discord login failed"));
+		discord_qrauth_free_keys(da);
+		return;
+	}
+
 	const gchar *encrypted_token = json_object_get_string_member(response,
 	                                                             "encrypted_token");
-	if (strlen(encrypted_token) == 0) {
+	if (encrypted_token == NULL || strlen(encrypted_token) == 0) {
 		purple_debug_error("discord", "Got empty token\n");
 		return;
 	}
@@ -6449,12 +6505,12 @@ discord_process_qrcode_auth_frame(DiscordAccount *da, const gchar *frame)
 
 			QRcode *qrcode = QRcode_encodeString(qrcode_url, 0, QR_ECLEVEL_L, QR_MODE_8, 1);
 			qrcode_utf8 = qrcode_utf8_output(qrcode);
-			qrcode_image = qrcode_tga_output(qrcode, &qrcode_image_len);
-
-			// webOS: write a scannable PNG (8px/module, 4-module quiet zone) and pop it
-			// up full-screen via our viewer app so the user doesn't have to open Photos.
-			if (qrcode_png_write_file(qrcode, DISCORD_QR_PNG_PATH, 8, 4))
-				discord_launch_qr_viewer(DISCORD_QR_PNG_PATH);
+			// webOS: emit a PNG (8px/module, 4-module quiet zone) rather than TGA -- the
+			// transport forwards it (via request_fields) to the accounts UI's inline QR
+			// <img>, which needs a web-renderable format. The old flow (write a PNG to
+			// Photos + shell-launch the full-screen com.palm.app.discordqr card) is
+			// superseded by the inline QR in the Discord account validator.
+			qrcode_image = qrcode_png_output(qrcode, 8, 4, &qrcode_image_len);
 
 			discord_display_qrcode(da->pc, qrcode_url, qrcode_utf8, qrcode_image, qrcode_image_len);
 
@@ -6470,6 +6526,10 @@ discord_process_qrcode_auth_frame(DiscordAccount *da, const gchar *frame)
 		} else if (purple_strequal(op, "pending_login")) {
 			// the app confirmed, grab the token and LETS DO THIS THING
 			const gchar *ticket = json_object_get_string_member(obj, "ticket");
+			// Keep the ticket: if Discord answers with a captcha we must re-POST the
+			// same ticket alongside the solved captcha_key (see discord_captcha_submit_cb).
+			g_free(da->qr_ticket);
+			da->qr_ticket = g_strdup(ticket);
 			JsonObject *data = json_object_new();
 			json_object_set_string_member(data, "ticket", ticket);
 			gchar *postdata = json_object_to_string(data);

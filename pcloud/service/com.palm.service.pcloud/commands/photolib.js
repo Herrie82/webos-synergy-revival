@@ -19,7 +19,7 @@ var PhotoLib = {
 	IMAGE_RE: /\.(jpe?g|png|gif|bmp|tiff?|heic|heif|webp)$/i,
 
 	// NB: operates on RAW pCloud listfolder entries (keyed on isfolder/name), because
-	// listAlbums/listPhotos call PcloudApi.listFolder in-process - NOT the normalized
+	// listAlbums/listPhotos call Adapter.listFolderRaw in-process - NOT the normalized
 	// {type,path} shape the listFolder *command* returns to apps. A file is an image if it is
 	// not a folder and either its contenttype is image/* or its name has an image extension.
 	isImage: function (entry) {

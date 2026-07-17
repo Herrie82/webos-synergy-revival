@@ -8,7 +8,7 @@
  *      generate/carry (buildAuthorizeUrl takes no crypto, exchangeCode takes no verifier).
  *   2. NO REFRESH. pCloud access tokens are LONG-LIVED and there is no refresh_token and no
  *      refresh endpoint - a token is valid until the user revokes the app. So there is no
- *      refresh() here and no refresh-on-401 in pcloudapi.js (a 401/"login required" means
+ *      refresh() here and no refresh-on-401 in adapter.js (a 401/"login required" means
  *      the user revoked access and must re-add the account).
  *   3. REGION HOST. The token exchange must hit the account's REGION host (api.pcloud.com or
  *      eapi.pcloud.com), which the OAuth2 redirect told the auth app. exchangeCode() takes

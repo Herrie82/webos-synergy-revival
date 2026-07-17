@@ -1,5 +1,5 @@
 {
-	"description": "OneDrive Service - OAuth2 / Microsoft Graph",
+	"description": "OneDrive Service - Microsoft Graph OAuth2 / REST",
 	"commandTimeout": 30,
 	"activityTimeout": 30,
 	"engine": "node",
@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.onedrive",
 			"description": "OneDrive Service",
-			"assistant": "OnedriveService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

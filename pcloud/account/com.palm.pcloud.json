@@ -9,15 +9,15 @@
 
 	"__comment": "OAuth2 replaces any username/password validator. customUI hosts the consent webview (like com.palm.eas / com.palm.skype); it loads OAuth2.buildAuthorizeUrl(), captures ?code= (plus the account's data-region hostname/locationid) from the redirect to Config.REDIRECT_URI, then calls exchangeCode which does the code->token exchange ON THE REGION HOST and returns the stored token credentials (including common.apiHost).",
 	"validator": {
-		"customUI": { "appId": "com.palm.app.pcloud-auth", "name": "oauth.html" },
+		"customUI": { "appId": "com.palm.app.cloud-auth", "name": "oauth.html" },
 		"address":  "palm://com.palm.service.pcloud/exchangeCode"
 	},
 	"onCredentialsChanged": "palm://com.palm.service.pcloud/checkCredentials",
 
-	"__comment2": "com.palm.app.pcloud-auth MUST be in write/readPermissions: createAccount runs under the customUI auth app's identity and is permission-checked against these lists (accounts/handlers/create.js -> Utils.hasPermission). Working templates (teams/telegram/skype) list their own auth app, not com.palm.app.accounts.",
+	"__comment2": "com.palm.app.cloud-auth MUST be in write/readPermissions: createAccount runs under the customUI auth app's identity and is permission-checked against these lists (accounts/handlers/create.js -> Utils.hasPermission). Working templates (teams/telegram/skype) list their own auth app, not com.palm.app.accounts.",
 	"__comment3": "com.palm.service.pcloud is in read+writePermissions so the service itself can readCredentials(accountId) for file ops. pCloud tokens are long-lived (no refresh, no rotation), so the service does not normally write credentials back - but the write permission is kept for symmetry and future use (accounts/handlers/credentials.js checks these lists).",
-	"readPermissions":  ["com.palm.app.pcloud-auth", "com.palm.app.pcloud-files", "com.palm.app.photos", "com.palm.service.pcloud", "com.palm.service.photos"],
-	"writePermissions": ["com.palm.app.pcloud-auth", "com.palm.app.pcloud-files", "com.palm.app.photos", "com.palm.service.pcloud", "com.palm.service.photos"],
+	"readPermissions":  ["com.palm.app.cloud-auth", "com.palm.app.pcloud-files", "com.palm.app.photos", "com.palm.service.pcloud", "com.palm.service.photos"],
+	"writePermissions": ["com.palm.app.cloud-auth", "com.palm.app.pcloud-files", "com.palm.app.photos", "com.palm.service.pcloud", "com.palm.service.photos"],
 
 	"capabilityProviders": [
 		{

@@ -38,6 +38,104 @@ static void
 discord_null_cb() {
 }
 
+/* webOS: Discord can require an hCaptcha to finish the remote-auth (QR) ticket->token
+ * exchange. discord_fetch_token_and_start_socket surfaces that captcha through
+ * purple_request_fields (fields below), the transport hands the sitekey/rqdata to the
+ * accounts UI which solves it in an embedded browser, and the solved response token is
+ * fed back here as the editable "captcha_key" field. We then re-POST remote-auth/login
+ * with {ticket, captcha_key, captcha_rqtoken} to get the encrypted token. */
+static void
+discord_captcha_submit_cb(gpointer user_data, PurpleRequestFields *fields)
+{
+	DiscordAccount *da = (DiscordAccount *)user_data;
+	const gchar *captcha_key = purple_request_fields_get_string(fields, "captcha_key");
+
+	if (captcha_key == NULL || *captcha_key == '\0') {
+		purple_debug_error("discord", "captcha submit with empty key\n");
+		purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
+		                        _("Captcha was not completed"));
+		return;
+	}
+
+	purple_debug_info("discord", "captcha solved, re-posting remote-auth/login\n");
+
+	JsonObject *data = json_object_new();
+	json_object_set_string_member(data, "ticket", da->qr_ticket ? da->qr_ticket : "");
+	json_object_set_string_member(data, "captcha_key", captcha_key);
+	if (da->captcha_rqtoken)
+		json_object_set_string_member(data, "captcha_rqtoken", da->captcha_rqtoken);
+	gchar *postdata = json_object_to_string(data);
+
+	discord_fetch_url(da,
+	                  "https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION "/users/@me/remote-auth/login",
+	                  postdata, discord_fetch_token_and_start_socket, NULL);
+
+	g_free(postdata);
+	json_object_unref(data);
+}
+
+static void
+discord_display_captcha(PurpleConnection *pc, const gchar *service, const gchar *sitekey,
+                        const gchar *rqdata, const gchar *rqtoken)
+{
+	DiscordAccount *da = purple_connection_get_protocol_data(pc);
+	PurpleRequestUiOps *ui_ops = purple_request_get_ui_ops();
+
+	if (!ui_ops || !ui_ops->request_fields) {
+		purple_connection_error(pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
+		    _("Discord requires a captcha, which this client cannot display."));
+		return;
+	}
+
+	PurpleRequestFields *fields = purple_request_fields_new();
+	PurpleRequestFieldGroup *group = purple_request_field_group_new(NULL);
+	purple_request_fields_add_group(fields, group);
+
+	PurpleRequestField *field;
+	/* Read-only parameters the UI needs to render the hCaptcha widget. */
+	field = purple_request_field_string_new("captcha_service", _("Captcha Service"),
+	                                        service ? service : "hcaptcha", FALSE);
+	purple_request_field_string_set_editable(field, FALSE);
+	purple_request_field_group_add_field(group, field);
+
+	field = purple_request_field_string_new("captcha_sitekey", _("Captcha Sitekey"),
+	                                        sitekey ? sitekey : "", FALSE);
+	purple_request_field_string_set_editable(field, FALSE);
+	purple_request_field_group_add_field(group, field);
+
+	field = purple_request_field_string_new("captcha_rqdata", _("Captcha Rqdata"),
+	                                        rqdata ? rqdata : "", TRUE);
+	purple_request_field_string_set_editable(field, FALSE);
+	purple_request_field_group_add_field(group, field);
+
+	field = purple_request_field_string_new("captcha_rqtoken", _("Captcha Rqtoken"),
+	                                        rqtoken ? rqtoken : "", TRUE);
+	purple_request_field_string_set_editable(field, FALSE);
+	purple_request_field_group_add_field(group, field);
+
+	/* The UI fills this with the solved hCaptcha response token; discord_captcha_submit_cb
+	 * reads it back on OK. */
+	field = purple_request_field_string_new("captcha_key", _("Captcha Response"), "", FALSE);
+	purple_request_field_string_set_editable(field, TRUE);
+	purple_request_field_group_add_field(group, field);
+
+	const gchar *username = purple_account_get_username(da->account);
+
+	purple_request_fields(
+		da->pc,                                     /* handle */
+		_("Captcha Required"),                      /* title */
+		_("Please complete the verification"),      /* primary */
+		_("Discord requires a captcha to finish signing in"), /* secondary */
+		fields,
+		_("OK"), G_CALLBACK(discord_captcha_submit_cb),
+		_("Dismiss"), G_CALLBACK(discord_null_cb),
+		da->account,                                /* account -> transport keys it to this account */
+		username,                                   /* username */
+		NULL,                                       /* conversation */
+		da                                          /* user_data -> discord_captcha_submit_cb */
+	);
+}
+
 static void
 discord_display_qrcode(PurpleConnection *pc, const gchar *qr_code_raw, const gchar *qrcode_utf8, const guchar *image_data, gsize image_data_len)
 {
@@ -94,7 +192,7 @@ discord_display_qrcode(PurpleConnection *pc, const gchar *qr_code_raw, const gch
 		fields, /*fields*/
 		_("OK"), G_CALLBACK(discord_null_cb), /*OK*/
 		_("Dismiss"), G_CALLBACK(discord_null_cb), /*Cancel*/
-		NULL, /*account*/
+		da->account, /*account -- webOS: lets the transport key the QR to this account*/
 		username, /*username*/
 		NULL, /*conversation*/
 		NULL /*data*/
@@ -304,13 +402,19 @@ qrcode_png_chunk(GByteArray *out, const char *type, const guchar *data, gsize le
 	g_byte_array_append(out, crcb, 4);
 }
 
-// Render the QR matrix to a scaled grayscale PNG (colour type 0, 8bpp) at `path`.
+// Encode the QR matrix to a scaled grayscale PNG (colour type 0, 8bpp) IN MEMORY.
 // module_px = pixels per QR module, margin = quiet-zone width in modules.
-static gboolean
-qrcode_png_write_file(const QRcode *qrcode, const char *path, int module_px, int margin)
+// Returns a g_malloc'd PNG buffer (caller g_free's) and its length in *out_len,
+// or NULL on failure. webOS: the transport forwards this to the accounts UI's inline
+// QR <img> as a data URI -- PNG renders in the (old-WebKit) accounts webview; TGA does not.
+static guchar *
+qrcode_png_output(const QRcode *qrcode, int module_px, int margin, gsize *out_len)
 {
+	if (out_len) {
+		*out_len = 0;
+	}
 	if (qrcode == NULL) {
-		return FALSE;
+		return NULL;
 	}
 
 	int qw = qrcode->width;
@@ -339,7 +443,7 @@ qrcode_png_write_file(const QRcode *qrcode, const char *path, int module_px, int
 	if (compress(comp, &clen, raw, rawtotal) != Z_OK) {
 		g_free(raw);
 		g_free(comp);
-		return FALSE;
+		return NULL;
 	}
 	g_free(raw);
 
@@ -360,8 +464,25 @@ qrcode_png_write_file(const QRcode *qrcode, const char *path, int module_px, int
 	qrcode_png_chunk(png, "IEND", NULL, 0);
 	g_free(comp);
 
-	gboolean ok = g_file_set_contents(path, (const gchar *)png->data, png->len, NULL);
+	guchar *result = (guchar *)g_memdup2(png->data, png->len);
+	if (out_len) {
+		*out_len = png->len;
+	}
 	g_byte_array_free(png, TRUE);
+	return result;
+}
+
+// Convenience wrapper: encode to PNG (qrcode_png_output) and write it to `path`.
+static gboolean
+qrcode_png_write_file(const QRcode *qrcode, const char *path, int module_px, int margin)
+{
+	gsize len = 0;
+	guchar *png = qrcode_png_output(qrcode, module_px, margin, &len);
+	if (png == NULL) {
+		return FALSE;
+	}
+	gboolean ok = g_file_set_contents(path, (const gchar *)png, len, NULL);
+	g_free(png);
 	return ok;
 }
 

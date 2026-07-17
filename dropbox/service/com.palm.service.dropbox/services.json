@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.dropbox",
 			"description": "Dropbox Service",
-			"assistant": "DropboxService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

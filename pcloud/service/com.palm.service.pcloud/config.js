@@ -9,7 +9,7 @@
  * Every subsequent API call for that account (token exchange, listfolder, getfilelink,
  * uploadfile, userinfo) MUST go to that region's host, or pCloud returns "log in first".
  * So we STORE the region host in the account credentials (common.apiHost) at exchangeCode
- * time and PcloudApi uses it for all calls. See pcloudapi.js / exchangeCode_command.js.
+ * time and the Adapter uses it for all calls. See adapter.js / exchangeCode_command.js.
  *
  * REGISTER a free app at https://docs.pcloud.com/ -> "My applications" (developer console).
  * Set the redirect URI to REDIRECT_URI below verbatim. Paste BOTH the Client ID and the
@@ -44,6 +44,19 @@ var Config = {
 	DEFAULT_API_HOST: "api.pcloud.com",
 
 	ROOT_FOLDER: 0,   // pCloud root folderid sentinel (numeric 0)
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.pcloud",
+	DISPLAY_NAME:  "pCloud",                 // exchangeCode username fallback
+	STATE:         "pcloud",                 // OAuth `state` + Atlas result-key stem
+	// pCloud's auth is LOCAL (region host, no PKCE, no refresh) so the generic oauth2.js is
+	// NOT used - AUTHORIZE_EXTRA/TOKEN_SEND_SCOPE are kept only for config symmetry. The
+	// generic cloud-auth forwards the redirect's hostname/locationid to the LOCAL exchangeCode.
+	AUTHORIZE_EXTRA:  "",
+	TOKEN_SEND_SCOPE: false,
+	// Caller allow-lists enforced by _cloudcore/acl.js.
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"],
 
 	// Map a pCloud locationid (1/2) to its API host; fall back to the US default.
 	hostForLocation: function (locationid) {

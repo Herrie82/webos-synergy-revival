@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.boxnet",
 			"description": "Box Service",
-			"assistant": "BoxnetService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

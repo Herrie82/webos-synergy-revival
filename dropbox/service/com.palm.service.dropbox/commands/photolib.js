@@ -17,7 +17,7 @@ var PhotoLib = {
 	IMAGE_RE: /\.(jpe?g|png|gif|bmp|tiff?|heic|heif|webp)$/i,
 
 	// NB: operates on RAW Dropbox list_folder entries (keyed on ".tag"/path_lower),
-	// because listAlbums/listPhotos call DropboxApi.listFolder in-process - NOT the
+	// because listAlbums/listPhotos call Adapter.listFolderRaw in-process - NOT the
 	// normalized {type,path} shape the listFolder *command* returns to apps.
 	isImage: function (entry) {
 		return !!(entry && entry[".tag"] === "file" && PhotoLib.IMAGE_RE.test(entry.name || ""));

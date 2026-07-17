@@ -1,9 +1,17 @@
 # Photos integration
 
-Gives the stock **Photos & Videos** app (`com.palm.app.photos`) a per-service icon for each
-cloud photo library, so revived Box / Dropbox accounts are visually distinguishable in the
-**Libraries** list instead of all showing the same generic thumbnail under the account holder's
-name.
+Two things: (1) `patches/Utils.js.patch` routes each revived cloud account's photo capability to
+its service (the `templateId → serviceName` switch the aggregator uses to call
+`listAlbums`/`listPhotos`) — this is what makes **Dropbox, Box, OneDrive, pCloud, Flickr, and
+kDrive** appear as photo sources at all; and (2) `patches/LibraryNavigationPanel.css.patch` gives
+the stock **Photos & Videos** app (`com.palm.app.photos`) a per-service **icon** for each library,
+so they're visually distinguishable in the **Libraries** list instead of all showing the same
+generic thumbnail under the account holder's name.
+
+> **kDrive** is fully wired: routing switch (`case "com.palm.kdrive" → com.palm.service.kdrive`)
+> **and** a bundled Library icon (`icon_kdrive_{40x40,20x20}.png`, gradient-k badge matching the
+> account template icon). kDrive photo URLs carry `?access_token=` like Box, so the generic
+> `Sync-Manager` curl fetch needs no change.
 
 ## What was broken
 
@@ -31,6 +39,7 @@ Append the two missing service classes (plus their 20x20 variants), pointing at 
 |---|---|---|---|
 | `com.palm.boxnet` | `boxnet` | `.library-navigation-icon-boxnet` | `icon_boxnet_40x40.png` (blue badge, white box) |
 | `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `icon_dropbox_40x40.png` (white badge, flat glyph) |
+| `com.palm.kdrive` | `kdrive` | `.library-navigation-icon-kdrive` | `icon_kdrive_40x40.png` (blue→cyan gradient, white "k") |
 
 No JS change is needed - the class is already applied per account; only the CSS rule + image were
 missing. Box gets a mostly-blue badge and Dropbox a mostly-white one, so the two "same holder name"
@@ -43,6 +52,7 @@ D=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
 patch -p1 -d "$D" < patches/LibraryNavigationPanel.css.patch
 cp assets/icon_boxnet_40x40.png  assets/icon_boxnet_20x20.png  "$D/images/"
 cp assets/icon_dropbox_40x40.png assets/icon_dropbox_20x20.png "$D/images/"
+cp assets/icon_kdrive_40x40.png  assets/icon_kdrive_20x20.png  "$D/images/"
 # relaunch the Photos card (cold launch reloads its CSS)
 ```
 

@@ -35,7 +35,16 @@ var Config = {
 	ROOT_FOLDER:   "0",                                 // Box root folder id
 
 	// "root" scope = full read/write to the user's own content.
-	SCOPE:         "root_readwrite"
+	SCOPE:         "root_readwrite",
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.boxnet",
+	DISPLAY_NAME:  "Box",
+	STATE:         "box",
+	AUTHORIZE_EXTRA:  "",                     // Box needs no extra authorize params
+	TOKEN_SEND_SCOPE: false,
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"]
 };
 
 if (typeof exports !== "undefined") { exports.Config = Config; }

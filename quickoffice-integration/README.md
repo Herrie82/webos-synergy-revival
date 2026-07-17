@@ -1,9 +1,16 @@
 # QuickOffice integration
 
 Repairs QuickOffice's broken remote-file support by rerouting it onto our modern cloud
-services — **Dropbox, Box, OneDrive, Google Drive, pCloud, and Yandex Disk**. Those accounts'
-documents list, open, edit, and **save back** in QuickOffice's native viewer again — no native
-reversing required. (Flickr is photos-only, so it isn't a QuickOffice provider.)
+services — **Dropbox, Box, OneDrive, Google Drive, pCloud, Yandex Disk, and kDrive**. Those
+accounts' documents list, open, edit, and **save back** in QuickOffice's native viewer again — no
+native reversing required. (Flickr is photos-only, so it isn't a QuickOffice provider.)
+
+**Adding a provider needs zero changes to these files.** Routing is **account-derived**: any
+account whose `DOCUMENTS` capability is implemented by a `palm://com.palm.service.*` LS2 service
+(the shared `_cloudcore` `listFolder`/`downloadFile`/`uploadFile` contract) is picked up
+automatically. A new connector ships its `_cloudcore` service + account template and is instantly a
+QuickOffice provider — no per-provider component, switch case, or mxId. (kDrive was the first
+provider added *without touching QuickOffice at all*.)
 
 ## What was broken (reverse-engineering result)
 
@@ -20,13 +27,19 @@ The entire fetch path is **readable JS/Enyo** (`RemoteFileService.js`); the nati
 (`arxservice`) is only the document *renderer* and runs *after* the file is already on local
 disk — it never touches the network. So the fix is pure JS.
 
-## The reroute (`patches/RemoteFileService.js.patch`)
+## The reroute (`source/RemoteFileService.js`)
 
-Three seams in `RemoteFileService.js`. Each is now **service-agnostic**: a `_modernSvc(mxId)`
-helper (added to all three kinds) maps the account's mxId → the right revival `PalmService`
-component (`modernDbx`/`modernBox`/`modernOne`/`modernGdrive`/`modernPcloud`/`modernYandex`), or `null` to fall through to the
-legacy MX path. All six backends expose the same `listFolder`/`downloadFile`/`uploadFile`
-contract, so one code path serves them all.
+> This file is heavily rewritten (the whole modern-reroute subsystem, ~50% custom), so it's shipped
+> as a **full drop-in replacement** in `source/`, not a patch — there's no stock baseline left to
+> diff against cleanly.
+
+Three seams in `RemoteFileService.js`. Each is **service-agnostic** *and* **provider-agnostic**: a
+`_modernSvc(account)` helper (in all three kinds) resolves the account's revival service URI via
+`QOWT.MX.modernServiceUriForAccount(account)`, then **lazily creates and caches one `PalmService`
+per URI** (`this._modernSvcCache`); it returns `null` for a legacy MX account. The URI itself comes
+from the account (see [Account recognition](#account-recognition-sourcefilestorejs--patchesfilestorejspatch)),
+so there is **no per-provider component list and no mxId switch** — every backend that speaks the
+shared `listFolder`/`downloadFile`/`uploadFile` contract is served by the one code path.
 
 | Kind / method | Original | Rerouted to |
 |---|---|---|
@@ -49,10 +62,12 @@ list step fills (`locator → real filename`) and the download step reads. Downs
 the file still lands at `QOWT.MXConfig.downloadFolder + createUniqueTargetFilename(name)` and fires
 `successCb(unique, name, account, mime)`.
 
-**Bug fixed in the same patch:** an earlier revision added the `modernDbx` component only to
-`RemoteFileUploadService`, but `_modernDownload` lives in `RemoteFileCacheService` and calls
-`this.$.modernDbx` — which didn't exist there, so the download path would have thrown once
-exercised (it was never interactively tested). The components are now present in all three kinds.
+**History:** an earlier revision hard-coded the backends as static `PalmService` components
+(`modernDbx`/`modernBox`/…) and mapped them with a `_modernSvc(mxId)` switch — a block that had to
+be edited in **three kinds** every time a provider was added (and once shipped a component to only
+one kind, so `_modernDownload` threw on `this.$.modernDbx`). The lazy, account-derived
+`_modernSvc(account)` replaced all of that: no static components, no switch, so the class of
+"forgot to add it to a kind" bug is gone by construction.
 
 ## Listing reliability (found in first on-device test)
 
@@ -62,9 +77,9 @@ The first real device run surfaced two list bugs, both now fixed in `RemoteFileS
   folder open; the legacy path relied on `cancelAll()` (`CancelRequestFromGroup`) to drop the
   first in-flight request so only one render happened. Our modern `PalmService` list calls
   weren't cancellable, so **both** completed and both rendered. `cancelAll()` now also calls
-  `cancel()` on the six revival `PalmService` components (enyo `Service.cancel()` destroys its
-  outstanding `Request` children) and bumps a list generation; `_modernListOk` drops any response
-  whose stamped generation is stale. One render per open.
+  `cancel()` on every cached revival `PalmService` (`this._modernSvcCache`; enyo `Service.cancel()`
+  destroys its outstanding `Request` children) and bumps a list generation; `_modernListOk` drops
+  any response whose stamped generation is stale. One render per open.
 - **`Cannot set property 'ROOT' of undefined`** thrown on every list. `_processFiles()` writes
   `this.folderCache[…]`, which the legacy `_startFetching()` seeds but the modern reroute
   bypassed. `_modernList` now initializes `this.folderCache` first, so the throw (which left the
@@ -111,22 +126,31 @@ two affordances were added:
   app's `images/`) is the browser app's `menu-icon-refresh` sprite — already the 32×64 two-state
   (normal/pressed) format the QuickOffice toolbar icons use, so it drops in unchanged.
 
-## Account recognition (`patches/FileStore.js.patch`)
+<a name="account-recognition-sourcefilestorejs--patchesfilestorejspatch"></a>
+## Account recognition (`source/FileStore.js` / `patches/FileStore.js.patch`)
 
-QuickOffice maps accounts by `loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback`.
-Dropbox already matched (`"dropbox" → mxId "drop"`), but the others didn't, so a small second
-patch adds the cases:
+This is where the reroute becomes **provider-agnostic**. Stock QuickOffice mapped accounts by
+`loc_name.toLowerCase()` in `FileStore.addUpdateAccountCallback` — a hard-coded switch (`"dropbox" →
+mxId "drop"`, `"box.net" → box`, …). The first revival added a `case` per provider there; that was
+the duplication (a case here **plus** a component **plus** a switch arm in each of three kinds in
+`RemoteFileService.js`).
 
-| Template `loc_name` | → mxId |
-|---|---|
-| `Dropbox` | `drop` (stock case, unchanged) |
-| `Box` | `box` (new `case "box"`; stock only had `"box.net"`) |
-| `OneDrive` | `onedrive` (new literal mxId) |
-| `Google Drive` | `gdrive` (new literal mxId) |
-| `pCloud` | `pcloud` (new literal mxId; numeric-ID locators like Box/OneDrive) |
-| `Yandex Disk` | `yandex` (new literal mxId; path locators like Dropbox) |
+It's now a single check. `_modernServiceUri(acct)` scans the account's `capabilityProviders` for the
+`DOCUMENTS` capability and returns its `implementation` URI **iff** it starts with
+`palm://com.palm.service.` (i.e. a `_cloudcore` service). When it matches, `FileStore`:
 
-`accountType` is inert for the new ones — the modern reroute bypasses all MX account-type logic.
+1. registers `QOWT.MX.modernServiceByAccountId[acct._id] = serviceUri` — the map
+   `RemoteFileService._modernSvc(account)` reads to route (every file-op object already carries
+   `_id`, so nothing else has to be threaded through); and
+2. tags the account generically (`accountType = "modernCloudAccount"`, `mxId = "modern"`, both inert
+   — the modern path is keyed on `_id` and bypasses all MX account-type/mxId logic).
+
+Only genuine **legacy** stock providers (Google Docs, stock Dropbox/Box.net, MobileMe — no
+`palm://com.palm.service.*` implementation) fall through to the original `loc_name` switch and the
+dead MX proxy. So adding a revival provider needs **no edit here**: its template already declares the
+`DOCUMENTS` capability with a `palm://com.palm.service.<name>/` implementation, which is all the
+detection needs. `capabilityProviders` survives the enyo `Accounts.getAccounts` merge (the framework
+itself iterates it in `promoteCapabilityIcons`), so it's reliably present on each cached account.
 
 ## Companion service changes
 
@@ -134,35 +158,71 @@ Each service's `listFolder`/`downloadFile`/`uploadFile` lists `com.quickoffice.w
 `com.quickoffice.ar` in `allowedAppIds`, and `downloadFile` passes `curl --create-dirs` so
 `/media/internal/.qo/` is created if absent. For **save-back**, each service gained an
 overwrite-by-id path: Dropbox `mode:"overwrite"`, Box `uploadNewVersion`, OneDrive
-`uploadReplace` (PUT item content), Drive `uploadReplace` (PATCH content), pCloud same-name re-upload, Yandex `overwrite=true` PUT.
+`uploadReplace` (PUT item content), Drive `uploadReplace` (PATCH content), pCloud same-name
+re-upload, Yandex `overwrite=true` PUT, kDrive `conflict=version` re-upload.
+
+Because routing is account-derived, this is the **only** side that changes when a provider is added:
+a new `_cloudcore` service + its account template (declaring the `DOCUMENTS` capability with a
+`palm://com.palm.service.<name>/` implementation, and listing the QuickOffice appIds in
+`allowedAppIds`). No QuickOffice edit at all.
 
 ## Applying
 
-All four patches apply to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` — their
+Everything applies to **both** apps (`com.quickoffice.webos` and `com.quickoffice.ar` — their
 `RemoteFileService.js`, `FileStore.js`, `FolderContentsList.js` and `FolderContentsPane.js` are
-byte-identical, verified against the 2.1.2113 / 10.3.484 IPKs):
+byte-identical, verified against the 2.1.2113 / 10.3.484 IPKs). `RemoteFileService.js` and
+`FileStore.js` are **full drop-in files** (`source/`); `FolderContentsList.js` and
+`FolderContentsPane.js` are still small **patches**:
 
 ```sh
 for app in com.quickoffice.webos com.quickoffice.ar; do
   d=/media/cryptofs/apps/usr/palm/applications/$app
-  patch -p1 -d "$d" < patches/RemoteFileService.js.patch
-  patch -p1 -d "$d" < patches/FileStore.js.patch
+  cp source/RemoteFileService.js "$d/source/"        # full drop-in (heavily rewritten)
+  cp source/FileStore.js         "$d/source/"        # full drop-in (also patches/FileStore.js.patch)
   patch -p1 -d "$d" < patches/FolderContentsList.js.patch
   patch -p1 -d "$d" < patches/FolderContentsPane.js.patch
-  cp assets/toolbar-icon-refresh.png "$d/images/"   # icon for the toolbar Refresh button
+  cp assets/toolbar-icon-refresh.png "$d/images/"    # icon for the toolbar Refresh button
 done
 # restart LunaSysMgr so QuickOffice reloads its (cached) app JS
 ```
 
-All four patches are **round-trip verified**: applying to the pristine IPK source reproduces the
-patched file exactly.
+`patches/FileStore.js.patch` is **round-trip verified** against the pristine IPK `FileStore.js`
+(applying it reproduces `source/FileStore.js` exactly) and is kept for readers who want to see the
+diff. `RemoteFileService.js` is provided only as a full file: it's rewritten too far past the stock
+baseline for a patch to stay reliable. The two `FolderContents*` patches round-trip against pristine.
 
 ## Limitations / TODO
 
 - **Google Drive native docs** (Docs/Sheets/Slides) won't open via QuickOffice: they have no
   downloadable bytes and the download seam doesn't pass an `exportMime`. Real Office files stored
   in Drive open fine. (The stand-alone `gdrive-files` app *does* export native docs.)
-- **Dropbox is interactively verified on device**: list, open, and **save-back** work, and the
-  listing-reliability + auto-refresh fixes above were driven by that testing. Box / OneDrive /
-  Drive share the identical reroute code but their interactive test is still blocked on provider
-  keys (no account can be added yet).
+- **Box + Dropbox are interactively verified on device**: list, open, and **save-back** work, and
+  the listing-reliability + auto-refresh fixes above were driven by that testing. Google Drive,
+  OneDrive, pCloud, Yandex Disk and kDrive share the identical account-derived reroute code; their
+  interactive test lands as each account is added (kDrive's account + stored-credential `listFolder`
+  are verified service-side).
+- **Account-derived routing was validated live**: adding kDrive as the 7th provider required **no
+  change to `RemoteFileService.js`/`FileStore.js`** — it was recognised purely from its account's
+  `DOCUMENTS` capability implementation URI.
+
+## File-list & Save-As polish (`source/File.js`, `source/SaveAs.js`, `css/FileBrowser.css`)
+
+Later on-device polish, all full drop-ins of stock QuickOffice files:
+
+- **Consistent localized dates** (`source/File.js`): `getTimestampFormatted()` dropped the stock
+  recency-relative variants (today / last-7-days / this-year / other-year, which mixed styles in one
+  list) for a single `enyo.g11n.DateFmt` (`date:"medium" dateComponents:"dmy" time:"short"`) — every
+  row shows the same full date+time, localized to the system format (month names, component order,
+  12/24h). This surfaced that the modern connectors fed unparseable timestamps: kDrive sent UNIX
+  **seconds** and Box an RFC-3339 **offset** (`…-08:00`) — `File.parseUtcDate` only strips a trailing
+  `Z`, so both were dropped (blank date → the row collapsed to one line and mis-aligned the icon).
+  Fixed in each adapter by normalizing to ISO-`Z` (`new Date(x).toISOString()`; kDrive `×1000` first).
+- **List-row layout** (`css/FileBrowser.css`): the row icon is `float:left` (36px), so on a
+  single-line row (a dateless folder, e.g. Dropbox's) it overflowed into the next row. Floor the row
+  at `min-height:44px`, and reserve the date line for dateless rows with `.file-time:empty::before {
+  content:"\00a0" }` so they render at the same two-line height as dated rows (real content → white,
+  VirtualList-safe; a stretched `min-height` left a dark gap, and a per-row JS class is misapplied by
+  VirtualList's row recycling — both were tried and rejected).
+- **"Choose a location to save" sizing** (`source/SaveAs.js`): the destination list was a fixed
+  `200px` `VirtualList`; `_sizeListToContent()` now grows it to fit the providers (measuring the
+  rendered row height, clamped to a max, then scrolls) and re-sizes as accounts stream in.

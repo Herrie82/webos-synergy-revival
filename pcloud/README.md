@@ -1,9 +1,14 @@
 # pCloud connector
 
-A full **pCloud** **DOCUMENTS + PHOTO.UPLOAD** Synergy connector, built to the same
-architecture as the Dropbox / Box / OneDrive / Google Drive connectors. Code-complete;
-**untested on device** only because it needs a pCloud app `client_id` + `client_secret`
-(see Configuration).
+A full **pCloud** **DOCUMENTS + PHOTO.UPLOAD** Synergy connector on the shared **`_cloudcore`**
+runtime. Code-complete; **untested on device** only because it needs a pCloud app `client_id`
++ `client_secret` (see Configuration).
+
+pCloud shares the `_cloudcore` file layer (adapter + the generic listFolder/upload/download/
+checkCredentials commands + httpcurl/acl/creds/cloudservice) but keeps a **local `oauth2.js`
++ local `getAuthorizeUrl`/`exchangeCode` commands** — its region-host + no-PKCE auth cannot use
+the generic ones. It still uses the one generic `com.palm.app.cloud-auth` app, which forwards
+the redirect's `hostname`/`locationid` so the local `exchangeCode` can resolve the region.
 
 pCloud is a clean REST/ID fit (folders and files are numeric IDs, the root is `folderid 0`),
 so the service is a near-clone of the Box/OneDrive ones — with **one thing that makes pCloud
@@ -19,33 +24,35 @@ and `locationid` alongside the `?code=`.
 
 So the connector:
 
-1. The **auth app** extracts `hostname` + `locationid` from the captured redirect and passes
-   them (with the `code`) to `exchangeCode`.
-2. `exchangeCode` resolves the region host (redirect `hostname` wins → else `locationid` map →
-   else the US default), does the **token exchange on that host**, and **stores it** in the
-   account credentials as `common.apiHost`.
-3. `pcloudapi.js` reads `creds.apiHost` on **every** call (listfolder / getfilelink /
+1. The generic **`cloud-auth`** app extracts `hostname` + `locationid` from the captured
+   redirect and forwards them (with the `code`) to `exchangeCode`. (It forwards those params
+   for every provider; only pCloud's local `exchangeCode` reads them — harmless elsewhere.)
+2. The **local `exchangeCode`** resolves the region host (redirect `hostname` wins → else
+   `locationid` map → else the US default), does the **token exchange on that host**, and
+   **stores it** in the account credentials as `common.apiHost`.
+3. `adapter.js` reads `creds.apiHost` on **every** call (listfolder / getfilelink /
    uploadfile / userinfo), so all traffic for that account hits the correct region.
 
 ## What's here
 
 ```
-service/com.palm.service.pcloud/     node service: OAuth2 + pCloud REST
-  oauth2.js        pCloud OAuth2: NO PKCE (ships a client_secret, like gdrive),
+service/com.palm.service.pcloud/     node service on the shared _cloudcore runtime
+  config.js        endpoints + client id/secret + US/EU region hosts + _cloudcore wiring;
+                   ROOT_FOLDER = 0
+  adapter.js       pCloud REST mapping: /listfolder (folderid), /getfilelink -> download,
+                   /uploadfile (multipart, overwrite-by-name), /checksumfile, /userinfo; region
+                   host per call; normalises to the _cloudcore shape (+ raw listFolderRaw /
+                   getFileLink for Photos); nonzero `result` -> exception
+  oauth2.js        LOCAL (not the generic one): NO PKCE (ships a client_secret, like gdrive),
                    NO refresh (tokens are long-lived); region-host-aware token exchange
-  pcloudapi.js     pCloud REST: /listfolder (folderid), /getfilelink (temp link) -> download,
-                   /uploadfile (multipart, overwrite-by-name), /checksumfile (metadata),
-                   /userinfo; region host per call; nonzero `result` -> exception
-  httpcurl.js      shells all TLS to the bundled modern curl (identical to the other connectors)
-  creds.js acl.js  credentials-by-accountId (carries apiHost); allowedAppIds enforcement
-  commands/        getAuthorizeUrl, exchangeCode, checkCredentials,
-                   listFolder, downloadFile, uploadFile,           <- DOCUMENTS
-                   photolib, listAlbums, listPhotos                <- PHOTO.UPLOAD
-apps/
-  com.palm.app.pcloud-auth/    customUI OAuth login (Atlas simple-mode; captures region host)
-  com.palm.app.pcloud-files/   Enyo file browser/uploader (folder-ID breadcrumb stack)
-account/com.palm.pcloud.json   Synergy template: customUI validator, DOCUMENTS + PHOTO.UPLOAD,
-                               permissions for the auth app + both services
+  commands/getAuthorizeUrl_command.js, exchangeCode_command.js   LOCAL: no PKCE verifier;
+                   region (hostname/locationid) threading into credentials
+  commands/        photolib, listAlbums, listPhotos               <- PHOTO.UPLOAD
+  sources.json     pulls ../_cloudcore/{acl,httpcurl,creds,cloudservice}.js and the generic
+                   ../_cloudcore/commands/{checkCredentials,listFolder,uploadFile,downloadFile};
+                   uses the LOCAL oauth2.js + getAuthorizeUrl/exchangeCode + local photos
+account/com.palm.pcloud.json   Synergy template: customUI validator -> the generic
+                               com.palm.app.cloud-auth, DOCUMENTS + PHOTO.UPLOAD, permissions
 ```
 
 ## How it differs from the others (all REST/ID-based)
@@ -80,7 +87,7 @@ Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as the other c
 
 ## Status / caveats
 
-- ✅ Service, both apps, template. Needs the Photos-aggregator `case "com.palm.pcloud"`
+- ✅ Service (on `_cloudcore`), generic `cloud-auth` app, template. Needs the Photos-aggregator `case "com.palm.pcloud"`
   (in `../photos-integration/`) added by the integrator to route photo calls here.
 - ⏳ **Account sign-in untested** — needs a real `client_id` + `client_secret`.
 - ⚠️ **Region host** is resolved from the OAuth2 redirect and stored per account; if a

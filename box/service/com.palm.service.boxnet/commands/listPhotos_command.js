@@ -1,4 +1,4 @@
-/*global BoxApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listPhotos - Photos-aggregator contract. args: { accountId, aid }
  * aid is the Box folder ID from listAlbums. Returns one entry per image file:
  *   { returnValue:true, photos:[ { pid, src_big, src_small, caption, type:"image", fileName } ] }
@@ -18,14 +18,14 @@ ListPhotosCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var lf = BoxApi.listFolder(creds, aid, function (nc) { renewed = nc; });
+			var lf = Adapter.listFolder(creds, aid, function (nc) { renewed = nc; });
 			lf.then(self, function () {
 				var data;
 				try { data = lf.result; }
 				catch (e2) { future.setException(e2); return; }
 				var useCreds = renewed || creds;   // build URLs with the freshest token
 				var photos = (data.entries || []).filter(PhotoLib.isImage).map(function (e) {
-					var url = BoxApi.contentUrl(useCreds, e.id);
+					var url = Adapter.contentUrl(useCreds, e.id);
 					return { pid: e.id, src_big: url, src_small: url,
 						caption: e.name, type: "image", fileName: e.name };
 				});

@@ -35,7 +35,19 @@ var Config = {
 
 	// Files.ReadWrite = read/write the user's own OneDrive; offline_access = refresh token;
 	// User.Read = /me profile for the account display name. Space-separated per OAuth2.
-	SCOPE:         "Files.ReadWrite offline_access User.Read"
+	SCOPE:         "Files.ReadWrite offline_access User.Read",
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.onedrive",
+	DISPLAY_NAME:  "OneDrive",               // exchangeCode username fallback
+	STATE:         "onedrive",               // OAuth `state` + Atlas result-key stem
+	// ROOT_FOLDER ("root") is defined above. Microsoft needs no extra authorize params, but
+	// DOES require `scope` on the token + refresh calls (shared oauth2.js opts in via the flag).
+	AUTHORIZE_EXTRA:  "",
+	TOKEN_SEND_SCOPE: true,
+	// Caller allow-lists enforced by _cloudcore/acl.js.
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"]
 };
 
 if (typeof exports !== "undefined") { exports.Config = Config; }

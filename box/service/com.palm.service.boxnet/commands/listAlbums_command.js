@@ -1,4 +1,4 @@
-/*global BoxApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listAlbums - Photos-aggregator contract. args: { accountId }
  * Surfaces the single configured Box folder as one album:
  *   { returnValue:true, albums:[ { aid, name, size:{images:N} } ] }
@@ -18,7 +18,7 @@ ListAlbumsCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var call = BoxApi.listFolder(creds, PhotoLib.ALBUM_FOLDER, function (nc) { renewed = nc; });
+			var call = Adapter.listFolder(creds, PhotoLib.ALBUM_FOLDER, function (nc) { renewed = nc; });
 			call.then(self, function () {
 				var data;
 				try { data = call.result; }

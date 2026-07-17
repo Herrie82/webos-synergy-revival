@@ -1,14 +1,16 @@
-/*global Config, OAuth2, PcloudApi, console */
-/* exchangeCode - the account VALIDATOR. Called by com.palm.service.accounts (via the
- * customUI auth webview) with the ?code=... captured from the OAuth2 redirect, PLUS the
- * region info the redirect carried (`hostname` and/or `locationid`).
+/*global Config, OAuth2, Adapter, console */
+/* exchangeCode - the account VALIDATOR. Called by com.palm.service.accounts (via the generic
+ * com.palm.app.cloud-auth webview) with the ?code=... captured from the OAuth2 redirect, PLUS
+ * the region info the redirect carried (`hostname` and/or `locationid`) - cloud-auth forwards
+ * those verbatim (see cloudAuth.js) so this LOCAL command can resolve the region.
  *
- * REGION HOST: pCloud sends the account's data-region host back in the authorize redirect.
- * We resolve it here (redirect hostname wins; else locationid; else the US default), do the
- * token exchange ON THAT HOST, and STORE it in credentials.common.apiHost so every later
- * API call for this account uses the right region. This is pCloud's defining quirk.
+ * LOCAL to pCloud (not the _cloudcore generic exchangeCode): pCloud sends the account's data-
+ * region host back in the authorize redirect. We resolve it here (redirect hostname wins; else
+ * locationid; else the US default), do the token exchange ON THAT HOST, and STORE it in
+ * credentials.common.apiHost so every later API call for this account uses the right region.
+ * This region quirk is why pCloud cannot use the generic exchangeCode.
  *
- * Returns credentials in the shape the account DB stores and PcloudApi later reads, PLUS a
+ * Returns credentials in the shape the account DB stores and the Adapter later reads, PLUS a
  * username: accounts/handlers/create.js does Assert.require(args.username) and refuses to
  * create the account without one, so we fetch the pCloud account email here.
  */
@@ -42,13 +44,14 @@ ExchangeCodeCommandAssistant.prototype = {
 			};
 			// Fetch the account identity (email) for `username`. Tolerate a failure here
 			// (still create the account with a fallback) - we already have a valid token.
-			var info = PcloudApi.getAccountInfo(common);
+			// Adapter.getAccountInfo returns the normalised { user:{ emailAddress } } shape.
+			var info = Adapter.getAccountInfo(common);
 			info.then(this, function () {
-				var me = {};
-				try { me = info.result || {}; } catch (e2) { me = {}; }
+				var u = {};
+				try { u = (info.result && info.result.user) || {}; } catch (e2) { u = {}; }
 				future.result = {
 					returnValue: true,
-					username:    me.email || "pCloud",
+					username:    u.emailAddress || "pCloud",
 					credentials: { common: common }
 				};
 			});

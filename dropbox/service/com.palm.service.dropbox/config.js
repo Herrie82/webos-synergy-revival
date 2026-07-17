@@ -36,7 +36,17 @@ var Config = {
 	CONTENT_BASE:  "https://content.dropboxapi.com/2",          // /files/download, /files/upload
 
 	SCOPE:         "account_info.read files.metadata.read files.content.read files.content.write",
-	ACCESS_TYPE:   "offline"                                    // -> refresh_token
+	ACCESS_TYPE:   "offline",                                   // -> refresh_token
+
+	// --- _cloudcore generic wiring (consumed by ../_cloudcore) --------------------------
+	SERVICE_NAME:  "com.palm.service.dropbox",
+	DISPLAY_NAME:  "Dropbox",
+	STATE:         "dropbox",
+	ROOT_FOLDER:   "",                        // Dropbox root path (adapter treats ""/"root" as root)
+	AUTHORIZE_EXTRA:  "&token_access_type=offline",
+	TOKEN_SEND_SCOPE: false,
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
+	FILE_APP_IDS:  ["com.quickoffice.webos", "com.quickoffice.ar"]
 };
 
 if (typeof exports !== "undefined") { exports.Config = Config; }

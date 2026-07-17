@@ -1,4 +1,4 @@
-/*global GraphApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listPhotos - Photos-aggregator contract. args: { accountId, aid }
  * aid is the special-folder name from listAlbums ("cameraroll"). Returns one entry per image:
  *   { returnValue:true, photos:[ { pid, src_big, src_small, caption, type:"image", fileName } ] }
@@ -19,7 +19,7 @@ ListPhotosCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var lf = GraphApi.listSpecialChildren(creds, special, function (nc) { renewed = nc; });
+			var lf = Adapter.listSpecialChildren(creds, special, function (nc) { renewed = nc; });
 			lf.then(self, function () {
 				var data;
 				try { data = lf.result; }

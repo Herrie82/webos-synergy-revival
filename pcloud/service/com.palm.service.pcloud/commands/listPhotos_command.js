@@ -1,4 +1,4 @@
-/*global PcloudApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listPhotos - Photos-aggregator contract. args: { accountId, aid }
  * aid is the pCloud folderid from listAlbums (default 0 = root). Returns one entry per image:
  *   { returnValue:true, photos:[ { pid, src_big, src_small, caption, type:"image", fileName } ] }
@@ -19,7 +19,7 @@ ListPhotosCommandAssistant.prototype = {
 			var creds;
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
-			var lf = PcloudApi.listFolder(creds, aid, function () {});
+			var lf = Adapter.listFolderRaw(creds, aid, function () {});
 			lf.then(self, function () {
 				var data;
 				try { data = lf.result; }
@@ -38,7 +38,7 @@ ListPhotosCommandAssistant.prototype = {
 				function next() {
 					if (i >= images.length) { finish(); return; }
 					var e = images[i++];   // raw pCloud entry: name, fileid, size, contenttype
-					var gl = PcloudApi.getFileLink(creds, e.fileid, function () {});
+					var gl = Adapter.getFileLink(creds, e.fileid, function () {});
 					gl.then(self, function () {
 						var link = null;
 						try { link = gl.result && gl.result.url; }

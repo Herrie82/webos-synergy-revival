@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.pcloud",
 			"description": "pCloud Service",
-			"assistant": "PcloudService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

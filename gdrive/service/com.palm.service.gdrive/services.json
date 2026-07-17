@@ -7,7 +7,7 @@
 		{
 			"name": "com.palm.service.gdrive",
 			"description": "Google Drive Service",
-			"assistant": "GdriveService",
+			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
 				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },

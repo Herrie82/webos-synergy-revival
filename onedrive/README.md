@@ -1,32 +1,36 @@
 # OneDrive connector
 
-A full Microsoft **OneDrive** (Microsoft Graph) **DOCUMENTS + PHOTO.UPLOAD** connector,
-built to the same architecture as Dropbox/Box. Code-complete; **untested on device** only
-because it needs an Azure app `client_id` (see Configuration).
+A full Microsoft **OneDrive** (Microsoft Graph) **DOCUMENTS + PHOTO.UPLOAD** connector on the
+shared **`_cloudcore`** runtime. Code-complete; **untested on device** only because it needs an
+Azure app `client_id` (see Configuration).
 
 Of the three cloud providers investigated, OneDrive was the **cleanest fit** — a public
 PKCE client with *no secret*, personal Microsoft accounts allowed, and a file-download
-endpoint that 302-redirects to a pre-signed URL our curl fetches with no auth header.
+endpoint that 302-redirects to a pre-signed URL our curl fetches with no auth header. It is
+the purest `_cloudcore` connector: **everything but `config.js`, `adapter.js`, and the three
+photo commands is the shared core**, and it uses the one generic `com.palm.app.cloud-auth` app.
 
 ## What's here
 
 ```
-service/com.palm.service.onedrive/   node service: OAuth2/PKCE + Microsoft Graph
-  oauth2.js        Microsoft identity v2.0, public-client PKCE (never sends a secret);
-                   scope on both code-exchange and refresh (Graph requires it)
-  graphapi.js      Graph REST: /me/drive/{root|items/{id}}/children, /content (302),
-                   PUT raw-body upload, transparent refresh-on-401
-  httpcurl.js      shells all TLS to the bundled modern curl (dataFile = raw-body PUT)
-  creds.js acl.js  credentials-by-accountId; allowedAppIds enforcement
-  commands/        getAuthorizeUrl, exchangeCode, checkCredentials,
-                   listFolder, downloadFile, uploadFile,           <- DOCUMENTS
-                   photolib, listAlbums, listPhotos                <- PHOTO.UPLOAD (Camera Roll)
-apps/
-  com.palm.app.onedrive-auth/    customUI OAuth login (Atlas simple-mode, stateless PKCE verifier)
-  com.palm.app.onedrive-files/   Enyo file browser/uploader (folder-ID breadcrumb stack)
-account/com.palm.onedrive.json   Synergy template: customUI validator, DOCUMENTS + PHOTO.UPLOAD,
-                                 permissions for the auth app + both services
+service/com.palm.service.onedrive/   node service on the shared _cloudcore runtime
+  config.js        endpoints + Azure client id + _cloudcore wiring (SCOPE, TOKEN_SEND_SCOPE,
+                   AUTH_APP_IDS/FILE_APP_IDS); ROOT_FOLDER = "root"
+  adapter.js       Microsoft Graph mapping: /me/drive/{root|items/{id}}/children, /content
+                   (302), PUT raw-body upload, refresh-on-401; normalises to the uniform
+                   _cloudcore entry shape (+ listSpecialChildren raw, for Photos)
+  commands/        photolib, listAlbums, listPhotos                <- PHOTO.UPLOAD (Camera Roll)
+  sources.json     pulls ../_cloudcore/{acl,httpcurl,oauth2,creds,cloudservice}.js and the six
+                   generic ../_cloudcore/commands/* (getAuthorizeUrl, exchangeCode,
+                   checkCredentials, listFolder, uploadFile, downloadFile) + the local photos
+account/com.palm.onedrive.json   Synergy template: customUI validator -> the generic
+                                 com.palm.app.cloud-auth, DOCUMENTS + PHOTO.UPLOAD, permissions
 ```
+
+Auth is the shared generic app **`../cloudcore/auth/com.palm.app.cloud-auth`** (no per-provider
+OneDrive auth app). The shared `_cloudcore/oauth2.js` covers OneDrive as-is: it sends `scope`
+on the code-exchange + refresh (Graph requires it) via `config.js` `TOKEN_SEND_SCOPE: true`,
+and runs pure PKCE because the `CLIENT_SECRET` is left as the `PLACEHOLDER_` sentinel.
 
 ## How it differs from Box (both are REST/ID-based)
 
@@ -56,7 +60,7 @@ Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as Dropbox.
 
 ## Status / caveats
 
-- ✅ Service, both apps, template, Photos-aggregator `case "com.palm.onedrive"` (in
+- ✅ Service (on `_cloudcore`), generic `cloud-auth` app, template, Photos-aggregator `case "com.palm.onedrive"` (in
   [`../photos-integration/patches/Utils.js.patch`](../photos-integration/patches/Utils.js.patch)).
 - ⏳ **Account sign-in untested** — needs a real `client_id`.
 - ⚠️ **Consent screen:** an unverified hobbyist app shows a one-time "this app hasn't been

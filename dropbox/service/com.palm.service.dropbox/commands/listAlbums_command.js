@@ -1,4 +1,4 @@
-/*global DropboxApi, AccountCreds, PhotoLib, Acl, console */
+/*global Adapter, AccountCreds, PhotoLib, Acl, console */
 /* listAlbums - Photos-aggregator contract. args: { accountId }
  * Returns the single configured Dropbox folder as one album:
  *   { returnValue:true, albums:[ { aid, name, size:{images:N} } ] }
@@ -24,7 +24,7 @@ ListAlbumsCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var call = DropboxApi.listFolder(creds, PhotoLib.ALBUM_PATH, function (nc) { renewed = nc; });
+			var call = Adapter.listFolderRaw(creds, PhotoLib.ALBUM_PATH, function (nc) { renewed = nc; });
 			call.then(self, function () {
 				var data;
 				try { data = call.result; }

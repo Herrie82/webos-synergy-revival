@@ -1,6 +1,6 @@
 --- a/photos-src/base/Utils.js	2026-07-15 23:05:10.530980614 +0200
 +++ b/photos-src/base/Utils.js	2026-07-15 23:05:10.533980667 +0200
-@@ -414,6 +414,74 @@
+@@ -414,6 +414,88 @@
  								accountsCapability[account.templateId].computeNumFiles  =true;
  
  							break;
@@ -72,6 +72,20 @@
 +
 +							break;
 +
++
++							case "com.palm.kdrive":
++								// Synergy-revival kDrive photo source. Mirrors Dropbox/Box: listAlbums/
++								// listPhotos live in the main kDrive service (already bus-registered).
++								// One folder (Config.PHOTO_ALBUM_NAME "Pictures", under the private-space
++								// root) is surfaced as one album; src_big=/download?access_token=,
++								// src_small=/thumbnail?access_token= (no pre-signed links -> token in URL).
++								accountsCapability[account.templateId].getComments      =false;
++								accountsCapability[account.templateId].updateComments   =false;
++								accountsCapability[account.templateId].getUserInfo      =false;
++								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].serviceName      ="com.palm.service.kdrive";
++
++							break;
  							default:
  								accountsCapability[account.templateId]=new Capability();
  							break;

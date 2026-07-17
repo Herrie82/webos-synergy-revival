@@ -1,4 +1,4 @@
-/*global DropboxApi, AccountCreds, PhotoLib, Acl, console */
+/*global Adapter, AccountCreds, PhotoLib, Acl, console */
 /* listPhotos - Photos-aggregator contract. args: { accountId, aid }
  * aid is the Dropbox folder path from listAlbums. Returns one entry per image file:
  *   { returnValue:true, photos:[ { pid, src_big, src_small, caption, type:"image", fileName } ] }
@@ -23,7 +23,7 @@ ListPhotosCommandAssistant.prototype = {
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var lf = DropboxApi.listFolder(creds, aid, function (nc) { renewed = nc; });
+			var lf = Adapter.listFolderRaw(creds, aid, function (nc) { renewed = nc; });
 			lf.then(self, function () {
 				var data;
 				try { data = lf.result; }
@@ -39,7 +39,7 @@ ListPhotosCommandAssistant.prototype = {
 				function next() {
 					if (i >= images.length) { finish(); return; }
 					var e = images[i++];   // raw Dropbox entry: name, id, path_lower, path_display
-					var tl = DropboxApi.getTemporaryLink(creds, e.path_lower, function (nc) { renewed = nc; });
+					var tl = Adapter.getTemporaryLink(creds, e.path_lower, function (nc) { renewed = nc; });
 					tl.then(self, function () {
 						var link = null;
 						try { link = tl.result && tl.result.link; }

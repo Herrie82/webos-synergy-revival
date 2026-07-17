@@ -1,4 +1,4 @@
-/*global PcloudApi, AccountCreds, PhotoLib, console */
+/*global Adapter, AccountCreds, PhotoLib, console */
 /* listAlbums - Photos-aggregator contract. args: { accountId }
  * Surfaces the single configured pCloud folder as one album:
  *   { returnValue:true, albums:[ { aid, name, size:{images:N} } ] }
@@ -18,7 +18,7 @@ ListAlbumsCommandAssistant.prototype = {
 			var creds;
 			try { creds = credF.result; }
 			catch (e) { future.setException(e); return; }
-			var call = PcloudApi.listFolder(creds, PhotoLib.ALBUM_FOLDER, function () {});
+			var call = Adapter.listFolderRaw(creds, PhotoLib.ALBUM_FOLDER, function () {});
 			call.then(self, function () {
 				var data;
 				try { data = call.result; }

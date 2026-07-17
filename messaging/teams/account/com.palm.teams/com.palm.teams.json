@@ -32,6 +32,7 @@
             "capability": "MESSAGING",
             "capabilitySubtype": "IM",
             "id": "com.palm.teams.im",
+            "alwaysOn": true,
             "loc_shortName": "Teams",
             "icon": {
                 "loc_32x32": "images/teams-32x32.png",
