@@ -295,20 +295,39 @@ async fn receive<S: presage::store::Store>(
     mut manager: presage::Manager<S, presage::manager::Registered>,
     account: *mut crate::bridge_structs::PurpleAccount,
 ) {
-    match manager.receive_messages().await {
-        Err(err) => crate::bridge::purple_error(account, crate::bridge_structs::PURPLE_CONNECTION_ERROR_NETWORK_ERROR, err.to_string()),
-        Ok(messages) => {
-            crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("message stream open. stand by while catching up…\n"));
-            futures::pin_mut!(messages);
-            while let Some(received) = futures::StreamExt::next(&mut messages).await {
-                crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("received: {received:?}\n"));
-                crate::receive::handle_received(&mut manager, account, received).await;
+    // webOS: the receive stream ends spuriously (network hiccups) and, on a freshly-linked device,
+    // often before Received::QueueEmpty — so `connected:1` (receive.rs) is never sent and the account
+    // never reaches "online". The upstream code's own comment says "re-connecting is a good idea", but
+    // it forwarded a fatal network error instead, which libpurple/the transport turned into a hard
+    // login failure (account stuck "signing in" then offline). Loop and re-open the stream on end;
+    // only give up after several *consecutive* hard errors (which usually means the main device
+    // unlinked us). Once catching-up finishes, handle_received() marks the account connected.
+    let mut consecutive_errors: u32 = 0;
+    loop {
+        match manager.receive_messages().await {
+            Err(err) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 6 {
+                    crate::bridge::purple_error(account, crate::bridge_structs::PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
+                        format!("Receiver failed {consecutive_errors} times (device may have been unlinked): {err}"));
+                    return;
+                }
+                crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO,
+                    format!("receive_messages error ({consecutive_errors}/6): {err}; retrying…\n"));
             }
-            // we can end up here when the main device unlinks this device
-            // this also happens spuriously, perhaps due to network issues
-            // re-connecting is a good idea in either case, so we forward a network error to purple
-            crate::bridge::purple_error(account, crate::bridge_structs::PURPLE_CONNECTION_ERROR_NETWORK_ERROR, format!("Receiver was disconnected."));
+            Ok(messages) => {
+                consecutive_errors = 0;
+                crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("message stream open. stand by while catching up…\n"));
+                futures::pin_mut!(messages);
+                while let Some(received) = futures::StreamExt::next(&mut messages).await {
+                    crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("received: {received:?}\n"));
+                    crate::receive::handle_received(&mut manager, account, received).await;
+                }
+                crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("receive stream ended; reconnecting…\n"));
+            }
         }
+        // brief back-off so we never busy-spin on immediate failures
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
