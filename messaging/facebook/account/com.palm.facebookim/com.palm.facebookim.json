@@ -1,5 +1,5 @@
 [{
-    "templateId": "com.palm.facebook",
+    "templateId": "com.palm.facebookim",
     "loc_name": "Facebook",
     "icon": {
         "loc_32x32": "images/facebook-32x32.png",
@@ -7,7 +7,7 @@
     },
     "validator": {
         "customUI": {
-            "appId": "com.palm.app.facebook",
+            "appId": "com.palm.app.facebookim",
             "name": "validator.html"
         }
     },
@@ -18,20 +18,20 @@
         "com.palm.app.contacts",
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
-        "com.palm.app.facebook"
+        "com.palm.app.facebookim"
     ],
     "writePermissions": [
         "com.palm.app.contacts",
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
         "com.palm.app.messaging",
-        "com.palm.app.facebook"
+        "com.palm.app.facebookim"
     ],
     "capabilityProviders": [
         {
             "capability": "MESSAGING",
             "capabilitySubtype": "IM",
-            "id": "com.palm.facebook.im",
+            "id": "com.palm.facebookim.im",
             "alwaysOn": true,
             "loc_shortName": "Facebook",
             "icon": {
@@ -59,7 +59,7 @@
         },
         {
             "capability": "CONTACTS",
-            "id": "com.palm.facebook.contacts",
+            "id": "com.palm.facebookim.contacts",
             "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,

@@ -9,7 +9,7 @@ into webOS by **imlibpurpleservice**.
 | **Teams** | `com.palm.teams` | `com.palm.app.teams` | `purple-teams` | OAuth device-code → refresh_token as credential; silent re-login |
 | **Discord** | `com.palm.discord` | `com.palm.app.discord`, `com.palm.app.discordqr` | `purple-discord` (+ `libqrencode` for QR login) | QR or paste-token sign-in |
 | **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | **TDLib**-based; supersedes the older tgl `telegram-purple` |
-| **Facebook** | `com.palm.facebook` | `com.palm.app.facebook` | `purple-facebook` | Plain email + password; reuses on-device json-glib. Upstream fragile — 2FA accounts can't log in |
+| **Facebook** | `com.palm.facebookim` | `com.palm.app.facebookim` | `purple-facebook` | Plain email + password. Uses a distinct templateId — the stock dead `com.palm.facebook` template collides. Upstream fragile (2FA can't log in) |
 | **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
 | **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
 | **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-signal` (+ cross-built OpenJDK 11 JRE, libsignal_jni, libzkgroup) | Fully built; embeds a JVM to drive signal-cli. On-device test pending. See below |

@@ -12,7 +12,7 @@
 //
 // --- WHY A CUSTOM UI (not the generic checkCredentials validator) ------------
 // The stock 2011 imaccountvalidator has a hardcoded template whitelist and rejects
-// templateId "com.palm.facebook" with "Invalid templateId in payload" (error 22) ->
+// templateId "com.palm.facebookim" with "Invalid templateId in payload" (error 22) ->
 // the accounts UI shows "Unknown error" before Facebook is ever contacted. Teams,
 // Discord and Telegram all sidestep the stock validator with a customUI; Facebook
 // does the same here.
@@ -83,11 +83,11 @@ enyo.kind({
     handleLaunch: function(params) {
         this.params = params || {};
         this.template = null;
-        if (params.template && params.template.templateId === "com.palm.facebook") {
+        if (params.template && params.template.templateId === "com.palm.facebookim") {
             this.template = params.template;
         } else if (params.allTemplates) {
             for (var i = 0; i < params.allTemplates.length; i++) {
-                if (params.allTemplates[i].templateId === "com.palm.facebook") {
+                if (params.allTemplates[i].templateId === "com.palm.facebookim") {
                     this.template = params.allTemplates[i];
                     break;
                 }
@@ -148,8 +148,8 @@ enyo.kind({
             alias: this.getAlias(user),
             credentials: { common: { password: pass } },
             config: {},
-            template: this.template || { templateId: "com.palm.facebook" },
-            templateId: "com.palm.facebook"
+            template: this.template || { templateId: "com.palm.facebookim" },
+            templateId: "com.palm.facebookim"
         };
         this.$.crossAppResult.sendResult(result);
     },

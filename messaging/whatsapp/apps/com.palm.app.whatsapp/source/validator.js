@@ -1,37 +1,53 @@
 // WhatsApp account custom-validator UI (webOS Synergy / Accounts customUI).
 //
 // Loaded as a cross-app IFRAME by the Accounts framework. Enyo 0.10 app that returns
-// the account via enyo.CrossAppResult.sendResult({returnValue, username, credentials,
-// config, template, templateId}); the framework then calls createAccount and the
-// MESSAGING/IM capability's onEnabled hands off to imlibpurpletransport, which logs in
-// via prpl-hehoe-whatsmeow (hoehermann/purple-gowhatsapp, whatsmeow backend).
+// the account via enyo.CrossAppResult.sendResult(...); the framework then calls
+// createAccount and the MESSAGING/IM capability's onEnabled logs in via
+// prpl-hehoe-whatsmeow (hoehermann/purple-gowhatsapp).
 //
-// --- WHY A CUSTOM UI + HOW LOGIN COMPLETES -----------------------------------
-// The stock 2011 imaccountvalidator rejects our templateId, so (like the other IM
-// connectors) we use a customUI. WhatsApp multi-device auth is an interactive
-// handshake the prpl runs on connect: it either shows a QR code to scan from the phone
-// (WhatsApp > Linked Devices > Link a Device) or, with a phone number set, offers an
-// 8-character pairing code. Neither exists until the prpl connects, so this scene only
-// collects the phone number up front; the QR image / pairing code is surfaced during
-// login (getAuthChallenge / request_input) and completed from the Messaging app.
-//
-// The stored credential password is a non-empty sentinel — imlibpurpletransport rejects
-// an empty password before login; whatsmeow persists its own session in the prpl's
-// account store after the first successful link.
+// --- INLINE QR SIGN-IN (create-after-confirm), like Discord -------------------
+// WhatsApp multi-device auth is a QR device-link the prpl runs on connect: whatsmeow
+// raises the QR via purple_request_fields (field "qr_image"), which imlibpurpletransport
+// forwards to its AuthChannel (publishQRChallenge) — the SAME path Discord's QR uses.
+// So instead of just collecting a phone number, we drive that channel here:
+//   1. tap Sign In -> com.palm.imlibpurple/startQRLogin {serviceName:type_whatsapp, username:phone}
+//      spins up a PENDING prpl-hehoe-whatsmeow login purely to obtain the QR.
+//   2. we POLL com.palm.imlibpurple/getAuthChallenge and render the QR image INLINE here.
+//   3. the user opens WhatsApp > Linked Devices > Link a Device and scans it.
+//   4. whatsmeow persists its session under purple_user_dir/<phone> (keyed by phone, in the
+//      shared purple config dir), and the login reaches CONNECTED -> getAuthChallenge returns
+//      state="confirmed". ONLY THEN do we sendResult(), creating the account with the same
+//      phone number, so the very next login reuses the saved session (no second QR).
+// (No token/captcha path — WhatsApp is QR/pairing only. This is why we do NOT launch an
+//  Atlas webview to web.whatsapp.com: the QR is rendered natively in this card.)
 
 enyo.kind({
     name: "Validator",
     kind: enyo.VFlexBox,
     className: "enyo-bg",
 
+    SERVICE_NAME: "type_whatsapp",
+    QR_POLL_MS: 2000,
+    QR_TIMEOUT_MS: 130000,   // whatsmeow QR TTL (~20s each, several rotations) + grace
+
     components: [
         { kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
-            { kind: "Image", src: "images/header-icon.png" },
+            { kind: "Image", src: "images/header-icon.png", style: "width:32px; height:32px; vertical-align:middle; margin-right:6px;" },
             { kind: "Control", name: "title", content: "WhatsApp" }
         ]},
         { className: "accounts-header-shadow" },
+
+        // Transport auth channel (QR). Polled, not subscribed (subscription push is unreliable here).
+        { name: "startQR", kind: "PalmService", service: "palm://com.palm.imlibpurple/",
+          method: "startQRLogin", onSuccess: "qrStarted", onFailure: "qrStartFailed" },
+        { name: "getChallenge", kind: "PalmService", service: "palm://com.palm.imlibpurple/",
+          method: "getAuthChallenge", onSuccess: "gotChallenge", onFailure: "challengeError" },
+        { name: "submitAuth", kind: "PalmService", service: "palm://com.palm.imlibpurple/",
+          method: "submitAuthInput" },
+
         { kind: "Scroller", flex: 1, components: [
-            { className: "box-center", components: [
+            // -------- Phone entry --------
+            { name: "entryBox", className: "box-center", components: [
                 { kind: "RowGroup", caption: "DISPLAY NAME (OPTIONAL)", className: "accounts-group", components: [
                     { kind: "Input", name: "displayName", hint: "e.g. My WhatsApp", spellcheck: false,
                       autocorrect: false, autoWordComplete: false }
@@ -45,13 +61,36 @@ enyo.kind({
                     { name: "errorMessage", className: "enyo-text-error", flex: 1 }
                 ]},
                 { className: "accounts-body-text", style: "padding: 12px 16px; line-height: 1.4;", allowHtml: true,
-                  content: "Enter your phone number in <b>international format</b> (with country code, e.g. +15551234567), then tap <b>Sign In</b>." },
-                { className: "accounts-body-text", style: "padding: 4px 16px 12px; line-height: 1.4; opacity: 0.7;", allowHtml: true,
-                  content: "Finish linking from the <b>Messaging</b> app: on your phone open <b>WhatsApp → Linked Devices → Link a Device</b> and scan the QR code (or enter the pairing code shown)." },
+                  content: "Enter your phone number in <b>international format</b> (e.g. +15551234567) and tap <b>Sign In</b>. A QR code appears here — open <b>WhatsApp → Linked Devices → Link a Device</b> and scan it." },
                 { kind: "ActivityButton", name: "signInButton", caption: "Sign In", disabled: true, active: false,
                   className: "enyo-button-dark accounts-btn", onclick: "performSignIn" }
+            ]},
+
+            // -------- Inline QR view --------
+            { name: "qrBox", showing: false, className: "box-center", style: "text-align:center;", components: [
+                { name: "qrTitle", className: "accounts-body-text", style: "padding:14px 16px 4px; font-size:20px;",
+                  content: "Link WhatsApp" },
+                { name: "qrStatus", className: "accounts-body-text", style: "padding:2px 16px 10px; opacity:0.8; line-height:1.4;",
+                  content: "Preparing your QR code…" },
+                // Pairing code (preferred on a small screen): the user picks "Link with phone
+                // number instead" in WhatsApp and types this. Populated from resp.urlString.
+                { name: "pairingWrap", showing: false, style: "margin:6px auto 2px; text-align:center;", components: [
+                    { className: "accounts-body-text", style: "opacity:0.8;", content: "Enter this code in WhatsApp:" },
+                    { name: "pairingCode", style: "font-size:30px; font-weight:bold; letter-spacing:4px; padding:6px 0 4px; font-family:monospace;", content: "" },
+                    { className: "accounts-body-text", style: "opacity:0.6; font-size:13px;", content: "WhatsApp → Linked Devices → Link a Device → Link with phone number instead" },
+                    { className: "accounts-body-text", style: "opacity:0.5; padding-top:8px;", content: "— or scan the QR code below —" }
+                ]},
+                { name: "qrImageWrap", showing: false, style: "background:#fff; padding:14px; border-radius:10px; width:230px; height:230px; margin:10px auto; text-align:center;",
+                  components: [
+                    { name: "qrImg", kind: "Image", style: "display:block; width:230px; height:230px; margin:0 auto; image-rendering:pixelated; -ms-interpolation-mode:nearest-neighbor;" }
+                ]},
+                { className: "accounts-body-text", style: "padding:8px 24px; opacity:0.6; line-height:1.4;",
+                  content: "On your phone: WhatsApp → Settings → Linked Devices → Link a Device, then point it here. Each code expires after a few seconds and refreshes automatically." },
+                { name: "qrRefreshButton", showing: false, kind: "Button", caption: "Get a new code",
+                  className: "accounts-btn", onclick: "refreshQR" }
             ]}
         ]},
+
         { className: "accounts-footer-shadow" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
@@ -61,6 +100,7 @@ enyo.kind({
 
     create: function() {
         this.inherited(arguments);
+        this._qrActive = false;
         this.handleLaunch(enyo.windowParams || {});
     },
 
@@ -84,8 +124,11 @@ enyo.kind({
         this.validateInput();
     },
 
+    log: function(m) { try { enyo.log(m); } catch (e) {} },
+    trim: function(v) { return (v || "").replace(/^\s+|\s+$/g, ""); },
+
     getAlias: function(phone) {
-        var n = (this.$.displayName.getValue() || "").replace(/^\s+|\s+$/g, "");
+        var n = this.trim(this.$.displayName.getValue());
         return n || phone;
     },
 
@@ -118,6 +161,127 @@ enyo.kind({
         this.showError("");
         this.$.signInButton.setActive(true);
         this.$.signInButton.setDisabled(true);
+        this.startQRSignIn(phone);
+    },
+
+    // ---- create-after-confirm QR flow ---------------------------------------
+
+    startQRSignIn: function(phone) {
+        this._qrUser = phone;
+        this._qrActive = true;
+        this._qrPollCount = 0;
+        this._qrShownImage = false;
+        this.$.entryBox.hide();
+        this.$.qrBox.show();
+        this.$.pairingWrap.hide();
+        this.$.qrImageWrap.hide();
+        this.$.qrRefreshButton.hide();
+        this.$.qrStatus.setContent("Preparing your QR code…");
+        this.$.startQR.call({ serviceName: this.SERVICE_NAME, username: phone });
+    },
+
+    qrStarted: function() { if (this._qrActive) { this.startQRPoll(); } },
+
+    qrStartFailed: function(inSender, err) {
+        this.log("whatsapp: startQRLogin failed: " + enyo.json.stringify(err));
+        this.abortQR("Couldn't start QR sign-in. Please try again.");
+    },
+
+    startQRPoll: function() {
+        this.stopQRPoll();
+        var self = this;
+        this._qrPoll = window.setInterval(function () { self.pollChallenge(); }, this.QR_POLL_MS);
+        this.pollChallenge();
+    },
+
+    stopQRPoll: function() {
+        if (this._qrPoll) { window.clearInterval(this._qrPoll); this._qrPoll = null; }
+    },
+
+    pollChallenge: function() {
+        if (!this._qrActive) { this.stopQRPoll(); return; }
+        this._qrPollCount++;
+        if (this._qrPollCount * this.QR_POLL_MS > this.QR_TIMEOUT_MS) { this.qrExpired("Sign-in timed out."); return; }
+        this.$.getChallenge.call({ serviceName: this.SERVICE_NAME, username: this._qrUser });
+    },
+
+    gotChallenge: function(inSender, resp) {
+        if (!this._qrActive) { return; }
+        // Pairing code (transport surfaces gowhatsapp's pairing_code as urlString).
+        if (resp && resp.urlString) {
+            this.$.pairingCode.setContent(resp.urlString);
+            this.$.pairingWrap.show();
+        }
+        // whatsmeow rotates the QR every few seconds; always take the newest image.
+        if (resp && resp.qrImage) {
+            this.$.qrImg.setSrc(resp.qrImage);
+            this.$.qrImageWrap.show();
+            this._qrShownImage = true;
+        }
+        switch (resp && resp.state) {
+            case "waiting":
+                this.$.qrStatus.setContent(this._qrShownImage
+                    ? "Scan this code with WhatsApp on your phone."
+                    : "Preparing your QR code…");
+                break;
+            case "scanned":
+                this.$.qrStatus.setContent("Scanned — linking your device…");
+                break;
+            case "confirmed":
+                this.stopQRPoll();
+                this._qrActive = false;
+                this.$.qrStatus.setContent("Linked! Finishing setup…");
+                // whatsmeow has saved its session under the phone number; create the account
+                // (same phone) with a non-empty sentinel credential (imlibpurple rejects empty).
+                this.finishWithResult(this._qrUser);
+                break;
+            case "expired":
+                this.qrExpired("That code expired.");
+                break;
+            case "failed":
+                this.abortQR((resp && resp.message) || "WhatsApp sign-in failed.");
+                break;
+            default:
+                break;   // keep polling
+        }
+    },
+
+    challengeError: function(inSender, err) {
+        // transient luna errors while the pending login spins up — keep polling
+        this.log("whatsapp: getAuthChallenge error: " + enyo.json.stringify(err));
+    },
+
+    refreshQR: function() {
+        if (!this._qrUser) { return; }
+        this.$.qrRefreshButton.hide();
+        this._qrShownImage = false;
+        this.$.qrImageWrap.hide();
+        this.$.qrStatus.setContent("Getting a new code…");
+        this.$.submitAuth.call({ serviceName: this.SERVICE_NAME, username: this._qrUser, action: "refresh" });
+        this._qrActive = true; this._qrPollCount = 0; this.startQRPoll();
+    },
+
+    qrExpired: function(msg) {
+        this.stopQRPoll();
+        this._qrActive = false;
+        this.$.qrStatus.setContent(msg + " Tap below for a new one.");
+        this.$.qrImageWrap.hide();
+        this.$.qrRefreshButton.show();
+    },
+
+    abortQR: function(msg) {
+        this.stopQRPoll();
+        this._qrActive = false;
+        // cancel the pending transport login, return to the entry form with the error.
+        this.$.submitAuth.call({ serviceName: this.SERVICE_NAME, username: this._qrUser, action: "cancel" });
+        this.$.qrBox.hide();
+        this.$.entryBox.show();
+        this.$.signInButton.setActive(false);
+        this.$.signInButton.setDisabled(false);
+        this.showError(msg || "Sign-in failed.");
+    },
+
+    finishWithResult: function(phone) {
         var result = {
             returnValue: true,
             username: phone,
@@ -131,6 +295,10 @@ enyo.kind({
     },
 
     cancel: function() {
+        if (this._qrActive && this._qrUser) {
+            this.$.submitAuth.call({ serviceName: this.SERVICE_NAME, username: this._qrUser, action: "cancel" });
+        }
+        this.stopQRPoll();
         this.$.crossAppResult.sendResult({ returnValue: false });
     }
 });

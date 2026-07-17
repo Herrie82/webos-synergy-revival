@@ -1,6 +1,6 @@
 #!/bin/bash
 # deploy-facebook.sh — install the Facebook Synergy surface onto the connected
-# TouchPad via novacom: account template + custom setup app (com.palm.app.facebook)
+# TouchPad via novacom: account template + custom setup app (com.palm.app.facebookim)
 # + the prpl plugin. Mirrors deploy-discord.sh / deploy-telegram.sh.
 #
 # Facebook is a plain username(email)/password libpurple account (prpl-facebook), so
@@ -20,20 +20,28 @@ nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
 BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
 PRPL="$PKG/plugin/purple-facebook/build-arm/libfacebook.stripped.so"
 
-echo "== 1. push custom setup app com.palm.app.facebook =="
-APPDIR=/media/cryptofs/apps/usr/palm/applications/com.palm.app.facebook
+echo "== 0. remove the stock/old com.palm.facebook template + app (avoid templateId collision) =="
+# webOS ships a dead stock 'com.palm.facebook' template (validator ->
+# com.palm.service.contacts.facebook/checkCredentials) + it shares capability ids with ours,
+# so an account added under templateId com.palm.facebook invokes the stock checkCredentials and
+# returns "bad request". We use a distinct templateId (com.palm.facebookim) and clear the old one.
+nr "mount -o remount,rw /dev/mapper/store-root / ; rm -rf /usr/palm/public/accounts/com.palm.facebook ; mount -o remount,ro /dev/mapper/store-root / || true"
+nr "rm -rf /media/cryptofs/apps/usr/palm/applications/com.palm.app.facebook"
+
+echo "== 1. push custom setup app com.palm.app.facebookim =="
+APPDIR=/media/cryptofs/apps/usr/palm/applications/com.palm.app.facebookim
 nr "mkdir -p $APPDIR/source $APPDIR/images"
-cd "$PKG/apps/com.palm.app.facebook"
+cd "$PKG/apps/com.palm.app.facebookim"
 for f in appinfo.json validator.html depends.js framework_config.json source/validator.js \
          images/header-icon.png images/icon-256x256.png; do
   novacom put "file://$APPDIR/$f" < "$f"
 done
 
 echo "== 2. install account template (rootfs rw) =="
-ACC=/usr/palm/public/accounts/com.palm.facebook
+ACC=/usr/palm/public/accounts/com.palm.facebookim
 nr "mount -o remount,rw /dev/mapper/store-root / ; mkdir -p $ACC/images"
-cd "$PKG/account/com.palm.facebook"
-novacom put "file://$ACC/com.palm.facebook.json" < com.palm.facebook.json
+cd "$PKG/account/com.palm.facebookim"
+novacom put "file://$ACC/com.palm.facebookim.json" < com.palm.facebookim.json
 for f in images/facebook-32x32.png images/facebook-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"
 done
