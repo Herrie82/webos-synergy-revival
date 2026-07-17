@@ -28,3 +28,7 @@ CMakeFiles/
 # libqrencode in-tree build dirs
 messaging/*/plugin/libqrencode/inst/
 messaging/*/plugin/libqrencode/use/
+
+# --- prebuilt cross-deps (large binaries; not committed) ---
+/build-output/
+messaging/libpurple/
