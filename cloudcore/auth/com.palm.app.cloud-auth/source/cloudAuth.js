@@ -60,7 +60,10 @@ enyo.kind({
 
 	components: [
 		{ kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
-			{ kind: "Control", name: "title", content: "Cloud Account" }
+			// Provider icon, shown next to the title to match the IM (AIM/Telegram) add-account
+			// header. Hidden until create() resolves the icon from the template.
+			{ kind: "Image", name: "headerIcon", className: "accounts-header-icon", showing: false },
+			{ kind: "Control", name: "title", content: "Sign In" }
 		]},
 		// svc.service is set at runtime from the template (see create()).
 		{ name: "svc", kind: "PalmService", onFailure: "svcFailure" },
@@ -110,8 +113,16 @@ enyo.kind({
 			this.serviceUri += "/";
 		}
 		if (this.serviceUri) { this.$.svc.setService(this.serviceUri); }
-		if (tmpl.loc_name) { this.$.title.setContent(tmpl.loc_name); }
-		else if (this.params.account && this.params.account.alias) { this.$.title.setContent(this.params.account.alias); }
+		// Header reads "Sign In" (matching the IM/AIM add-account header); the provider is identified
+		// by the icon, so we don't overwrite the title with the service name.
+		// Header icon: the framework hands us an ALREADY-ABSOLUTE icon path in the template
+		// (e.g. /usr/palm/public/accounts/com.palm.gdrive/images/gdrive-48x48.png), reachable under
+		// the app's file:// origin, so use it directly. Re-auth (modify) passes no template -> stays hidden.
+		var iconPath = tmpl.icon && (tmpl.icon.loc_48x48 || tmpl.icon.loc_32x32);
+		if (iconPath) {
+			this.$.headerIcon.setSrc(iconPath);
+			this.$.headerIcon.setShowing(true);
+		}
 		this.log("cloud-auth: launch params " + enyo.json.stringify(this.params));
 		this.log("cloud-auth: serviceUri=" + (this.serviceUri || "(none)"));
 	},
