@@ -68,7 +68,7 @@ enyo.kind({
     components: [
         { kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
             { kind: "Image", src: "images/header-icon.png" },
-            { kind: "Control", name: "title", content: "Microsoft Teams" }
+            { kind: "Control", name: "title", content: "Sign In"}
         ]},
         { className: "accounts-header-shadow" },
         // Entry form (email + buttons). Hidden while the inline OAuth webview is showing.

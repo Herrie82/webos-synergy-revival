@@ -30,7 +30,7 @@ enyo.kind({
     components: [
         { kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
             { kind: "Image", src: "images/header-icon.png", style: "width:32px; height:32px; vertical-align:middle; margin-right:6px;" },
-            { kind: "Control", name: "title", content: "Signal" }
+            { kind: "Control", name: "title", content: "Sign In"}
         ]},
         { className: "accounts-header-shadow" },
 

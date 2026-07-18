@@ -47,7 +47,7 @@ enyo.kind({
     components: [
         { kind: "Toolbar", className: "enyo-toolbar-light accounts-header", pack: "center", components: [
             { kind: "Image", src: "images/header-icon.png" },
-            { kind: "Control", name: "title", content: "Telegram" }
+            { kind: "Control", name: "title", content: "Sign In"}
         ]},
         { className: "accounts-header-shadow" },
         { kind: "Scroller", flex: 1, components: [
