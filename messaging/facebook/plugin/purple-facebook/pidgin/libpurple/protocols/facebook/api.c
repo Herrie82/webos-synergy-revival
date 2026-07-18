@@ -1454,8 +1454,25 @@ fb_api_cb_publish_ms_r(FbApi *api, GByteArray *pload)
 			fb_api_message_send(api, msg);
 		}
 	} else {
-		fb_api_error(api, FB_API_ERROR_GENERAL,
-					 "Failed to send message");
+		/* The server REJECTED this message (e.g. errStr "This thread is disabled" when the
+		 * recipient has deactivated Messenger). webOS: a single rejected message must NOT drop the
+		 * whole Facebook connection, so raise it as NON-FATAL (fb_cb_api_error skips
+		 * purple_connection_error for FB_API_ERROR_NONFATAL) and surface the server's reason. Then
+		 * DROP the offending message and continue with the rest of the queue, so we don't wedge
+		 * re-sending a message the server will never accept. */
+		gchar *errStr = fb_json_node_get_str(root, "$.errStr", NULL);
+		fb_api_error(api, FB_API_ERROR_NONFATAL,
+		             (errStr != NULL && *errStr != '\0') ? errStr : "Failed to send message");
+		g_free(errStr);
+
+		if (!g_queue_is_empty(priv->msgs)) {
+			msg = g_queue_pop_head(priv->msgs);
+			fb_api_message_free(msg);
+			if (!g_queue_is_empty(priv->msgs)) {
+				msg = g_queue_peek_head(priv->msgs);
+				fb_api_message_send(api, msg);
+			}
+		}
 	}
 
 	g_object_unref(values);
