@@ -1,130 +1,147 @@
 #!/bin/bash
 # =============================================================================
-# Automated Synergy connector regression test (no user interaction).
+# Automated Synergy connector test harness — file-driven, no user interaction.
 #
-# Reboots the TouchPad to a clean state, waits for every configured account to
-# auto-login from its STORED session/token, then reports which connectors reach a
-# working state. Catches regressions from transport/plugin changes without anyone
-# touching the device.
+# Reads an accounts file, PROVISIONS each account on the device via the accounts
+# service (createAccount), waits for the connector to attempt login, and classifies
+# the outcome:
+#     online     — imloginstate reached state="online"  (full login worked)
+#     challenge  — connector reached an interactive-auth point (QR / 2FA / pairing
+#                  code was raised) — i.e. the plugin works, it just needs a human
+#     error      — auth/network error or offline with an errorCode
+#     timeout    — no state change (never attempted / stuck)
+# Each account declares its EXPECTED outcome; PASS when actual matches (or expect=any).
 #
-# Scope & honesty:
-#   - Messaging (IM) connectors are validated from the imlibpurpletransport log:
-#     an account is PASS when its imloginstate reaches state="online" with
-#     errorCode="AcctMgr_No_Error"; FAIL otherwise (with the errorCode/reason).
-#   - Interactive-auth connectors (Signal/WhatsApp/Facebook-2FA) are tested for
-#     SESSION REUSE only — a fresh from-scratch link needs a phone and cannot be
-#     automated. That's exactly the regression we care about day to day.
-#   - Documents (Box/Dropbox) + Photos are probed via their luna services; luna-send
-#     replies don't print reliably over novacom, so these are best-effort (marked
-#     SKIP if we can't read a result) and lean on the service's own log.
+# Accounts file (pipe-delimited, see accounts.example.tsv):
+#     templateId | capabilityId | username | password | expect
 #
-# Usage:  tests/test-connectors.sh [--no-reboot] [--wait SECONDS]
-#   --no-reboot   test the current running state (don't reboot first)
-#   --wait N      seconds to wait for accounts to settle after boot (default 150)
+# Usage:
+#   tests/test-connectors.sh [--file PATH] [--cleanup] [--per-acct-wait SECONDS]
+#     --file PATH        accounts file (default: tests/accounts.local.tsv)
+#     --cleanup          deleteAccount every account this run created (leaves device clean)
+#     --per-acct-wait N  seconds to wait for each account to settle (default 90)
 # =============================================================================
 set -u
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+ACCT_FILE="$HERE/accounts.local.tsv"
+CLEANUP=0
+WAIT=90
 DEVLOG=/media/internal/imstdout.log
-REPORT_DIR="$(cd "$(dirname "$0")/.." && pwd)/build-output"
-REPORT="$REPORT_DIR/connector-test-$(date +%Y%m%d-%H%M%S).txt"
-mkdir -p "$REPORT_DIR"
+REPORT="$REPO/build-output/connector-test-$(date +%Y%m%d-%H%M%S).txt"
+mkdir -p "$(dirname "$REPORT")"
 
-DO_REBOOT=1
-WAIT_SECS=150
 while [ $# -gt 0 ]; do
   case "$1" in
-    --no-reboot) DO_REBOOT=0 ;;
-    --wait) shift; WAIT_SECS="$1" ;;
+    --file) shift; ACCT_FILE="$1" ;;
+    --cleanup) CLEANUP=1 ;;
+    --per-acct-wait) shift; WAIT="$1" ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac; shift
 done
 
-# run a script on the device via novacom (script on stdin). $1=script, $2=timeout
-dev() { printf '%s\n' "$1" | timeout "${2:-60}" novacom run file://bin/sh 2>/dev/null; }
+[ -f "$ACCT_FILE" ] || { echo "accounts file not found: $ACCT_FILE (copy accounts.example.tsv)"; exit 2; }
 
+dev() { printf '%s\n' "$1" | timeout "${2:-60}" novacom run file://bin/sh 2>/dev/null; }
 log() { echo "$@" | tee -a "$REPORT"; }
 
 log "==================================================================="
-log " Synergy connector regression test  —  $(date)"
+log " Synergy connector test  —  $(date)"
+log " accounts file: $ACCT_FILE"
 log "==================================================================="
 
-# ---- 1. reboot (optional) + wait for the device to come back ----------------
-if [ "$DO_REBOOT" = "1" ]; then
-  log "[*] Rebooting device to a clean state…"
-  dev ": > $DEVLOG; sync; (reboot 2>/dev/null || tellbootie 2>/dev/null) &" 30 >/dev/null
-  sleep 20
-  i=0
-  until timeout 12 novacom run file://bin/true >/dev/null 2>&1; do
-    i=$((i+1)); [ $i -gt 40 ] && { log "[!] device did not come back — ABORT"; exit 1; }
+# Sanity: transport reachable?
+if ! dev 'pgrep -f imlibpurpletransport >/dev/null 2>&1 && echo up' 20 | grep -q up; then
+  log "[!] imlibpurpletransport is not running (no account online yet). Continuing — creating an"
+  log "    account will dbus-activate it."
+fi
+
+PASS=0; FAIL=0; CREATED_IDS=""
+
+# classify the login outcome for a given accountId, polling up to $WAIT seconds
+classify() {
+  local aid="$1" svc="$2" deadline=$(( $(date +%s) + WAIT ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    # newest imloginstate for this account
+    local rec st ec
+    rec="$(dev 'grep -aE "loginStateQuery success|imloginstate" '"$DEVLOG"' 2>/dev/null | grep -a "'"$aid"'" | tail -1' 25)"
+    st="$(echo "$rec"  | grep -aoE 'state":"[a-z-]+"' | tail -1 | cut -d'"' -f3)"
+    ec="$(echo "$rec"  | grep -aoE 'errorCode":"[A-Za-z_]+"' | tail -1 | cut -d'"' -f3)"
+    if [ "$st" = "online" ]; then echo "online:$ec"; return; fi
+    # interactive-auth reached? (QR/2FA/pairing raised for this service)
+    if dev 'grep -aiE "adapter_request_fields: QR for service='"$svc"'|publishQRChallenge key=[^ ]*'"$svc"'|FB2FA: login-approval challenge|awaiting_2fa=1" '"$DEVLOG"' 2>/dev/null | tail -1 | grep -q .' 25; then
+      echo "challenge:$ec"; return
+    fi
+    # hard error?
+    if [ -n "$ec" ] && [ "$ec" != "AcctMgr_No_Error" ]; then echo "error:$ec"; return; fi
+    if dev 'grep -aiE "loginResult:.*'"$aid"'.*noRetry=1|account_login_failed.*'"$svc"'" '"$DEVLOG"' 2>/dev/null | tail -1 | grep -q .' 25; then
+      echo "error:${ec:-login_failed}"; return
+    fi
     sleep 6
   done
-  log "[*] Device back after ~$((i*6+20))s."
-  # wait for the transport to launch
-  j=0
-  while [ $j -lt 40 ]; do
-    dev 'grep -aq "imlibpurpletransport starting" '"$DEVLOG"' 2>/dev/null && echo up' 20 | grep -q up && break
-    sleep 5; j=$((j+1))
-  done
-fi
+  echo "timeout:${ec:-none}"
+}
 
-log "[*] Waiting ${WAIT_SECS}s for accounts to settle (sync/reconnect)…"
-sleep "$WAIT_SECS"
+# ---- provision + test each account -----------------------------------------
+while IFS='|' read -r tmpl cap user pass expect; do
+  # trim + skip comments/blanks
+  tmpl="$(echo "$tmpl" | sed 's/^ *//;s/ *$//')"; [ -z "$tmpl" ] && continue
+  case "$tmpl" in \#*) continue;; esac
+  cap="$(echo "$cap" | sed 's/^ *//;s/ *$//')"
+  user="$(echo "$user" | sed 's/^ *//;s/ *$//')"
+  pass="$(echo "$pass" | sed 's/^ *//;s/ *$//')"
+  expect="$(echo "$expect" | sed 's/^ *//;s/ *$//')"; [ -z "$expect" ] && expect="any"
 
-# ---- 2. MESSAGING connectors: parse each account's login state --------------
-log ""
-log "----- MESSAGING (IM) connectors -----------------------------------"
-# Pull the newest loginStateQuery result (it lists every account) + presage-specific signals.
-STATE_JSON="$(dev 'grep -aE "loginStateQuery success" '"$DEVLOG"' 2>/dev/null | tail -1' 30)"
+  log ""
+  log "----- $tmpl  ($user) -----"
 
-# Known service -> friendly name map (extend as connectors are added).
-SERVICES="type_telegram:Telegram type_facebook:Facebook type_signal:Signal type_whatsapp:WhatsApp type_discord:Discord type_teams:Teams type_gchat:GoogleChat type_googlechat:GoogleChat"
+  # 1. createAccount
+  payload="{\"templateId\":\"$tmpl\",\"username\":\"$user\",\"credentials\":{\"common\":{\"password\":\"$pass\"}},\"capabilityProviders\":[{\"id\":\"$cap\"}]}"
+  dev "echo TESTMARKER_$tmpl >> $DEVLOG; luna-send -n 1 -a com.palm.app.accounts \"luna://com.palm.service.accounts/createAccount\" '$payload' >/dev/null 2>&1; echo done" 40 >/dev/null
+  sleep 8
 
-PASS=0; FAIL=0; SEEN=0
-for pair in $SERVICES; do
-  svc="${pair%%:*}"; name="${pair##*:}"
-  # find this service's record inside the loginStateQuery json
-  rec="$(echo "$STATE_JSON" | grep -aoE '\{[^{}]*serviceName":"'"$svc"'"[^{}]*\}' | tail -1)"
-  [ -z "$rec" ] && rec="$(echo "$STATE_JSON" | grep -aoE 'serviceName":"'"$svc"'"[^}]*' | tail -1)"
-  [ -z "$rec" ] && continue   # connector not configured on this device
-  SEEN=$((SEEN+1))
-  st="$(echo "$rec" | grep -aoE 'state":"[a-z-]+"' | head -1 | cut -d'"' -f3)"
-  ec="$(echo "$rec" | grep -aoE 'errorCode":"[A-Za-z_]+"' | head -1 | cut -d'"' -f3)"
-  user="$(echo "$rec" | grep -aoE 'username":"[^"]*"' | head -1 | cut -d'"' -f3)"
-  if [ "$st" = "online" ]; then
-    log "  [PASS] $name  ($user)  state=online"
+  # 2. resolve the accountId + serviceName the transport actually enabled
+  info="$(dev 'grep -aE "accountEnabled id=.*serviceName=|getAccountInfoResult" '"$DEVLOG"' 2>/dev/null | tail -3' 25)"
+  aid="$(echo "$info" | grep -aoE 'accountEnabled id=[^,]+' | tail -1 | sed 's/accountEnabled id=//')"
+  svc="$(echo "$info" | grep -aoE 'serviceName=type_[a-z]+' | tail -1 | sed 's/serviceName=//')"
+  if [ -z "$aid" ]; then
+    log "  [FAIL] createAccount did not enable an account (payload rejected? capability wrong?)"
+    FAIL=$((FAIL+1)); continue
+  fi
+  CREATED_IDS="$CREATED_IDS $aid"
+  log "  provisioned: accountId=$aid  service=${svc:-?}"
+
+  # 3. classify login outcome
+  outcome="$(classify "$aid" "${svc:-type_unknown}")"
+  state="${outcome%%:*}"; reason="${outcome##*:}"
+  ok=0
+  case "$expect" in
+    any) ok=1 ;;
+    "$state") ok=1 ;;
+  esac
+  if [ "$ok" = "1" ]; then
+    log "  [PASS] outcome=$state  (expected=$expect${reason:+, reason=$reason})"
     PASS=$((PASS+1))
   else
-    log "  [FAIL] $name  ($user)  state=${st:-?}  errorCode=${ec:-?}"
+    log "  [FAIL] outcome=$state  (expected=$expect${reason:+, reason=$reason})"
     FAIL=$((FAIL+1))
   fi
-done
-[ "$SEEN" = "0" ] && log "  (no IM accounts found in the login-state — is anything configured?)"
+done < "$ACCT_FILE"
 
-# Buddy-sync sanity: did any connector actually populate contacts this boot?
-BUD="$(dev 'grep -aicE "updateBuddyStatus|getFullBuddyList: buddy" '"$DEVLOG"' 2>/dev/null' 20)"
-log "  buddy/contact updates this boot: ${BUD:-0}"
-
-# ---- 3. DOCUMENTS + PHOTOS (best-effort probe) ------------------------------
-log ""
-log "----- DOCUMENTS / PHOTOS services --------------------------------"
-# Discover installed doc/photo services on device and whether their daemon is registered.
-DOCS="$(dev 'for s in com.palm.service.boxnet com.palm.service.dropbox com.palm.dropbox com.palm.box; do
-  ls -d /usr/palm/services/$s* /media/cryptofs/apps/*/usr/palm/services/$s* 2>/dev/null | head -1; done' 25)"
-if [ -z "$DOCS" ]; then
-  log "  [SKIP] no Box/Dropbox document services found installed"
-else
-  echo "$DOCS" | while read -r d; do
-    [ -z "$d" ] && continue
-    svc="$(basename "$d" | sed 's/\.service$//')"
-    log "  [INFO] found service: $svc  (luna-probe result not readable over novacom — check service log)"
+# ---- optional cleanup -------------------------------------------------------
+if [ "$CLEANUP" = "1" ] && [ -n "$CREATED_IDS" ]; then
+  log ""
+  log "[*] Cleanup: deleting accounts created this run…"
+  for aid in $CREATED_IDS; do
+    dev "luna-send -n 1 -a com.palm.app.accounts \"luna://com.palm.service.accounts/deleteAccount\" '{\"accountId\":\"$aid\"}' >/dev/null 2>&1" 25 >/dev/null
+    log "    deleted $aid"
   done
 fi
 
-# ---- 4. summary -------------------------------------------------------------
 log ""
 log "----- SUMMARY -----------------------------------------------------"
-log "  IM connectors:  PASS=$PASS  FAIL=$FAIL  (of $SEEN configured)"
-log "  Full report:    $REPORT"
+log "  PASS=$PASS  FAIL=$FAIL"
+log "  report: $REPORT"
 log "==================================================================="
-# exit non-zero if any IM connector failed (useful for CI / loop mode)
 [ "$FAIL" = "0" ]

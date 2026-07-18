@@ -1,0 +1,19 @@
+# Synergy connector test accounts — consumed by tests/test-connectors.sh
+#
+# One account per line, pipe-delimited (leading/trailing spaces trimmed). Blank lines and lines
+# starting with '#' are ignored. Copy this to accounts.local.tsv (gitignored) and fill in real
+# creds — DO NOT commit real passwords/tokens.
+#
+# Fields:
+#   templateId    | the account template id            (e.g. com.palm.telegram)
+#   capabilityId  | the MESSAGING/IM capability id      (e.g. com.palm.telegram.im)
+#   username      | account username / phone / email
+#   password      | credential (password, token, or session); leave empty for QR/interactive links
+#   expect        | expected end state: online | challenge | any   (what counts as PASS)
+#
+# templateId            | capabilityId              | username                  | password        | expect
+com.palm.telegram       | com.palm.telegram.im      | +15551234567              |                 | challenge
+com.palm.facebookim     | com.palm.facebookim.im    | facebook.com@example.org  | SECRET          | online
+com.palm.discord        | com.palm.discord.im       | user@example.org          | SECRET          | online
+com.palm.signal         | com.palm.signal.im        | +15551234567              |                 | challenge
+com.palm.whatsapp       | com.palm.whatsapp.im      | 15551234567@s.whatsapp.net|                 | challenge
