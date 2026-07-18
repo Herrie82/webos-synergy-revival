@@ -8146,7 +8146,30 @@ discord_join_chat(PurpleConnection *pc, GHashTable *chatdata)
 
 	guint64 id = to_int(g_hash_table_lookup(chatdata, "id"));
 
-	discord_join_chat_by_id(da, id, TRUE);
+	gboolean fetched = discord_join_chat_by_id(da, id, TRUE);
+
+	/* webOS keeps no local message logs, so an explicitly-opened channel shows an empty
+	 * thread whenever discord_join_chat_by_id declined to fetch -- typically because the
+	 * stored last-seen id already equals the channel's last_message_id (seeded by the
+	 * login-time limit=1 poll), so it thinks it is "up to date" with a log that does not
+	 * exist here. This is the channel-side analogue of discord_backfill_dm_history: the
+	 * first time a channel is opened, backfill its most recent messages. A persisted
+	 * "chan-backfilled-<id>" marker means reconnects / re-taps neither re-fetch nor
+	 * duplicate. discord_open_chat() (run inside join_chat_by_id with present=TRUE) has
+	 * already created the conversation, so discord_got_history_of_room routes correctly. */
+	gchar *marker = g_strdup_printf("chan-backfilled-%" G_GUINT64_FORMAT, id);
+	if (!fetched && !purple_account_get_bool(da->account, marker, FALSE)) {
+		DiscordChannel *channel = discord_get_channel_global_int(da, id);
+		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
+		                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=100", id);
+		if (channel)
+			discord_fetch_url(da, url, NULL, discord_got_history_of_room, channel);
+		else
+			discord_fetch_url(da, url, NULL, discord_got_history_static, NULL);
+		g_free(url);
+	}
+	purple_account_set_bool(da->account, marker, TRUE);
+	g_free(marker);
 }
 
 static void

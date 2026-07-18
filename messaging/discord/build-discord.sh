@@ -6,15 +6,20 @@
 # the QR defines + include/link flags manually.
 set -e
 source ~/webos/wpe/env-glibc-gcc125.sh
-export PKG_CONFIG_PATH=~/webos/teams-port/deploy/purple/lib/pkgconfig:~/webos/wpe/staging-glibc-252/lib/pkgconfig
+# Authoritative source now lives in this monorepo (webos-synergy-revival); the old
+# ~/webos/discord-port tree is GONE. purple staging + libqrencode are re-homed here too.
+REPO=/home/herrie/Documents/GitHub/webos-synergy-revival
+export PKG_CONFIG_PATH=$REPO/messaging/libpurple/lib/pkgconfig:~/webos/wpe/staging-glibc-252/lib/pkgconfig
 export PKG_CONFIG_LIBDIR=$PKG_CONFIG_PATH
 
-cd ~/webos/discord-port/src/purple-discord
+cd $REPO/messaging/discord/plugin/purple-discord
 
-QRINC=$HOME/webos/discord-port/src/libqrencode/inst/usr/include
-QRA=$HOME/webos/discord-port/src/libqrencode/inst/usr/lib/libqrencode.a
+# libqrencode: in-monorepo headers + static lib (build once via libqrencode/build-libqrencode.sh).
+QRINC=$REPO/messaging/discord/plugin/libqrencode
+QRA=$REPO/messaging/discord/plugin/libqrencode/libqrencode.a
 SSLINC=$HOME/webos/wpe/staging-glibc-252/include
 SSLLIB=$HOME/webos/wpe/staging-glibc-252/lib
+[ -f "$QRA" ] || { echo "libqrencode.a missing; run libqrencode/build-libqrencode.sh first"; exit 1; }
 
 rm -f libdiscord.so
 make CC="$CC" USE_QRCODE_AUTH=0 \
