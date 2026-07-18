@@ -133,8 +133,12 @@ enyo.kind({
 
     getAlias: function(phone) {
         var n = this.trim(this.$.displayName.getValue());
-        // strip the "@s.whatsapp.net" JID suffix for a readable display name
-        return n || String(phone || "").replace(/@s\.whatsapp\.net$/, "");
+        if (n) { return n; }
+        // No custom display name: default to the phone number in readable +E.164 form (strip the
+        // "@s.whatsapp.net" JID suffix, drop any existing '+', then prepend one) instead of the raw
+        // digits/JID -- so the account reads like the Signal/Telegram ones (e.g. "+31652044684").
+        var digits = String(phone || "").replace(/@s\.whatsapp\.net$/, "").replace(/^\+/, "");
+        return digits ? ("+" + digits) : "";
     },
 
     normalizePhone: function(v) {
