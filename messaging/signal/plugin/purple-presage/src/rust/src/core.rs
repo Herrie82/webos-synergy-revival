@@ -415,6 +415,19 @@ pub async fn main(
             if let Some(mut manager) = login(config_store, account).await {
                 // Login has succeeded, forward (cached) contacts for bitlbee. It tends to forget them after re-connects.
                 crate::contacts::forward_contacts(account, &mut manager).await;
+                // webOS: re-request the contact list from the primary (phone) on EVERY login, not just
+                // at initial link. The address-book NAMES the user has on their phone only reach a
+                // linked device via this contact sync; without re-requesting, contacts added/renamed
+                // since pairing stay nameless (shown as bare +<phone>). The primary answers with a
+                // ContactSync in the receive stream (started just below), which presage stores and
+                // receive.rs feeds back through forward_contacts so the buddies gain their names.
+                // Bounded by a timeout so a non-responding primary can't wedge the login (see the
+                // historical "blocks forever" note in link()); the receive loop keeps running regardless.
+                match tokio::time::timeout(std::time::Duration::from_secs(20), manager.request_contacts()).await {
+                    Ok(Ok(())) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, String::from("requested contact sync from primary device\n")),
+                    Ok(Err(err)) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("request_contacts error: {err:?}\n")),
+                    Err(_) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, String::from("request_contacts timed out (primary not responding)\n")),
+                }
                 // clone the manager so we can receive messages in one task and process commands in the other
                 let manager_receive = manager.clone();
                 let local = tokio::task::LocalSet::new();

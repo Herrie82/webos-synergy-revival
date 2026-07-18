@@ -7,28 +7,51 @@ pub async fn forward_contacts<C: presage::store::Store + 'static>(
     account: *mut crate::bridge_structs::PurpleAccount,
     manager: &mut presage::Manager<C, presage::manager::Registered>,
 ) {
-    match manager.store().contacts().await {
+    // Collect first so the store() borrow is released before we call manager.retrieve_profile_*
+    // (which needs &mut manager) inside the loop below.
+    let contacts: Vec<presage::model::contacts::Contact> = match manager.store().contacts().await {
         Err(err) => {
             crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_ERROR, format!("Unable to get contacts due to {err:?}\n"));
+            return;
         }
-        Ok(contacts) => {
-            for presage::model::contacts::Contact {
-                name,
-                uuid,
-                phone_number,
-                ..
-            } in contacts.flatten()
-            {
-                let message = crate::bridge::Message {
-                    account: account,
-                    who: Some(uuid.to_string()),
-                    name: if name.is_empty() { None } else { Some(name) },
-                    phone_number: phone_number.map(|pn| pn.to_string()),
-                    ..Default::default()
-                };
-                crate::bridge::append_message(message);
+        Ok(contacts) => contacts.flatten().collect(),
+    };
+
+    for presage::model::contacts::Contact {
+        name,
+        uuid,
+        phone_number,
+        profile_key,
+        ..
+    } in contacts
+    {
+        // webOS: on a linked (secondary) device the address-book `name` synced from the primary
+        // phone is frequently empty, so the buddy would show only its raw UUID. Fall back to the
+        // contact's own Signal profile name (what they set for themselves) when we have a valid
+        // profile key, so buddies get a human alias. phone_number is still forwarded separately.
+        let mut display_name = name;
+        if display_name.is_empty() && profile_key.len() == presage::libsignal_service::zkgroup::PROFILE_KEY_LEN {
+            if let Ok(profilek) = profile_key.try_into() {
+                let profile_key = presage::libsignal_service::prelude::ProfileKey::create(profilek);
+                match manager.retrieve_profile_by_uuid(uuid, profile_key).await {
+                    Ok(profile) => {
+                        if let Some(profile_name) = profile.name {
+                            display_name = profile_name.to_string();
+                        }
+                    }
+                    Err(err) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("No profile name for {uuid}: {err:?}\n")),
+                }
             }
         }
+
+        let message = crate::bridge::Message {
+            account: account,
+            who: Some(uuid.to_string()),
+            name: if display_name.is_empty() { None } else { Some(display_name) },
+            phone_number: phone_number.map(|pn| pn.to_string()),
+            ..Default::default()
+        };
+        crate::bridge::append_message(message);
     }
 }
 
@@ -79,7 +102,7 @@ pub async fn get_profile<C: presage::store::Store + 'static>(
     uuid: presage::libsignal_service::prelude::Uuid,
 ) -> Result<presage::model::contacts::Contact, Box<dyn std::error::Error>> {
     let contact = manager.store().contact_by_id(&presage::libsignal_service::protocol::ServiceId::Aci(uuid.into())).await?;
-    let contact = contact.ok_or("No contact information available.".to_string())?;
+    let mut contact = contact.ok_or("No contact information available.".to_string())?;
 
     // we have a contact, try to update their profile
     match contact.profile_key.len() {
@@ -89,6 +112,13 @@ pub async fn get_profile<C: presage::store::Store + 'static>(
             let profile_key = presage::libsignal_service::prelude::ProfileKey::create(profilek);
             let profile = manager.retrieve_profile_by_uuid(uuid, profile_key).await?;
             crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("Profile for {uuid}: {profile:?}\n"));
+            // webOS: prefer the contact's own profile name when the synced address-book name is
+            // empty, so the get_info popup (and the returned contact) carries a human name.
+            if contact.name.is_empty() {
+                if let Some(profile_name) = profile.name {
+                    contact.name = profile_name.to_string();
+                }
+            }
         }
         l => crate::bridge::purple_debug(
             account,
