@@ -431,6 +431,24 @@ pub async fn main(
                 // clone the manager so we can receive messages in one task and process commands in the other
                 let manager_receive = manager.clone();
                 let local = tokio::task::LocalSet::new();
+                // Re-request the contact sync a few times with backoff, in the background. The single
+                // 20s request above just times out and NEVER retries, so a sleeping or slow primary
+                // (phone) at login time loses the ENTIRE Signal contact list until the next reboot --
+                // buddies then never appear (only bare +<phone> from message exchanges). The
+                // ContactSync response is handled by the receive loop as usual; this only nudges the
+                // primary again. Bounded to a handful of attempts, and cancelled with the LocalSet
+                // when the connection ends.
+                let manager_resync = manager.clone();
+                let account_resync = account;
+                local.spawn_local(async move {
+                    let mut m = manager_resync;
+                    for delay in [45u64, 90, 180, 360] {
+                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                        if let Ok(Ok(())) = tokio::time::timeout(std::time::Duration::from_secs(20), m.request_contacts()).await {
+                            crate::bridge::purple_debug(account_resync, crate::bridge_structs::PURPLE_DEBUG_INFO, String::from("re-requested contact sync from primary (background retry)\n"));
+                        }
+                    }
+                });
                 local.spawn_local(receive(manager_receive, account));
                 local.run_until(command_loop(manager, command_receiver, account)).await;
             }
