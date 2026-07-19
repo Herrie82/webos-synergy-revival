@@ -38,8 +38,14 @@ ListAlbumsCommandAssistant.prototype = {
 					if (renewed && args.accountId) { AccountCreds.save(args.accountId, renewed); }
 					var count = 0;
 					entries.forEach(function (e) { if (PhotoLib.isImage(e)) { count++; } });
+					// aid must be FILESYSTEM-SAFE: the Photos aggregator builds a local cache dir
+					// "<aid>-<name>", so an internal "/" (from "disk:/Pictures") makes it a nested
+					// path whose parent doesn't exist -> mkdir ENOENT -> sync aborts. Strip the
+					// "disk:/" prefix to a bare single-segment token; listPhotos._normPath maps it
+					// back ("Pictures" -> "disk:/Pictures").
+					var aid = String(album.path).replace(/^disk:\//, "").replace(/\/+$/, "");
 					future.result = { returnValue: true,
-						albums: [{ aid: album.path, name: album.name, size: { images: count } }] };
+						albums: [{ aid: aid, name: album.name, size: { images: count } }] };
 				});
 			});
 		});
