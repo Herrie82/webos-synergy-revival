@@ -1,6 +1,6 @@
 --- a/css/LibraryNavigationPanel.css	2026-07-16 07:04:17.236024076 +0200
 +++ b/css/LibraryNavigationPanel.css	2026-07-16 07:04:17.240024153 +0200
-@@ -180,3 +180,37 @@
+@@ -180,3 +180,48 @@
  .enyo-sliding {
   	/* -webkit-box-shadow: #000 0px 0px 12px !important; */
  }
@@ -37,4 +37,15 @@
 +}
 +.library-navigation-icon-20x20-yandexdisk {
 +	background-image: url(../images/icon_yandexdisk_20x20.png);
++}
++
++/* Stop short (<40px-tall) provider icons from tiling vertically, which paints a repeated
++   sliver/"mirror" at the bottom (Dropbox 40x37, Yandex 40x26). box/kdrive are 40x40 so were
++   unaffected; no-repeat+center fixes all uniformly. */
++.library-navigation-icon-boxnet,
++.library-navigation-icon-dropbox,
++.library-navigation-icon-kdrive,
++.library-navigation-icon-yandexdisk {
++	background-repeat: no-repeat;
++	background-position: center;
 +}
