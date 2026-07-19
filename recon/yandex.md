@@ -1,8 +1,10 @@
 # Yandex Disk — recon
 
-**Verdict: VIABLE.** Well-documented REST API (`cloud-api.yandex.net/v1/disk`), OAuth2, still open
-in 2026. Built as a DOCUMENTS connector (`yandex/`). Untested pending a Yandex OAuth app
-`client_id` + `client_secret`.
+**Verdict: VIABLE — BUILT & VERIFIED.** Well-documented REST API (`cloud-api.yandex.net/v1/disk`),
+OAuth2, still open in 2026. Built as a DOCUMENTS **and PHOTO.UPLOAD** connector (`yandex/`).
+Credentialed with a registered OAuth app and verified end-to-end against the live API (OAuth incl.
+refresh, identity, docs up/download, photo folder-create/upload, `system_folders.photostream`
+album resolution + Pictures fallback, per-photo signed links). Only on-device sign-in is untested.
 
 ## Why it fits
 - Plain REST/JSON over HTTPS → bundled curl, same transport as the others.

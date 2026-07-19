@@ -1,11 +1,11 @@
 --- a/css/LibraryNavigationPanel.css	2026-07-16 07:04:17.236024076 +0200
 +++ b/css/LibraryNavigationPanel.css	2026-07-16 07:04:17.240024153 +0200
-@@ -180,3 +180,29 @@
+@@ -180,3 +180,37 @@
  .enyo-sliding {
   	/* -webkit-box-shadow: #000 0px 0px 12px !important; */
  }
 +
-+/* webos-synergy-revival: per-service Library icons (Box, Dropbox, kDrive) */
++/* webos-synergy-revival: per-service Library icons (Box, Dropbox, kDrive, Yandex Disk) */
 +.library-navigation-icon-boxnet {
 +	height: 40px;
 +	width: 40px;
@@ -29,4 +29,12 @@
 +}
 +.library-navigation-icon-20x20-kdrive {
 +	background-image: url(../images/icon_kdrive_20x20.png);
++}
++.library-navigation-icon-yandexdisk {
++	height: 40px;
++	width: 40px;
++	background-image: url(../images/icon_yandexdisk_40x40.png);
++}
++.library-navigation-icon-20x20-yandexdisk {
++	background-image: url(../images/icon_yandexdisk_20x20.png);
 +}

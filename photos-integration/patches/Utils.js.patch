@@ -1,89 +1,28 @@
---- a/photos-src/base/Utils.js	2026-07-15 23:05:10.530980614 +0200
-+++ b/photos-src/base/Utils.js	2026-07-15 23:05:10.533980667 +0200
-@@ -414,6 +414,88 @@
- 								accountsCapability[account.templateId].computeNumFiles  =true;
+--- a/photos-src/base/Utils.js
++++ b/photos-src/base/Utils.js
+@@ -415,6 +415,27 @@
  
  							break;
+ 
 +
++							// Synergy-revival cloud photo sources. Every one has the SAME capability
++							// shape and keeps listAlbums/listPhotos in its own already-bus-registered
++							// service, so they share one handler instead of a copy-pasted case each.
++							// serviceName derives from the templateId (com.palm.X -> com.palm.service.X);
++							// to add a provider, add its templateId to the fall-through list below.
 +							case "com.palm.dropbox":
-+								// Synergy-revival Dropbox photo source. listAlbums/listPhotos live in
-+								// the main Dropbox service (already bus-registered) rather than a
-+								// separate com.palm.service.photos.dropbox, so no new LS2 role.
-+								accountsCapability[account.templateId].getComments      =false;
-+								accountsCapability[account.templateId].updateComments   =false;
-+								accountsCapability[account.templateId].getUserInfo      =false;
-+								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.dropbox";
-+
-+							break;
-+
 +							case "com.palm.boxnet":
-+								// Synergy-revival Box photo source. Mirrors Dropbox: listAlbums/
-+								// listPhotos live in the main Box service (already bus-registered),
-+								// so no separate com.palm.service.photos.boxnet role. Box photo URLs
-+								// carry ?access_token= (no unauthenticated pre-signed links).
-+								accountsCapability[account.templateId].getComments      =false;
-+								accountsCapability[account.templateId].updateComments   =false;
-+								accountsCapability[account.templateId].getUserInfo      =false;
-+								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.boxnet";
-+
-+							break;
-+
 +							case "com.palm.onedrive":
-+								// Synergy-revival OneDrive photo source. Mirrors Dropbox/Box:
-+								// listAlbums/listPhotos live in the main OneDrive service (already
-+								// bus-registered). The one album is the Graph Camera Roll special
-+								// folder; src_big is each item's @microsoft.graph.downloadUrl
-+								// (pre-signed, so the curl fetch needs no auth header).
-+								accountsCapability[account.templateId].getComments      =false;
-+								accountsCapability[account.templateId].updateComments   =false;
-+								accountsCapability[account.templateId].getUserInfo      =false;
-+								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.onedrive";
-+
-+							break;
-+
 +							case "com.palm.pcloud":
-+								// Synergy-revival pCloud photo source. Mirrors Dropbox/Box/OneDrive:
-+								// listAlbums/listPhotos live in the main pCloud service (already
-+								// bus-registered). pCloud has no album API, so one folder (root) is
-+								// surfaced as one album; src_big is each image's getfilelink temp URL
-+								// (an ordinary https link, so the curl fetch needs no auth header).
-+								accountsCapability[account.templateId].getComments      =false;
-+								accountsCapability[account.templateId].updateComments   =false;
-+								accountsCapability[account.templateId].getUserInfo      =false;
-+								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.pcloud";
-+
-+							break;
-+
 +							case "com.palm.flickr":
-+								// Synergy-revival Flickr photo source. listAlbums/listPhotos live in
-+								// the main Flickr service (OAuth 1.0a signed in node; HTTPS via curl).
-+								// Unlike the others it returns EVERY photoset plus a synthetic
-+								// "All Photos" album; src_big is a live.staticflickr.com static URL
-+								// (ordinary https, so the curl fetch needs no auth header).
-+								accountsCapability[account.templateId].getComments      =false;
-+								accountsCapability[account.templateId].updateComments   =false;
-+								accountsCapability[account.templateId].getUserInfo      =false;
-+								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.flickr";
-+
-+							break;
-+
-+
 +							case "com.palm.kdrive":
-+								// Synergy-revival kDrive photo source. Mirrors Dropbox/Box: listAlbums/
-+								// listPhotos live in the main kDrive service (already bus-registered).
-+								// One folder (Config.PHOTO_ALBUM_NAME "Pictures", under the private-space
-+								// root) is surfaced as one album; src_big=/download?access_token=,
-+								// src_small=/thumbnail?access_token= (no pre-signed links -> token in URL).
++							case "com.palm.yandexdisk":
 +								accountsCapability[account.templateId].getComments      =false;
 +								accountsCapability[account.templateId].updateComments   =false;
 +								accountsCapability[account.templateId].getUserInfo      =false;
 +								accountsCapability[account.templateId].videoDownload    =false;
-+								accountsCapability[account.templateId].serviceName      ="com.palm.service.kdrive";
++								accountsCapability[account.templateId].serviceName      =
++									account.templateId.replace(/^com\.palm\./, "com.palm.service.");
 +
 +							break;
  							default:

@@ -1,9 +1,11 @@
 # Yandex Disk connector
 
-A **Yandex Disk** (`cloud-api.yandex.net/v1/disk`) **DOCUMENTS-only** Synergy connector,
-built to the same architecture as the Dropbox/OneDrive connectors. Code-complete;
-**untested on device** — it needs a Yandex OAuth app `client_id` (+ `client_secret`, see
-Configuration).
+A **Yandex Disk** (`cloud-api.yandex.net/v1/disk`) Synergy connector providing both
+**DOCUMENTS** and **PHOTO.UPLOAD** (photo source + device→cloud upload), built to the same
+architecture as the Dropbox/OneDrive connectors. Credentialed and **verified end-to-end
+against the live API** (OAuth incl. refresh, identity, docs up/download, folder-create, photo
+list + signed links); on-device account sign-in remains the only step exercised solely by the
+framework.
 
 Yandex Disk is **path-based like Dropbox** — a resource is a real path
 (`disk:/Documents/foo.docx`), not an opaque item id — so this connector is a near-clone of
@@ -74,18 +76,40 @@ Register a free app at **https://oauth.yandex.com/client/new**:
 - **Permissions (scopes):** Yandex.Disk REST API — *Read* + *Write* + *Info*; plus
   *Access to email address* and *Access to username* (so `exchangeCode` can fetch the email).
 - Copy the **ID** into `service/com.palm.service.yandexdisk/config.js` `CLIENT_ID`, and the
-  **Password/secret** into `CLIENT_SECRET`.
+  **Password/secret** into `CLIENT_SECRET`. *(Already populated with a registered app; the
+  steps above are for re-registering under a different Yandex account.)*
   - To run as a **public (PKCE-only) client** instead, leave `CLIENT_SECRET` as the
     `PLACEHOLDER…` default — `oauth2.js` then never sends a secret (it still sends the S256
     challenge). Whether Yandex accepts a secret-less exchange depends on the app type chosen.
 
 Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as Dropbox/OneDrive.
 
+## Photos (PHOTO.UPLOAD)
+
+Yandex Disk also registers as a **photo source + upload target** (like Box/Dropbox/kDrive).
+The album is resolved at call time by `Adapter.resolvePhotoAlbum`: Yandex's own **camera-uploads
+folder** (`GET /v1/disk?fields=system_folders` → `system_folders.photostream`, server-localized —
+e.g. `disk:/Camera Uploads/` or `disk:/Фотокамера/`) when that folder exists, else the
+`Config.PHOTO_ALBUM_NAME` fallback (`Pictures`, created on first device→cloud upload). `photostream`
+is *listed* even before first use, so `resolvePhotoAlbum` probes the folder and only adopts it when
+it really exists. Like Dropbox, `listPhotos` resolves a short-lived signed `/resources/download`
+href **per photo** for `src_big`/`src_small` (self-authenticating; the aggregator's curl fetch
+needs no auth header). Wiring: the `PHOTO.UPLOAD` capabilityProvider in the account template, the
+`listAlbums`/`listPhotos`/`upload` commands, and the `com.palm.yandexdisk` entry in
+`../photos-integration/patches/Utils.js.patch` (+ the Library icon in the CSS patch).
+
 ## Status / caveats
 
 - ✅ Service, both apps, template — all `node --check` clean.
-- ⏳ **Account sign-in untested** — needs a real `client_id`/`client_secret`.
-- ⚠️ **Icons are placeholders** (copied from Dropbox) — rebrand before shipping.
+- ✅ **Live-API verified** (off-device, system curl): OAuth Authorization-Code+PKCE+secret,
+  **refresh-token**, identity, docs list/upload/download (byte-identical round trip), photo
+  `ensureAlbumFolder`/upload, `resolvePhotoAlbum` (incl. the Pictures fallback), and per-photo
+  signed `src_big` links — all confirmed against a real Yandex account.
+- ⏳ **On-device account sign-in** — the customUI OAuth webview flow is the one path exercised
+  only by the framework on hardware; the token exchange it calls is verified.
+- ⚠️ **Icons are placeholders** (copied from Dropbox) — rebrand before shipping. (The Photos
+  **Library** icon `icon_yandexdisk_{40x40,20x20}.png` under `../photos-integration/assets/` is
+  already Yandex-branded.)
 - ⚠️ **List paging:** only the first `limit=200` items per folder are returned (no `offset`
   paging yet) — matches the other connectors' single-page behaviour.
 - ⚠️ **Signed-href auth:** the download/upload hrefs are treated as self-authenticating

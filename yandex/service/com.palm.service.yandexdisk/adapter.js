@@ -177,6 +177,94 @@ var Adapter = {
 			});
 		});
 		return f;
+	},
+
+	// --- Photos-provider helpers (PHOTO.UPLOAD role) ------------------------------------
+	// Yandex is the Dropbox-shaped photo case: no self-authenticating per-item URL (unlike
+	// kDrive's ?access_token=), so listPhotos resolves a short-lived signed href PER photo
+	// via getTemporaryLink - exactly Dropbox's get_temporary_link pattern.
+
+	// Last path segment, URL-decoded, for a human album name ("disk:/Фотокамера/" -> "Фотокамера").
+	_leaf: function (p) {
+		var s = String(p).replace(/\/+$/, "");
+		var i = s.lastIndexOf("/");
+		var seg = (i >= 0) ? s.substring(i + 1) : s;
+		try { return decodeURIComponent(seg); } catch (e) { return seg; }
+	},
+
+	// GET /resources/download?path=.. -> { href } - the same self-authenticating signed link
+	// downloadFile uses, surfaced for listPhotos as src_big/src_small (fetched header-less by
+	// the Photos aggregator's curl). Resolves to { link, method }.
+	getTemporaryLink: function (creds, fileId, cb) {
+		var self = this, f = new Future();
+		var url = Config.API_BASE + "/resources/download?path=" +
+			encodeURIComponent(this._normPath(fileId));
+		var call = this._req({ method: "GET", url: url }, creds, cb);
+		call.then(this, function () {
+			var link = self._parse(call.result) || {};
+			f.result = { link: link.href, method: link.method || "GET" };
+		});
+		return f;
+	},
+
+	// GET /v1/disk?fields=system_folders -> the server-localized system-folder map
+	// (photostream = camera-uploads, downloads, screenshots, ...). Resolves to that object.
+	getSystemFolders: function (creds, cb) {
+		var self = this, f = new Future();
+		var url = Config.API_BASE + "?fields=" + encodeURIComponent("system_folders");
+		var call = this._req({ method: "GET", url: url }, creds, cb);
+		call.then(this, function () {
+			var d = self._parse(call.result) || {};
+			f.result = d.system_folders || {};
+		});
+		return f;
+	},
+
+	// Pick the photo album: prefer Yandex's own camera-uploads folder (system_folders.photostream,
+	// e.g. "disk:/Фотокамера/", localized by the server), but only if it actually exists; else
+	// fall back to Config.PHOTO_ALBUM_NAME ("Pictures"). Resolves to { path, name, exists }.
+	resolvePhotoAlbum: function (creds, cb) {
+		var self = this, f = new Future();
+		var fbName = Config.PHOTO_ALBUM_NAME || "Pictures";
+		var fallback = { path: "disk:/" + fbName, name: fbName, exists: false };
+		var sf = this.getSystemFolders(creds, cb);
+		f.now(this, function () { return sf; });
+		f.then(this, function () {
+			var folders;
+			try { folders = sf.result || {}; } catch (e) { folders = {}; }
+			var ps = folders.photostream;
+			if (!ps) { f.result = fallback; return; }
+			var ppath = String(ps).replace(/\/+$/, "");
+			// photostream is listed even before first camera upload; probe to confirm the
+			// folder is really there (a 404 -> _parse throws -> fall back to Pictures).
+			var probe = self.listFolder(creds, ppath, cb);
+			probe.then(self, function () {
+				var ok = false;
+				try { probe.result; ok = true; } catch (e2) { ok = false; }
+				f.result = ok ? { path: ppath, name: self._leaf(ppath), exists: true } : fallback;
+			});
+		});
+		return f;
+	},
+
+	// PUT /resources?path=disk:/NAME -> create the album folder (device->cloud photo upload
+	// target when the aggregator supplies no albumId). 201 Created and 409 (already exists) are
+	// both success. Resolves to the folder path.
+	ensureAlbumFolder: function (creds, name, cb) {
+		var self = this, f = new Future();
+		var path = this._normPath(name);
+		var url = Config.API_BASE + "/resources?path=" + encodeURIComponent(path);
+		var call = this._req({ method: "PUT", url: url }, creds, cb);
+		call.then(this, function () {
+			var r = call.result;
+			if (r && (r.status === 409 || (r.status >= 200 && r.status < 300))) {
+				f.result = path;
+			} else {
+				throw { returnValue: false, errorCode: "YANDEX_MKDIR_FAILED",
+					status: r && r.status, body: r && r.responseText };
+			}
+		});
+		return f;
 	}
 };
 
