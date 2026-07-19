@@ -410,6 +410,9 @@ typedef struct {
 	GHashTable *one_to_ones_rev;	/* A store of known usernames's -> room_id's */
 	GHashTable *last_message_id_dm; /* A store of known room_id's -> last_message_id's */
 	GHashTable *sent_message_ids;   /* A store of message id's that we generated from this instance */
+	GHashTable *received_message_ids; /* webOS: message id's already written to a conversation, so an
+	                                     overlapping history fetch (fast newest-batch vs forward catch-up)
+	                                     or a re-opened channel doesn't write the same message twice */
 	GHashTable *result_callbacks;   /* Result ID -> Callback function */
 	GQueue *received_message_queue; /* A store of the last 10 received message id's for de-dup */
 
@@ -2849,6 +2852,19 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 
 	guint64 msg_id = to_int(json_object_get_string_member(data, "id"));
 	guint64 msg_type = json_object_get_int_member(data, "type");
+
+	/* webOS dedup: skip a plain message we've already written to a conversation. Overlapping history
+	 * fetches (the fast newest-batch vs the forward catch-up) and re-opened channels would otherwise
+	 * call discord_process_message twice for the same id and create a duplicate immessage in db8.
+	 * Edits/pins deliberately re-touch an existing id, so they are exempt. */
+	if (special_type == DISCORD_MESSAGE_NORMAL && msg_id != 0) {
+		gchar *id_key = from_int(msg_id);
+		if (g_hash_table_contains(da->received_message_ids, id_key)) {
+			g_free(id_key);
+			return msg_id;
+		}
+		g_hash_table_insert(da->received_message_ids, id_key, id_key); /* table owns id_key */
+	}
 
 	if (!json_object_get_object_member(data, "author")) {
 		/* Possibly edited message? */
@@ -6157,6 +6173,87 @@ discord_login_response(DiscordAccount *da, JsonNode *node, gpointer user_data)
 	purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED, _("Bad username/password"));
 }
 
+/* webOS: persist the received-message-id dedup set across account re-logins.
+ * received_message_ids is otherwise in-memory only, so every reconnect (WiFi-roam re-login,
+ * daemon account re-enable) started with an EMPTY set and the history backfill re-inserted
+ * every message into db8 - the root cause of the x37 duplicate-message accumulation. We save
+ * the set on close and reload it on login, capped to the most-recent snowflakes (Discord ids
+ * are monotonic in time) so the file can't grow without bound. */
+#define DISCORD_SEEN_CAP 40000
+
+static gchar *
+discord_seen_ids_path(DiscordAccount *da)
+{
+	const gchar *user = purple_account_get_username(da->account);
+	gchar *safe = g_strdup(user ? user : "unknown");
+	gchar *p;
+	for (p = safe; *p; p++) { if (*p == '/' || *p == '\\' || *p == ':') { *p = '_'; } }
+	gchar *fn = g_strdup_printf("discord_seen_%s.txt", safe);
+	gchar *path = g_build_filename(purple_user_dir(), fn, NULL);
+	g_free(safe);
+	g_free(fn);
+	return path;
+}
+
+static void
+discord_load_received_ids(DiscordAccount *da)
+{
+	gchar *path = discord_seen_ids_path(da);
+	gchar *contents = NULL;
+	if (g_file_get_contents(path, &contents, NULL, NULL) && contents) {
+		gchar **lines = g_strsplit(contents, "\n", -1);
+		int i, n = 0;
+		for (i = 0; lines[i]; i++) {
+			gchar *id = g_strstrip(lines[i]);
+			if (*id && !g_hash_table_contains(da->received_message_ids, id)) {
+				g_hash_table_insert(da->received_message_ids, g_strdup(id), NULL);
+				n++;
+			}
+		}
+		g_strfreev(lines);
+		purple_debug_info("discord", "loaded %d seen message ids from %s\n", n, path);
+	}
+	g_free(contents);
+	g_free(path);
+}
+
+static gint
+discord_snowflake_cmp_desc(gconstpointer a, gconstpointer b)
+{
+	guint64 ia = to_int(*(const gchar * const *) a);
+	guint64 ib = to_int(*(const gchar * const *) b);
+	return (ia < ib) ? 1 : ((ia > ib) ? -1 : 0);   /* newest (highest) first */
+}
+
+static void
+discord_save_received_ids(DiscordAccount *da)
+{
+	if (!da->received_message_ids) {
+		return;
+	}
+	GPtrArray *arr = g_ptr_array_new();   /* borrows the table's key pointers - do NOT free them */
+	GHashTableIter it;
+	gpointer k, v;
+	g_hash_table_iter_init(&it, da->received_message_ids);
+	while (g_hash_table_iter_next(&it, &k, &v)) {
+		g_ptr_array_add(arr, k);
+	}
+	g_ptr_array_sort(arr, discord_snowflake_cmp_desc);
+	guint cap = (arr->len < DISCORD_SEEN_CAP) ? arr->len : DISCORD_SEEN_CAP;
+	GString *out = g_string_new(NULL);
+	guint i;
+	for (i = 0; i < cap; i++) {
+		g_string_append(out, (const gchar *) g_ptr_array_index(arr, i));
+		g_string_append_c(out, '\n');
+	}
+	gchar *path = discord_seen_ids_path(da);
+	g_file_set_contents(path, out->str, out->len, NULL);
+	purple_debug_info("discord", "saved %u/%u seen message ids to %s\n", cap, arr->len, path);
+	g_string_free(out, TRUE);
+	g_free(path);
+	g_ptr_array_free(arr, TRUE);   /* frees the array, not the strings (owned by the hash table) */
+}
+
 void
 discord_login(PurpleAccount *account)
 {
@@ -6202,6 +6299,8 @@ discord_login(PurpleAccount *account)
 	da->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
+	da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	discord_load_received_ids(da);   /* webOS: restore dedup set so a re-login doesn't re-backfill */
 	da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->received_message_queue = g_queue_new();
 
@@ -6308,6 +6407,9 @@ discord_close(PurpleConnection *pc)
 	da->last_message_id_dm = NULL;
 	g_hash_table_unref(da->sent_message_ids);
 	da->sent_message_ids = NULL;
+	discord_save_received_ids(da);   /* webOS: persist dedup set across the re-login gap */
+	g_hash_table_unref(da->received_message_ids);
+	da->received_message_ids = NULL;
 	g_hash_table_unref(da->result_callbacks);
 	da->result_callbacks = NULL;
 
@@ -8131,6 +8233,18 @@ discord_join_chat_by_id(DiscordAccount *da, guint64 id, gboolean present)
 		g_free(url);
 		return TRUE;
 	} else {
+		/* webOS: render the newest messages immediately (fast tail), then backfill the older gap in the
+		 * background. The old forward-only "?after=<last-seen>" fetch paginated oldest-first over several
+		 * seconds, so the latest message - the one the user wants - appeared last and the channel looked
+		 * empty meanwhile. Fire one most-recent batch first ("?limit=25", newest, emitted oldest->newest
+		 * by discord_got_history_static); the forward catch-up below then fills the gap ABOVE it. This is
+		 * safe now that discord_process_message dedups by message id (received_message_ids), so the two
+		 * fetches' overlap no longer double-writes. The app's list is a timestamp-ordered bottom-up db8
+		 * query, so the newest batch lands at the bottom instantly and history slots in above. */
+		gchar *recent_url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION "/channels/%" G_GUINT64_FORMAT "/messages?limit=25", id);
+		discord_fetch_url(da, recent_url, NULL, discord_got_history_static, channel);
+		g_free(recent_url);
+
 		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION "/channels/%" G_GUINT64_FORMAT "/messages?limit=100&after=%" G_GUINT64_FORMAT, id, last_message_id);
 		discord_fetch_url(da, url, NULL, discord_got_history_of_room, channel);
 		g_free(url);
