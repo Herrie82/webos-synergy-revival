@@ -1,8 +1,10 @@
 # OneDrive connector
 
 A full Microsoft **OneDrive** (Microsoft Graph) **DOCUMENTS + PHOTO.UPLOAD** connector on the
-shared **`_cloudcore`** runtime. Code-complete; **untested on device** only because it needs an
-Azure app `client_id` (see Configuration).
+shared **`_cloudcore`** runtime. Credentialed with an Azure app and **verified end-to-end against
+the live Microsoft Graph API** (OAuth Auth-Code+PKCE, rotating refresh, `/me` identity, list root,
+upload, download byte-identical round trip, Camera Roll special folder) — public PKCE client, **no
+secret**. Only the on-device customUI sign-in is exercised solely by the framework.
 
 Of the three cloud providers investigated, OneDrive was the **cleanest fit** — a public
 PKCE client with *no secret*, personal Microsoft accounts allowed, and a file-download
@@ -62,7 +64,13 @@ Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as Dropbox.
 
 - ✅ Service (on `_cloudcore`), generic `cloud-auth` app, template, Photos-aggregator `case "com.palm.onedrive"` (in
   [`../photos-integration/patches/Utils.js.patch`](../photos-integration/patches/Utils.js.patch)).
-- ⏳ **Account sign-in untested** — needs a real `client_id`.
+- ✅ **Live-API verified** (off-device, system curl): Auth-Code+PKCE (no secret), rotating
+  **refresh**, `/me` identity, drive-root list, upload, download (byte-identical round trip),
+  and the Camera Roll special folder — all against a real personal OneDrive.
+- ✅ **Library icons** (`icon_onedrive_{40x40,20x20}.png`, from the 2025 OneDrive cloud) +
+  account icons (`onedrive-{32x32,48x48}.png`), all exact-square so they don't tile.
+- ⏳ **On-device customUI sign-in** — the one path exercised only by the framework; the token
+  exchange it calls is verified.
 - ⚠️ **Consent screen:** an unverified hobbyist app shows a one-time "this app hasn't been
   verified" notice the user accepts. Not a blocker; publisher verification is optional.
 - ⚠️ **Photos:** only the **Camera Roll** special folder is surfaced (Graph has no album

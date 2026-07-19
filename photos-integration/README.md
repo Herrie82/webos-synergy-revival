@@ -50,6 +50,7 @@ Append the two missing service classes (plus their 20x20 variants), pointing at 
 | `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `icon_dropbox_40x40.png` (white badge, flat glyph) |
 | `com.palm.kdrive` | `kdrive` | `.library-navigation-icon-kdrive` | `icon_kdrive_40x40.png` (blue→cyan gradient, white "k") |
 | `com.palm.yandexdisk` | `yandexdisk` | `.library-navigation-icon-yandexdisk` | `icon_yandexdisk_40x40.png` (Yandex Disk badge) |
+| `com.palm.onedrive` | `onedrive` | `.library-navigation-icon-onedrive` | `icon_onedrive_40x40.png` (2025 OneDrive cloud) |
 
 No JS change is needed - the class is already applied per account; only the CSS rule + image were
 missing. Box gets a mostly-blue badge and Dropbox a mostly-white one, so the two "same holder name"
@@ -64,6 +65,7 @@ cp assets/icon_boxnet_40x40.png  assets/icon_boxnet_20x20.png  "$D/images/"
 cp assets/icon_dropbox_40x40.png assets/icon_dropbox_20x20.png "$D/images/"
 cp assets/icon_kdrive_40x40.png  assets/icon_kdrive_20x20.png  "$D/images/"
 cp assets/icon_yandexdisk_40x40.png assets/icon_yandexdisk_20x20.png "$D/images/"
+cp assets/icon_onedrive_40x40.png assets/icon_onedrive_20x20.png "$D/images/"
 # relaunch the Photos card (cold launch reloads its CSS)
 ```
 
