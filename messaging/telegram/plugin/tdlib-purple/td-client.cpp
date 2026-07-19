@@ -387,13 +387,17 @@ void PurpleTdClient::sendTdlibParameters()
     // now takes all fields flat (with database_encryption_key folded in). enable_storage_optimizer_
     // and ignore_file_names_ are no longer part of it (set via setOption after login if needed).
     const char *username = purple_account_get_username(m_account);
-    std::string databaseDir = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
-    // webOS: the default files_directory == database_directory, which lives under
-    // /var/preferences (a tiny ~62MB partition). Downloaded media (photos/videos/files/stickers)
-    // would fill /var. Keep the small, essential sqlite database on /var but redirect the
-    // unbounded media cache to the large (24GB) /media/cryptofs partition. Create the per-account
-    // dir up front so TDLib can use it immediately.
+    // webOS: the default database_directory == files_directory lives under purple_user_dir()
+    // = /var/preferences (a tiny ~62MB partition, "store-var"). BOTH the sqlite database
+    // (db.sqlite grows to tens of MB with an active account) AND the unbounded media cache
+    // (photos/videos/files/stickers) would fill /var. Redirect BOTH to the large (24GB)
+    // /media/cryptofs partition. cryptofs is FUSE-POSIX and supports sqlite WAL reliably
+    // (verified: WebKit runs WAL DBs there); vfat /media/internal must NOT hold the DB (no
+    // reliable fcntl locking / -shm mmap). Keep DB and media as sibling dirs; create up front
+    // so TDLib can use them immediately.
+    std::string databaseDir = std::string("/media/cryptofs/.purple-tdlib-db") + G_DIR_SEPARATOR_S + username;
     std::string filesDir = std::string("/media/cryptofs/.purple-tdlib-files") + G_DIR_SEPARATOR_S + username;
+    g_mkdir_with_parents(databaseDir.c_str(), 0700);
     g_mkdir_with_parents(filesDir.c_str(), 0700);
     purple_debug_misc(config::pluginId, "Account %s using database directory %s, files directory %s\n",
                       username, databaseDir.c_str(), filesDir.c_str());
@@ -403,7 +407,7 @@ void PurpleTdClient::sendTdlibParameters()
     // straight from config::api_id / config::api_hash (baked in via CMake -DAPI_ID/-DAPI_HASH).
     m_transceiver.sendQuery(td::td_api::make_object<td::td_api::setTdlibParameters>(
         false,                              // use_test_dc
-        databaseDir,                        // database_directory (small sqlite DB stays on /var)
+        databaseDir,                        // database_directory (sqlite DB -> big /media/cryptofs)
         filesDir,                           // files_directory (media cache -> big /media/cryptofs)
         std::string(),                      // database_encryption_key (bytes)
         true,                               // use_file_database
