@@ -172,10 +172,12 @@ enyo.kind({
         this.showError("");
         this.$.signInButton.setActive(true);
         this.$.signInButton.setDisabled(true);
-        // gowhatsapp compares the account username against whatsmeow's device ID
-        // (device.ID.ToNonAD().String() == "31652044684@s.whatsapp.net"), so the account
-        // username must be the full JID, not just the digits, or it errors right after pair.
-        this.startQRSignIn(phone + "@s.whatsapp.net");
+        // Store the webOS account username as +E.164 ("+31652044684") so it displays like the
+        // Signal/Telegram accounts everywhere (Accounts, Contacts, Messaging). gowhatsapp still
+        // needs whatsmeow's device-ID JID ("31652044684@s.whatsapp.net") as the *purple* account
+        // username, but the transport now derives that from the +E.164 form (getPurpleUsername),
+        // so the webOS side no longer has to carry the JID.
+        this.startQRSignIn("+" + phone);
     },
 
     // ---- create-after-confirm QR flow ---------------------------------------
