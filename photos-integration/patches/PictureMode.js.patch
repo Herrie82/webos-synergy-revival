@@ -1,0 +1,18 @@
+--- a/photos-src/base/... (app) modes/PictureMode.js
++++ b/photos-src/base/... (app) modes/PictureMode.js
+@@ -304,7 +304,14 @@
+ 		popup.validateComponents();
+ 
+ 		var popupContent = this.$.deletePhotosPopupContent;
+-		if (dbEntry.mediaType === 'video') {
++		// webos-synergy-revival: a cloud photo (has accountId) is deleted from the account
++		// itself, not just the local copy - warn that it's permanent and remote.
++		if (dbEntry.accountId) {
++			popupContent.setContent(dbEntry.mediaType === 'video'
++				? $L("This permanently deletes the video from your cloud account. It can't be undone.")
++				: $L("This permanently deletes the photo from your cloud account. It can't be undone."));
++		}
++		else if (dbEntry.mediaType === 'video') {
+ 			popupContent.setContent($L("Are you sure you want to delete this video?"));
+ 		}
+ 		else {

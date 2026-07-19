@@ -1,6 +1,6 @@
 --- a/photos-src/base/Utils.js
 +++ b/photos-src/base/Utils.js
-@@ -415,6 +415,27 @@
+@@ -415,6 +415,28 @@
  
  							break;
  
@@ -23,8 +23,106 @@
 +								accountsCapability[account.templateId].videoDownload    =false;
 +								accountsCapability[account.templateId].serviceName      =
 +									account.templateId.replace(/^com\.palm\./, "com.palm.service.");
++								accountsCapability[account.templateId].deletePhoto     =true;   // synergy: cloud file delete
 +
 +							break;
  							default:
  								accountsCapability[account.templateId]=new Capability();
  							break;
+@@ -1246,57 +1268,55 @@
+  */
+ function removePhoto (photo,dbgTime)
+ {
+-	
+ 	var delPhotoPromise =Promise();
+-	var delCache = Promise();
+-	var delImgpromiseset =[];
+ 
+-	//remove if there is a file in the path property
+-	//this could happen when copying from a local album to remote
+-	if(photo.path)
+-	{
+-		delImgpromiseset.push(deleteDirOrFile(photo.path,false,dbgTime));
+-	}
+-	
+-	//delete the appScreenNail
+-	if(photo.appScreenNail){
+-		delImgpromiseset.push(deleteDirOrFile(photo.appScreenNail.path,false,dbgTime));
+-	}
+-	//delete appGridThumbnail
+-	if(photo.appGridThumbnail)
+-	{
+-		delImgpromiseset.push(deleteDirOrFile(photo.appGridThumbnail.path,false,dbgTime));
+-	}
+-	//delete appStripThumbnail
+-	if(photo.appStripThumbnail)
+-	{
+-		delImgpromiseset.push(deleteDirOrFile(photo.appStripThumbnail.path,false,dbgTime));
++	// webos-synergy-revival: for a synced CLOUD photo (has accountId + type=templateId +
++	// nested photo[type].pid from listPhotos), delete the remote file FIRST via
++	// <serviceName>/deletePhoto. Only on success do we clear the local cache/DB - a remote
++	// failure aborts so the photo stays visible instead of orphaning the cloud file. Local
++	// (My TouchPad) photos have no accountId and take the original path unchanged.
++	function doLocalRemoval()
++	{
++		var delCache = Promise();
++		var delImgpromiseset =[];
++		if(photo.path){ delImgpromiseset.push(deleteDirOrFile(photo.path,false,dbgTime)); }
++		if(photo.appScreenNail){ delImgpromiseset.push(deleteDirOrFile(photo.appScreenNail.path,false,dbgTime)); }
++		if(photo.appGridThumbnail){ delImgpromiseset.push(deleteDirOrFile(photo.appGridThumbnail.path,false,dbgTime)); }
++		if(photo.appStripThumbnail){ delImgpromiseset.push(deleteDirOrFile(photo.appStripThumbnail.path,false,dbgTime)); }
++		if(photo.appFullScreenImg){ delImgpromiseset.push(deleteDirOrFile(photo.appFullScreenImg.path,false,dbgTime)); }
++		delCache.fulfill(PromiseSet(delImgpromiseset,false));
++		delCache.whenFulfilled(function(){
++			delPhotoPromise.fulfill(delEntryFromDb(photo._id,dbgTime));
++		});
++		delCache.whenBroken(function(errMsg){
++			delPhotoPromise.breakk("Remove Photo Failed for photoId:"+photo._id+", error: "+errMsg);
++		});
+ 	}
+-	//delete appFullScreenImg
+-	if(photo.appFullScreenImg)
+-	{
+-		delImgpromiseset.push(deleteDirOrFile(photo.appFullScreenImg.path,false,dbgTime));
++
++	var tmpl = photo.type;
++	var nested = tmpl && photo[tmpl];
++	var cap = (typeof AccountsCapability !== "undefined") && tmpl && AccountsCapability[tmpl];
++	if(photo.accountId && nested && nested.pid && cap && cap.serviceName)
++	{
++		console.info("removePhoto: deleting REMOTE "+cap.serviceName+" pid="+nested.pid);
++		serviceHandle.request(cap.serviceName+"/deletePhoto",
++			{accountId: photo.accountId, pid: nested.pid},
++			function(resp){
++				if(resp && resp.returnValue){ doLocalRemoval(); }
++				else {
++					console.info("removePhoto: REMOTE deletePhoto FAILED, keeping local: "+JSON.stringify(resp));
++					delPhotoPromise.breakk("Remote deletePhoto failed: "+JSON.stringify(resp));
++				}
++			});
+ 	}
+-	
+-	delCache.fulfill(PromiseSet(delImgpromiseset,false));
+-	delCache.whenFulfilled(function(){
+-		console.info("******************delCache fulfilled in photos");
+-		//we have successfully removed the cached images from the filesystem for the entry
+-		// now we can remove the photo entry from db
+-		delPhotoPromise.fulfill(delEntryFromDb(photo._id,dbgTime));
++	else { doLocalRemoval(); }
+ 
+-	});
+-	
+-	delCache.whenBroken(function(errMsg){
+-		console.info("***** delCache failed!!!! Remove Photo Failed for photoId:"+photo._id+", error: "+errMsg);
+-		delPhotoPromise.breakk("Remove Photo Failed for photoId:"+photo._id+", error: "+errMsg);
+-	});
+-	
+ 	return delPhotoPromise;
+ }
+ 
+ 
+ 
++
+ function removeAlbum(album,dbgTime,obj_shouldForce)
+ {
+ 	var start;
