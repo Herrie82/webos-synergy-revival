@@ -422,7 +422,11 @@ async fn process_incoming_message<C: presage::store::Store>(
 ) {
     let mut message = crate::bridge::Message {
         account: account,
-        timestamp: Some(content.metadata.timestamp.timestamp() as u64),
+        // webOS: the whole pipeline (bridge -> presage_handle_text -> db8 immessage.localTimestamp)
+        // works in MILLISECONDS. chrono's .timestamp() returns SECONDS, so every incoming message was
+        // stored 1000x too small and rendered at ~Jan 1970 - sorted completely out of view, which
+        // looked like received Signal messages were being dropped. Use .timestamp_millis().
+        timestamp: Some(content.metadata.timestamp.timestamp_millis() as u64),
         ..Default::default()
     };
     // TODO: check where thread is actually needed and look it up conditionally?
@@ -432,6 +436,13 @@ async fn process_incoming_message<C: presage::store::Store>(
             match thread {
                 presage::store::Thread::Contact(service_id) => {
                     message.who = Some(service_id.service_id_string());
+                    // NOTE: an earlier version resolved the sender's name here (local contact, then a
+                    // retrieve_profile_by_uuid network fetch for un-named contacts). That network call
+                    // has no timeout, so a slow/hung profile fetch stalled the ENTIRE receive loop and
+                    // no further messages arrived. Reverted - name resolution must not block receiving.
+                    // The transport/blist alias (from forward_contacts, which does the profile fallback
+                    // off the hot path) supplies the display name instead; a proper per-message name fix
+                    // needs a timeout + a cache, done outside the receive loop.
                 }
                 presage::store::Thread::Group(key) => {
                     message.who = Some(content.metadata.sender.raw_uuid().to_string());
