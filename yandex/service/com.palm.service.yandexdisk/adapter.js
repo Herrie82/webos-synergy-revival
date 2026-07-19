@@ -54,7 +54,9 @@ var Adapter = {
 			if (r && r.status === 401 && creds.refreshToken) {
 				var rf = OAuth2.refresh(creds.refreshToken);
 				rf.then(self, function () {
-					var t = rf.result;
+					var t = null, tErr = null;
+						try { t = rf.result; } catch (e) { tErr = e; }
+						if (tErr) { f.setException(tErr); return; }
 					var nc = { accessToken: t.accessToken,
 						refreshToken: t.refreshToken || creds.refreshToken,
 						expiresAt: Date.now() + (t.expiresIn * 1000) };
@@ -82,11 +84,13 @@ var Adapter = {
 		var self = this, f = new Future();
 		var call = this._req({ method: "GET", url: Config.LOGIN_INFO_URL }, creds, cb);
 		call.then(this, function () {
-			var u = self._parse(call.result) || {};
-			f.result = { user: {
-				emailAddress: u.default_email || u.login,
-				displayName:  u.display_name || u.real_name
-			} };
+			try {
+				var u = self._parse(call.result) || {};
+				f.result = { user: {
+					emailAddress: u.default_email || u.login,
+					displayName:  u.display_name || u.real_name
+				} };
+			} catch (e) { f.setException(e); }
 		});
 		return f;
 	},
@@ -100,14 +104,16 @@ var Adapter = {
 			"&limit=" + Config.LIST_LIMIT;
 		var call = this._req({ method: "GET", url: url }, creds, cb);
 		call.then(this, function () {
-			var res = self._parse(call.result) || {};
-			var items = (res._embedded && res._embedded.items) || [];
-			f.result = { entries: items.map(function (e) {
-				var isFolder = (e.type === "dir");
-				return { id: e.path, type: (isFolder ? "folder" : "file"),
-					name: e.name, size: e.size, modified: e.modified, path: e.path,
-					mimeType: e.mime_type };
-			}) };
+			try {
+				var res = self._parse(call.result) || {};
+				var items = (res._embedded && res._embedded.items) || [];
+				f.result = { entries: items.map(function (e) {
+					var isFolder = (e.type === "dir");
+					return { id: e.path, type: (isFolder ? "folder" : "file"),
+						name: e.name, size: e.size, modified: e.modified, path: e.path,
+						mimeType: e.mime_type };
+				}) };
+			} catch (e) { f.setException(e); }   // reject, don't hang, on non-2xx / parse error
 		});
 		return f;
 	},
@@ -121,21 +127,25 @@ var Adapter = {
 		var call = this._req({ method: "GET", url: url }, creds, cb);
 		f.now(this, function () { return call; });
 		f.then(this, function () {
-			var link = self._parse(call.result);
-			if (!link.href) {
-				throw { returnValue: false, errorCode: "YANDEX_NO_DOWNLOAD_HREF",
-					body: call.result && call.result.responseText };
-			}
-			var dl = HttpCurl.request({ method: link.method || "GET", url: link.href,
-				follow: true, outFile: localDest });
-			dl.then(self, function () {
-				var r = dl.result;
-				if (!r || r.status < 200 || r.status >= 300) {
-					throw { returnValue: false, errorCode: "YANDEX_DOWNLOAD_FAILED",
-						status: r && r.status, body: r && r.responseText };
+			try {
+				var link = self._parse(call.result);
+				if (!link.href) {
+					throw { returnValue: false, errorCode: "YANDEX_NO_DOWNLOAD_HREF",
+						body: call.result && call.result.responseText };
 				}
-				f.result = { path: localDest };
-			});
+				var dl = HttpCurl.request({ method: link.method || "GET", url: link.href,
+					follow: true, outFile: localDest });
+				dl.then(self, function () {
+					try {
+						var r = dl.result;
+						if (!r || r.status < 200 || r.status >= 300) {
+							throw { returnValue: false, errorCode: "YANDEX_DOWNLOAD_FAILED",
+								status: r && r.status, body: r && r.responseText };
+						}
+						f.result = { path: localDest };
+					} catch (e2) { f.setException(e2); }
+				});
+			} catch (e) { f.setException(e); }
 		});
 		return f;
 	},
@@ -160,21 +170,25 @@ var Adapter = {
 		var call = this._req({ method: "GET", url: url }, creds, cb);
 		f.now(this, function () { return call; });
 		f.then(this, function () {
-			var link = self._parse(call.result);
-			if (!link.href) {
-				throw { returnValue: false, errorCode: "YANDEX_NO_UPLOAD_HREF",
-					body: call.result && call.result.responseText };
-			}
-			var up = HttpCurl.request({ method: link.method || "PUT", url: link.href,
-				follow: true, dataFile: localPath });
-			up.then(self, function () {
-				var r = up.result;
-				if (!r || r.status < 200 || r.status >= 300) {
-					throw { returnValue: false, errorCode: "YANDEX_UPLOAD_FAILED",
-						status: r && r.status, body: r && r.responseText };
+			try {
+				var link = self._parse(call.result);
+				if (!link.href) {
+					throw { returnValue: false, errorCode: "YANDEX_NO_UPLOAD_HREF",
+						body: call.result && call.result.responseText };
 				}
-				f.result = { id: destPath, path: destPath, name: destPath.split("/").pop() };
-			});
+				var up = HttpCurl.request({ method: link.method || "PUT", url: link.href,
+					follow: true, dataFile: localPath });
+				up.then(self, function () {
+					try {
+						var r = up.result;
+						if (!r || r.status < 200 || r.status >= 300) {
+							throw { returnValue: false, errorCode: "YANDEX_UPLOAD_FAILED",
+								status: r && r.status, body: r && r.responseText };
+						}
+						f.result = { id: destPath, path: destPath, name: destPath.split("/").pop() };
+					} catch (e2) { f.setException(e2); }
+				});
+			} catch (e) { f.setException(e); }
 		});
 		return f;
 	},
@@ -201,8 +215,10 @@ var Adapter = {
 			encodeURIComponent(this._normPath(fileId));
 		var call = this._req({ method: "GET", url: url }, creds, cb);
 		call.then(this, function () {
-			var link = self._parse(call.result) || {};
-			f.result = { link: link.href, method: link.method || "GET" };
+			try {
+				var link = self._parse(call.result) || {};
+				f.result = { link: link.href, method: link.method || "GET" };
+			} catch (e) { f.setException(e); }
 		});
 		return f;
 	},
@@ -214,7 +230,10 @@ var Adapter = {
 		var url = Config.API_BASE + "?fields=" + encodeURIComponent("system_folders");
 		var call = this._req({ method: "GET", url: url }, creds, cb);
 		call.then(this, function () {
-			var d = self._parse(call.result) || {};
+			// A non-2xx here (e.g. disk.info scope not granted) must NOT hang photo listing -
+			// resolve to an empty map so resolvePhotoAlbum cleanly falls back to Pictures.
+			var d;
+			try { d = self._parse(call.result) || {}; } catch (e) { d = {}; }
 			f.result = d.system_folders || {};
 		});
 		return f;
@@ -235,12 +254,16 @@ var Adapter = {
 			var ps = folders.photostream;
 			if (!ps) { f.result = fallback; return; }
 			var ppath = String(ps).replace(/\/+$/, "");
-			// photostream is listed even before first camera upload; probe to confirm the
-			// folder is really there (a 404 -> _parse throws -> fall back to Pictures).
-			var probe = self.listFolder(creds, ppath, cb);
+			// photostream is listed even before first camera upload; probe with a RAW request
+			// (limit=0) and check the HTTP status directly. A 404 is EXPECTED (folder absent) -
+			// use a raw _req (which always resolves to {status,...}) rather than listFolder, so a
+			// missing folder never throws/hangs; on non-2xx we fall back to Pictures.
+			var purl = Config.API_BASE + "/resources?path=" + encodeURIComponent(ppath) + "&limit=0";
+			var probe = self._req({ method: "GET", url: purl }, creds, cb);
 			probe.then(self, function () {
 				var ok = false;
-				try { probe.result; ok = true; } catch (e2) { ok = false; }
+				try { var r = probe.result; ok = !!(r && r.status >= 200 && r.status < 300); }
+				catch (e2) { ok = false; }
 				f.result = ok ? { path: ppath, name: self._leaf(ppath), exists: true } : fallback;
 			});
 		});
@@ -256,13 +279,15 @@ var Adapter = {
 		var url = Config.API_BASE + "/resources?path=" + encodeURIComponent(path);
 		var call = this._req({ method: "PUT", url: url }, creds, cb);
 		call.then(this, function () {
-			var r = call.result;
-			if (r && (r.status === 409 || (r.status >= 200 && r.status < 300))) {
-				f.result = path;
-			} else {
-				throw { returnValue: false, errorCode: "YANDEX_MKDIR_FAILED",
-					status: r && r.status, body: r && r.responseText };
-			}
+			try {
+				var r = call.result;
+				if (r && (r.status === 409 || (r.status >= 200 && r.status < 300))) {
+					f.result = path;
+				} else {
+					throw { returnValue: false, errorCode: "YANDEX_MKDIR_FAILED",
+						status: r && r.status, body: r && r.responseText };
+				}
+			} catch (e) { f.setException(e); }
 		});
 		return f;
 	}
