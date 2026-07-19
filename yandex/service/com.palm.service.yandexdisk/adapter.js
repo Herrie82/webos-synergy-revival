@@ -290,6 +290,29 @@ var Adapter = {
 			} catch (e) { f.setException(e); }
 		});
 		return f;
+	},
+
+	// DELETE /resources?path=..&permanently=true -> remove a photo (Photos delete button).
+	// pid is the "disk:/.." locator listPhotos handed back. 204 (deleted) / 202 (async delete
+	// scheduled) / any 2xx = success; reject otherwise so the aggregator keeps the local copy.
+	deletePhoto: function (creds, fileId, cb) {
+		var self = this, f = new Future();
+		var url = Config.API_BASE + "/resources?path=" +
+			encodeURIComponent(this._normPath(fileId)) + "&permanently=true";
+		var call = this._req({ method: "DELETE", url: url }, creds, cb);
+		call.then(this, function () {
+			try {
+				var r = call.result;
+				if (r && (r.status === 204 || r.status === 202 ||
+					(r.status >= 200 && r.status < 300))) {
+					f.result = { deleted: true };
+				} else {
+					throw { returnValue: false, errorCode: "YANDEX_DELETE_FAILED",
+						status: r && r.status, body: r && r.responseText };
+				}
+			} catch (e) { f.setException(e); }
+		});
+		return f;
 	}
 };
 

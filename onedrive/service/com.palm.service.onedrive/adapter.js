@@ -140,6 +140,15 @@ var Adapter = {
 			url: Config.API_BASE + "/me/drive/items/" + encodeURIComponent(fileId) + "/content",
 			headers: { "Content-Type": "application/octet-stream" },
 			dataFile: localPath }, creds, cb, false);
+	},
+
+	// DELETE /me/drive/items/{id} -> remove a photo (Photos delete button). pid is the driveItem
+	// id listPhotos handed back. Graph returns 204 No Content; _req/_parse treats any 2xx as OK
+	// and rejects otherwise, so the aggregator keeps the local copy on failure.
+	deletePhoto: function (creds, fileId, cb) {
+		return this._req({ method: "DELETE",
+			url: Config.API_BASE + "/me/drive/items/" + encodeURIComponent(fileId) },
+			creds, cb, false);
 	}
 };
 
