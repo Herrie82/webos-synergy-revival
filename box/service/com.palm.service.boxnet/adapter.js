@@ -125,6 +125,13 @@ var Adapter = {
 	contentUrl: function (creds, fileId) {
 		return Config.API_BASE + "/files/" + encodeURIComponent(fileId) +
 			"/content?access_token=" + encodeURIComponent(creds.accessToken);
+	},
+
+	// DELETE /files/{id} -> remove a photo (Photos delete button). pid is the Box file id.
+	// Box returns 204 No Content; _req/_parse treats any 2xx as OK and rejects otherwise.
+	deletePhoto: function (creds, fileId, cb) {
+		return this._req({ method: "DELETE",
+			url: Config.API_BASE + "/files/" + encodeURIComponent(fileId) }, creds, cb, false);
 	}
 };
 

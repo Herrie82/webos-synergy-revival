@@ -165,6 +165,19 @@ var Adapter = {
 		return this.content("/files/upload",
 			{ path: dropboxPath, mode: "overwrite", autorename: false, mute: false },
 			{ dataFile: localPath }, creds, cb);
+	},
+
+	// POST /files/delete_v2 { path } -> remove a photo (Photos delete button). listPhotos stored
+	// pid as Dropbox's "id:<fileid>" path selector, which delete_v2 accepts directly. rpc rejects
+	// (via _parse) on a non-2xx, so the aggregator keeps the local copy on failure.
+	deletePhoto: function (creds, fileId, cb) {
+		var self = this, f = new Future();
+		var call = this.rpc("/files/delete_v2", { path: fileId }, creds, cb);
+		call.then(this, function () {
+			try { call.result; f.result = { deleted: true }; }
+			catch (e) { f.setException(e); }
+		});
+		return f;
 	}
 };
 

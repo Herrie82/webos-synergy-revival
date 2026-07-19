@@ -198,6 +198,21 @@ var Adapter = {
 			});
 		});
 		return f;
+	},
+
+	// GET /deletefile?fileid=<id> -> remove a photo (Photos delete button). pid is the pCloud
+	// numeric fileid. pCloud signals success with result:0 in the JSON body (non-zero = error).
+	deletePhoto: function (creds, fileId, cb) {
+		var self = this, f = new Future();
+		var g = this._get(creds, "deletefile", { fileid: fileId });
+		g.then(this, function () {
+			var d;
+			try { d = g.result || {}; }
+			catch (e) { f.setException(e); return; }
+			if (d.result === 0) { f.result = { deleted: true }; }
+			else { f.setException({ returnValue: false, errorCode: "PCLOUD_DELETE_FAILED", detail: d }); }
+		});
+		return f;
 	}
 };
 

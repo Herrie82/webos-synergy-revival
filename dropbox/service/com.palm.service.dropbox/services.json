@@ -18,7 +18,8 @@
 				{ "name": "downloadFile",     "assistant": "DownloadFileCommandAssistant",     "public": true },
 				{ "name": "listAlbums",       "assistant": "ListAlbumsCommandAssistant",       "public": true, "commandTimeout": 300 },
 				{ "name": "listPhotos",       "assistant": "ListPhotosCommandAssistant",       "public": true, "commandTimeout": 300 },
-				{ "name": "upload",           "assistant": "UploadPhotoCommandAssistant",       "public": true, "commandTimeout": 300 }
+				{ "name": "upload",           "assistant": "UploadPhotoCommandAssistant",       "public": true, "commandTimeout": 300 },
+				{ "name": "deletePhoto",      "assistant": "DeletePhotoCommandAssistant",       "public": true, "commandTimeout": 300 }
 			]
 		}
 	]

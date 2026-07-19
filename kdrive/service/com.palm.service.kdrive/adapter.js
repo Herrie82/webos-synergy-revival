@@ -353,6 +353,23 @@ var Adapter = {
 			});
 		});
 		return f;
+	},
+
+	// DELETE /2/drive/{driveId}/files/{id} -> remove a photo (Photos delete button). pid is the
+	// kDrive numeric file id. kDrive tokens are long-lived (no OAuth refresh); any 2xx = success,
+	// reject otherwise so the aggregator keeps the local copy.
+	deletePhoto: function (creds, fileId, cb) {
+		var self = this, f = new Future();
+		var del = HttpCurl.request({ method: "DELETE",
+			url: self._url("2", "/drive/" + creds.driveId + "/files/" + encodeURIComponent(fileId)),
+			bearer: creds.accessToken });
+		del.then(this, function () {
+			var r = del.result;
+			if (r && r.status >= 200 && r.status < 300) { f.result = { deleted: true }; }
+			else { f.setException({ returnValue: false, errorCode: "KDRIVE_DELETE_FAILED",
+				status: r && r.status, body: r && r.responseText }); }
+		});
+		return f;
 	}
 };
 
