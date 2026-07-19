@@ -80,7 +80,7 @@ yandex/
   service/com.palm.service.yandexdisk/ Yandex Disk service (OAuth2 + REST, path-based, DOCUMENTS)
   apps/com.palm.app.yandexdisk-auth/  customUI OAuth login
   apps/com.palm.app.yandexdisk-files/ Enyo file-picker/manager (path breadcrumb)
-  account/com.palm.yandexdisk.json    Synergy template (DOCUMENTS only)
+  account/com.palm.yandexdisk.json    Synergy template (DOCUMENTS + PHOTO.UPLOAD)
 flickr/
   service/com.palm.service.flickr/    Flickr service (OAuth 1.0a signed in node + REST, PHOTO.UPLOAD)
   apps/com.palm.app.flickr-auth/      customUI OAuth 1.0a login (captures oauth_verifier)

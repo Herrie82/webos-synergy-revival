@@ -98,6 +98,15 @@ needs no auth header). Wiring: the `PHOTO.UPLOAD` capabilityProvider in the acco
 `listAlbums`/`listPhotos`/`upload` commands, and the `com.palm.yandexdisk` entry in
 `../photos-integration/patches/Utils.js.patch` (+ the Library icon in the CSS patch).
 
+> **⚠️ Re-add the account after enabling photos.** An account's `capabilityProviders` are
+> snapshotted into its `com.palm.account` DB record at **creation time** — updating this template
+> does NOT retroactively add `PHOTO.UPLOAD` to an account that was created when the template was
+> DOCUMENTS-only. So a Yandex account added before this change will **not** appear in the Photos &
+> Videos app. Deploy the updated template, restart the accounts service, then **remove and re-add
+> the Yandex account** so its record picks up `PHOTO.UPLOAD`. Verify with:
+> `luna-send -n 1 -f luna://com.palm.db/find '{"query":{"from":"com.palm.account:1","where":[{"prop":"templateId","op":"=","val":"com.palm.yandexdisk"}]}}'`
+> — the record's `capabilityProviders` must list `PHOTO.UPLOAD`.
+
 ## Status / caveats
 
 - ✅ Service, both apps, template — all `node --check` clean.
