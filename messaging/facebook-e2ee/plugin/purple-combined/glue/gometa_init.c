@@ -89,6 +89,49 @@ static void gometa_join_chat(PurpleConnection *pc, GHashTable *components) {
 // Group send: the chat was joined with its thread key as the conversation name
 // (serv_got_joined_chat(pc, g_str_hash(threadKey), threadKey)), so recover the thread key from
 // the conversation and reuse the same send path as 1:1 (Go maps it to SendMessageTask.ThreadId).
+// ---- file / image send (PurpleXfer -> gometa_go_send_file, which uploads via messagix/whatsmeow) ----
+static void gometa_xfer_send_init(PurpleXfer *xfer) {
+    PurpleAccount *account = purple_xfer_get_account(xfer);
+    const char *who = purple_xfer_get_remote_user(xfer);
+    const char *filename = purple_xfer_get_local_filename(xfer);
+    char *error = gometa_go_send_file(account, (char *)who, (char *)filename);
+    if (error && error[0]) {
+        purple_xfer_error(purple_xfer_get_type(xfer), account, who, error);
+        purple_xfer_cancel_local(xfer);
+    } else {
+        purple_xfer_set_bytes_sent(xfer, purple_xfer_get_size(xfer));
+        purple_xfer_set_completed(xfer, TRUE);
+    }
+    g_free(error);
+}
+
+static PurpleXfer *gometa_new_xfer(PurpleConnection *pc, const char *who) {
+    PurpleAccount *account = purple_connection_get_account(pc);
+    PurpleXfer *xfer = purple_xfer_new(account, PURPLE_XFER_SEND, who);
+    purple_xfer_set_init_fnc(xfer, gometa_xfer_send_init);
+    return xfer;
+}
+
+static void gometa_send_file(PurpleConnection *pc, const char *who, const char *filename) {
+    PurpleXfer *xfer = gometa_new_xfer(pc, who);
+    if (filename && *filename) {
+        purple_xfer_request_accepted(xfer, filename);
+    } else {
+        purple_xfer_request(xfer);
+    }
+}
+
+// Group file send: the chat conversation name is the thread key (see gometa_chat_send).
+static void gometa_chat_send_file(PurpleConnection *pc, int id, const char *filename) {
+    PurpleConversation *conv = purple_find_chat(pc, id);
+    if (conv != NULL) {
+        const char *who = purple_conversation_get_name(conv);
+        if (who != NULL && *who) {
+            gometa_send_file(pc, who, filename);
+        }
+    }
+}
+
 static int gometa_chat_send(PurpleConnection *pc, int id, const char *message, PurpleMessageFlags flags) {
     (void)flags;
     PurpleConversation *conv = purple_find_chat(pc, id);
@@ -107,6 +150,9 @@ static PurplePluginProtocolInfo gometa_prpl_info = {
     .login = gometa_login,
     .close = gometa_close,
     .send_im = gometa_send_im,
+    .new_xfer = gometa_new_xfer,
+    .send_file = gometa_send_file,
+    .chat_send_file = gometa_chat_send_file,
     .chat_info = gometa_chat_info,
     .chat_info_defaults = gometa_chat_info_defaults,
     .join_chat = gometa_join_chat,
