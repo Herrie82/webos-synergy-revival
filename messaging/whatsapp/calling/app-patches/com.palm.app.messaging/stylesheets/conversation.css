@@ -1,0 +1,352 @@
+/*----------------------
+Header
+----------------------*/
+.conversationList {
+	background-color:#fff;
+}
+.conversation-header-content {
+	margin-left:3px;
+	margin-right:3px;
+	color:#222222;
+	font-size: 20px;
+	text-align:left;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+.conversation-header .status {
+	margin-left:8px;
+}
+.conversation-header-type.enyo-button {
+	padding:0 5px;
+	margin:0 7px 0;
+}
+.conversation-header .enyo-listselector-item{
+	display:none;
+}
+.conversation-header .enyo-listselector-arrow {
+	min-height: 24px;
+}
+.conversation-header .enyo-listselector-label {
+	color: #222;
+	line-height: 24px;
+}
+.block-delete-box {
+	padding: 0 12px 0 68px;
+}
+.button-left {
+	margin-right:10px;
+}
+.blocksender-bt,
+.deleteconversation-bt {
+	opacity:0.5;
+	color:#333;
+}
+.blocksender-bt {
+	margin-right:8px;
+}
+.accept-decline-box {
+	margin-top:3px;
+}
+.accept-decline-box .enyo-button {
+	min-width:120px;
+}
+.accept-decline-box div:first-child {
+	margin-right:6px;
+} 
+/*----------------------
+RichText Bottom
+----------------------*/
+.conversation-bottom.enyo-toolbar {
+	height: auto;
+	max-height: 192px;
+}
+.conversation-bottom .enyo-input {
+	margin-left:6px;
+	/* Center the send arrow in the trailing gutter: the arrow sits 6px from the screen edge
+	 * (send-btn margin-right 2px + the toolbar's 4px right border), so match the input->arrow gap
+	 * to that (input margin-right 4px + send-btn margin-left 2px = 6px). */
+	margin-right:4px;
+}
+
+.conversation-bottom .enyo-scroller-scrollee {
+	padding-top:0px;
+	padding-bottom:0px;
+}
+
+.header-shadow,
+.footer-shadow {
+	position: relative; 
+	z-index: 100;
+	height: 3px;
+	width: 100%;
+	pointer-events: none;
+}
+.header-shadow {
+	top: 0;
+	background:transparent url('../images/light_chrome_drop_shadow_header.png') bottom repeat-x;
+}
+.footer-shadow {
+	bottom: 0;
+	background:transparent url('../images/light_chrome_drop_shadow_footer.png') top repeat-x;
+}
+/*----------------------
+  Staged attachment chip (shown above the input once a file is picked)
+----------------------*/
+.attachment-chip {
+	display: -webkit-box;
+	-webkit-box-align: center;
+	padding: 6px 10px;
+	background-color: #e8edf2;
+	border-top: 1px solid rgba(0,0,0,0.12);
+	border-bottom: 1px solid rgba(0,0,0,0.12);
+}
+.attachment-chip-thumb {
+	width: 40px;
+	height: 40px;
+	margin-right: 8px;
+	border-radius: 4px;
+	background-size: cover;
+	background-position: center;
+}
+.attachment-chip-label {
+	-webkit-box-flex: 1;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: 15px;
+	color: #333;
+}
+/* Attachment (paperclip, left of input) + Send (arrow, right of input) buttons. Rendered as bare,
+   transparent icons like the slide handle - strip the default .enyo-button box (border-image chrome,
+   4px border, rounded corners, translucent-white fill) in both rest and pressed states, keeping only
+   the icon (the press state still flips to the sprite's bottom half via .enyo-button-down). */
+.conversation-attach-btn,
+.conversation-send-btn {
+	-webkit-box-flex: 0;
+	-webkit-align-self: flex-end;
+	align-self: flex-end;
+	-webkit-border-image: none;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	background-color: transparent;
+	box-shadow: none;
+	min-width: 0;
+	margin: 0 2px 4px 2px;
+}
+.conversation-attach-btn.enyo-button-down,
+.conversation-send-btn.enyo-button-down {
+	-webkit-border-image: none;
+	border: 0;
+	background: transparent;
+	background-color: transparent;
+}
+/* Paperclip sits just to the right of the absolutely-positioned 46px slide handle so it doesn't
+   overlap it (the input's small left margin then follows the paperclip). */
+.conversation-attach-btn {
+	margin-left: 50px;
+}
+/* webOS Synergy Revival: one-tap voice-call button in the conversation header. Bare transparent
+   icon (matches the paperclip/send buttons), sized to the 54px TouchPad touch target with an
+   immediate pressed state. */
+.conversation-call-btn {
+	/* Size to the 32x32 icon and let the header toolbar's align:center centre it vertically
+	   (a forced tall box left the icon pinned to the top). Transparent box, no border. */
+	-webkit-box-flex: 0;
+	-webkit-border-image: none;
+	border: 0;
+	border-radius: 0;
+	background-color: transparent;
+	box-shadow: none;
+	min-width: 32px;
+	width: 32px;
+	height: 32px;
+	position: relative;
+	top: 6px;                 /* the 32px icon lands ~6px high in the toolbar; nudge to the row centre */
+	margin: 0 6px;
+}
+.conversation-call-btn.enyo-button-down {
+	-webkit-border-image: none;
+	border: 0;
+	background-color: transparent;
+}
+.header-app-shadow,
+.footer-app-shadow,
+.header-favorite-shadow {
+	position: absolute;
+}
+.header-app-shadow {
+	top: 48px;
+}
+.footer-app-shadow {
+	height: 57px;
+}
+/*----------------------
+Conversation List
+----------------------*/
+.conversationList .enyo-scroller-scrollee {
+	padding-top:10px;
+	padding-bottom:5px;
+}
+
+.conversation-bottom .enyo-scroller-scrollee {
+	padding-top:0px;
+	padding-bottom:0px;
+}
+
+
+/*----------------------
+Custom Balloon
+----------------------*/
+.chat-balloon {
+	padding:5px 8px 5px 13px;
+}
+.chat-balloon-received,
+.chat-balloon-sent,
+.chat-balloon-error,
+.chat-balloon-system {
+	margin: 0 7px 0 58px;
+	padding: 5px 10px 6px;
+	min-height: 36px;
+	font-size: 16px;
+	-webkit-border-radius: 9px;
+	word-wrap: break-word;
+	border:none;
+	position:relative;
+}
+.chat-balloon-received {
+	border: solid 1px #b3d9f2;
+	background-color:#d6edff;
+}
+.chat-balloon-sent {
+	border: solid 1px #d0e1cb;
+	background-color: #dcffd1;
+}
+.chat-balloon-error,
+.chat-balloon-received-error,
+.chat-balloon-system {
+	border: solid 1px #d4d4d4;
+	background-color: #f4f4f4;
+	color: #888888;
+}
+
+.chat-balloon-system {
+	font-style:italic;
+}
+
+.chat-balloon-received:after,
+.chat-balloon-sent:after,
+.chat-balloon-error:after,
+.chat-balloon-received-error  {
+	content:"";
+	position:absolute;
+	display:block;
+	top:18px;
+	width:8px;
+	height:14px;
+}
+.chat-balloon-received:after {
+	left:-8px;
+	background:transparent url(../images/chat-balloon-received-shape.png) no-repeat 0 0;
+}
+.chat-balloon-received-error:after {
+	left:-8px;
+	background:transparent url(../images/chat-balloon-received-error-shape.png) no-repeat 0 0;
+}
+.chat-balloon-sent:after {
+	right:-8px;
+	background:transparent url(../images/chat-balloon-sent-shape.png) no-repeat 0 0;
+}
+.chat-balloon-error:after {
+	right:-8px;
+	background:transparent url(../images/chat-balloon-error-shape.png) no-repeat 0 0;
+}
+.conversationContactImage {
+	position:absolute;
+}
+.erroricon {
+	position:absolute;
+	bottom:5px;
+	right:4px;
+}
+.message-time {
+	color: #888888;
+	font-size:12px;
+	padding-top:4px;
+}
+/* Sender name atop an incoming group/channel message bubble (Telegram groups, Discord channels) */
+.chat-sender-name {
+	color: #2f6fb3;
+	font-size:12px;
+	font-weight:bold;
+	padding-bottom:2px;
+}
+.conversationDivider .enyo-divider-icon {
+	margin-left:15px;
+}
+.conversationDivider .enyo-divider-caption {
+	margin-left:16px;
+	font-size:12px;
+	font-weight:normal;
+	color: #888888;
+}
+.conversationDivider .enyo-divider-right-cap,
+.conversationDivider .enyo-divider-left-cap {
+	-webkit-border-image: none;
+}
+
+.transport-picker .enyo-menuitem {
+	border: none;
+}
+
+/*
+.transport-picker-dial-icon,
+.transport-picker-video-icon {
+	display: block;
+	width: 60px;
+	height: 60px;
+	margin-right: -10px;
+}
+
+.transport-picker-dial-icon {
+	background: url(../images/phone-icon.png) top center no-repeat;
+}
+.transport-picker-video-icon {
+	background: url(../images/video-icon2.png) top center no-repeat;
+}
+*/
+
+.transport-picker-phoneLabel {
+	font-size:12px;
+	display: block;
+	color: #888888;	
+}
+.high-priority {
+	color:red;
+}
+/*----------------------
+  Inline message images (Discord/Telegram photo links rendered as images)
+----------------------*/
+.message-image {
+	display: block;
+	max-width: 100%;
+	max-height: 320px;
+	margin-top: 6px;
+	border-radius: 8px;
+	border: 1px solid rgba(0,0,0,0.15);
+}
+
+/* Inline Unicode-emoji images (EmojiOne set). Sized to sit on the text baseline like a
+   glyph, never picking up the block/border styling of message-image above. */
+img.emoji {
+	display: inline-block;
+	width: 1.2em;
+	height: 1.2em;
+	vertical-align: -0.2em;
+	margin: 0 0.02em;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	max-height: none;
+}
