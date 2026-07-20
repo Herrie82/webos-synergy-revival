@@ -5,6 +5,7 @@
 #include "receiving.h"
 #include "file-transfer.h"
 #include "call.h"
+#include "call-luna.h"
 #include "secret-chat.h"
 #include "sticker.h"
 #include "receiving.h"
@@ -674,6 +675,9 @@ void PurpleTdClient::setPurpleConnectionInProgress()
 void PurpleTdClient::onLoggedIn()
 {
     purple_connection_set_state (purple_account_get_connection(m_account), PURPLE_CONNECTED);
+
+    // webOS: bring up com.palm.telegram.call so the stock Phone app can drive Telegram calls.
+    callLunaInit(m_account);
 
     // This query ensures an updateUser for every contact
     m_transceiver.sendQuery(td::td_api::make_object<td::td_api::getContacts>(),
@@ -2415,6 +2419,16 @@ bool PurpleTdClient::terminateCall(PurpleConversation *conv)
 
     discardCurrentCall(m_data, m_transceiver);
     return true;
+}
+
+void PurpleTdClient::acceptCurrentCall()
+{
+    ::acceptCurrentCall(m_data, m_transceiver);   // the free fn in call.cpp (not this member)
+}
+
+void PurpleTdClient::hangupVoiceCall()
+{
+    discardCurrentCall(m_data, m_transceiver);
 }
 
 void PurpleTdClient::createSecretChat(const char* buddyName)

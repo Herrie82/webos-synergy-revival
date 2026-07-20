@@ -53,6 +53,8 @@ public:
 
     bool startVoiceCall(const char *buddyName);
     bool terminateCall(PurpleConversation *conv);
+    void acceptCurrentCall();   // accept the pending incoming call (driven by com.palm.telegram.call)
+    void hangupVoiceCall();     // end the active call
 
     void createSecretChat(const char *buddyName);
 private:

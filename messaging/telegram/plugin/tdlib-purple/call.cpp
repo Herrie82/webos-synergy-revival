@@ -5,6 +5,8 @@
 #include "buildopt.h"
 #include "format.h"
 #include "purple-info.h"
+#include "td-client.h"
+#include "call-luna.h"
 
 static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
 {
@@ -178,11 +180,10 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
     std::string buddyName = getPurpleUserName(getUserId(call), account);
 
 #ifndef NoVoip
-    PurpleMediaManager *mediaManager = purple_media_manager_get();
-    PurpleMediaCaps capabilities = purple_media_manager_get_ui_caps(mediaManager);
-
-    if (!(capabilities & PURPLE_MEDIA_CAPS_AUDIO) && !(capabilities & PURPLE_MEDIA_CAPS_AUDIO_SINGLE_DIRECTION) &&
-        (strcasecmp(getUiName(), "pidgin") != 0)) {
+    // webOS (Path C): the call UI + audio is the stock Phone app via com.palm.telegram.call (see
+    // call-luna.cpp), NOT PurpleMedia - so do not gate on the frontend's media caps; always accept
+    // and drive the call over LS2. (libtgvoip does the media directly.)
+    if (false) {
 #else
     if (true) {
 #endif
@@ -204,22 +205,10 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
     if (!call.is_outgoing_ && (call.state_->get_id() == td::td_api::callStatePending::ID)) {
         if (!account.hasActiveCall()) {
             account.setActiveCall(call.id_);
-            // TRANSLATOR: Dialog content, user will have the options "_OK" and "_Cancel".
-            std::string message = formatMessage(_("{} wishes to start a call with you."),
-                                                account.getDisplayName(getUserId(call)));
-            CallRequestData *request = new CallRequestData;
-            request->callId = call.id_;
-            request->transceiver = &transceiver;
-            request->account = &account;
-            purple_request_action(purple_account_get_connection(account.purpleAccount),
-                                  // TRANSLATOR: Dialog title, asking about an incoming telephone call (OK/Cancel)
-                                  _("Voice call"), message.c_str(), NULL,
-                                  PURPLE_DEFAULT_ACTION_NONE,
-                                  account.purpleAccount, !buddyName.empty() ? buddyName.c_str() : NULL, NULL,
-                                  // TRANSLATOR: Dialog option, regarding a phone call; the alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                                  request, 2, _("_OK"), acceptCallCb,
-                                  // TRANSLATOR: Dialog option, regarding a phone call; the alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                                  _("_Cancel"), discardCallCb);
+            // webOS: ring the stock Phone app instead of a pidgin accept/reject dialog. The user
+            // answers via com.palm.telegram.call/answer -> callBridgeAnswer -> acceptCurrentCall.
+            callLunaPushState("incoming", buddyName.c_str(),
+                              account.getDisplayName(getUserId(call)).c_str(), false, NULL);
         } else if (call.id_ != account.getActiveCallId()) {
             if (!buddyName.empty())
                 showMessageTextIm(account, buddyName.c_str(), NULL,
@@ -232,11 +221,8 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
     } else if (call.is_outgoing_ && (call.state_->get_id() == td::td_api::callStatePending::ID)) {
         if (!account.hasActiveCall()) {
             account.setActiveCall(call.id_);
-            if (!buddyName.empty())
-                showMessageTextIm(account, buddyName.c_str(), NULL,
-                                // TRANSLATOR: In-chat status message. Please keep '/hangup' verbatim!
-                                _("Call pending, type /hangup to terminate"),
-                                time(NULL), PURPLE_MESSAGE_SYSTEM);
+            callLunaPushState("outgoing", buddyName.c_str(),
+                              account.getDisplayName(getUserId(call)).c_str(), true, NULL);
         } else if (call.id_ != account.getActiveCallId()) {
             // This would happen if there was no active call when sending createCall, but there is one
             // a millisecond later when asynchronous response is received. Possible if two calls are
@@ -247,6 +233,9 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
         if (! activateCall(call, buddyName, account, transceiver)) {
             discardCall(call.id_, transceiver);
             account.removeActiveCall();
+        } else {
+            callLunaPushState("active", buddyName.c_str(),
+                              account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, NULL);
         }
     }
     else if ( ((call.state_->get_id() == td::td_api::callStateHangingUp::ID) ||
@@ -254,6 +243,18 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
                (call.state_->get_id() == td::td_api::callStateError::ID)) &&
               account.hasActiveCall() && account.getActiveCallId() == call.id_)
     {
+        const char *cause = "normal";
+        if (call.state_->get_id() == td::td_api::callStateDiscarded::ID) {
+            const td::td_api::callStateDiscarded &d = static_cast<const td::td_api::callStateDiscarded &>(*call.state_);
+            if (d.reason_) {
+                if (d.reason_->get_id() == td::td_api::callDiscardReasonDeclined::ID) cause = "rejected";
+                else if (d.reason_->get_id() == td::td_api::callDiscardReasonMissed::ID) cause = "missed";
+            }
+        } else if (call.state_->get_id() == td::td_api::callStateError::ID) {
+            cause = "error";
+        }
+        callLunaPushState("disconnected", buddyName.c_str(),
+                          account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, cause);
         if (call.state_->get_id() == td::td_api::callStateError::ID) {
             const td::td_api::callStateError &error = static_cast<const td::td_api::callStateError &>(*call.state_);
             notifyCallError(error, buddyName, account);
@@ -267,6 +268,34 @@ void discardCurrentCall(TdAccountData &account, TdTransceiver &transceiver)
 {
     if (account.hasActiveCall())
         discardCall(account.getActiveCallId(), transceiver);
+}
+
+void acceptCurrentCall(TdAccountData &account, TdTransceiver &transceiver)
+{
+    if (!account.hasActiveCall()) return;
+    td::td_api::object_ptr<td::td_api::acceptCall> acceptReq = td::td_api::make_object<td::td_api::acceptCall>();
+    acceptReq->call_id_ = account.getActiveCallId();
+    acceptReq->protocol_ = getCallProtocol();
+    transceiver.sendQuery(std::move(acceptReq), nullptr);
+}
+
+// ---- LS2 <-> TDLib bridge: called by call-luna.cpp for the com.palm.telegram.call service ----
+bool callBridgeDial(PurpleAccount *account, const char *who)
+{
+    PurpleTdClient *client = getTdClient(account);
+    return (client && who) ? client->startVoiceCall(who) : false;
+}
+
+void callBridgeAnswer(PurpleAccount *account)
+{
+    PurpleTdClient *client = getTdClient(account);
+    if (client) client->acceptCurrentCall();
+}
+
+void callBridgeHangup(PurpleAccount *account)
+{
+    PurpleTdClient *client = getTdClient(account);
+    if (client) client->hangupVoiceCall();
 }
 
 void showCallMessage(const td::td_api::chat &chat, const TgMessageInfo &message,

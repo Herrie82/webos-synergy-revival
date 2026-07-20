@@ -65,6 +65,7 @@ add_library(telegram-tdlib SHARED
     sticker.cpp
     file-transfer.cpp
     call.cpp
+    call-luna.cpp
     identifiers.cpp
     secret-chat.cpp
 )
@@ -117,6 +118,14 @@ endif (NOT DEFINED SHARE_INSTALL_PREFIX)
 if (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
     target_include_directories(telegram-tdlib SYSTEM PRIVATE ${tgvoip_INCLUDE_DIRS})
 endif (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
+
+# luna-service2 for the com.palm.telegram.call LS2 service (call-luna.cpp)
+set(lunaservice_INCLUDE_DIRS "" CACHE STRING "Path to luna-service2 public headers")
+set(lunaservice_LIBRARIES "lunaservice" CACHE STRING "luna-service2 library to link")
+if (NOT lunaservice_INCLUDE_DIRS STREQUAL "")
+    target_include_directories(telegram-tdlib SYSTEM PRIVATE ${lunaservice_INCLUDE_DIRS})
+endif (NOT lunaservice_INCLUDE_DIRS STREQUAL "")
+target_link_libraries(telegram-tdlib PRIVATE ${lunaservice_LIBRARIES})
 if (NOT NoVoip)
     target_link_libraries(telegram-tdlib PRIVATE ${tgvoip_LIBRARIES})
     if (tgvoip_NO_DSP)

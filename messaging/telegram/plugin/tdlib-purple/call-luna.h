@@ -14,7 +14,7 @@
  * the transport's LS2 role must allow the name com.palm.telegram.call.
  */
 
-#include <libpurple/purple.h>
+#include <purple.h>
 
 /* Register the com.palm.telegram.call service (idempotent) and bind it to this Telegram account.
  * Call when the account connects. Returns false (and logs) if LS2 registration fails. */
