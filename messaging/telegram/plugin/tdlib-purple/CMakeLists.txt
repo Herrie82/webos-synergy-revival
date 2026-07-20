@@ -119,6 +119,12 @@ if (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
 endif (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
 if (NOT NoVoip)
     target_link_libraries(telegram-tdlib PRIVATE ${tgvoip_LIBRARIES})
+    if (tgvoip_NO_DSP)
+        # libtgvoip was built with --disable-dsp: EchoCanceller.h gates its webrtc:: members on
+        # TGVOIP_NO_DSP, so compile with the same define to match the ABI and avoid referencing
+        # webrtc types we didn't build.
+        target_compile_definitions(telegram-tdlib PRIVATE TGVOIP_NO_DSP)
+    endif (tgvoip_NO_DSP)
 endif (NOT NoVoip)
 
 if (DEFINED STANDARD_LIBRARIES_EXTRA)
