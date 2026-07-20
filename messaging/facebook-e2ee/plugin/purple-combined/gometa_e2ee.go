@@ -1,0 +1,166 @@
+package main
+
+// Facebook Messenger E2EE (encrypted threads) support. Messenger's end-to-end encryption rides
+// WhatsApp's Signal transport ("encrypted over WA"), so messagix exposes a whatsmeow client for it
+// via RegisterE2EE + PrepareE2EEClient. Encrypted threads CANNOT use the plaintext SendMessageTask
+// (Facebook rejects it with HandleInvalidSendToOpen) — they must go through this whatsmeow client.
+//
+// The whatsmeow device (Signal identity + prekeys) is persisted in a per-account SQLite DB (pure-Go
+// modernc driver, registered by login.go) so the E2EE session survives restarts. This client is
+// entirely separate from the WhatsApp account's own whatsmeow client (different device + DB).
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waConsumerApplication"
+	"go.mau.fi/whatsmeow/proto/waMsgApplication"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
+	waTypes "go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"go.mau.fi/mautrix-meta/pkg/messagix/methods"
+	"google.golang.org/protobuf/proto"
+)
+
+const gometaWADeviceSetting = "gometa_wa_jid"
+
+// connectE2EE registers (once) and connects the whatsmeow client that carries Messenger's
+// encrypted threads. Best-effort: a failure only disables encrypted threads, not plaintext ones.
+func (h *gometaHandler) connectE2EE(fbid int64) error {
+	dbLog := waLog.Zerolog(h.logger.With().Str("component", "e2ee-db").Logger())
+	dbPath := filepath.Join(h.purpleUserDir, "gometa-e2ee-"+h.username+".db")
+	addr := "file:" + dbPath + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", addr)
+	if err != nil {
+		return fmt.Errorf("open e2ee db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	container := sqlstore.NewWithDB(db, "sqlite", dbLog)
+	if err := container.Upgrade(h.ctx); err != nil {
+		return fmt.Errorf("upgrade e2ee db: %w", err)
+	}
+
+	// Reuse the saved device if we have one, otherwise register a fresh one.
+	var device *store.Device
+	if jidStr := gometaGetSetting(h.account, gometaWADeviceSetting); jidStr != "" {
+		if jid, perr := waTypes.ParseJID(jidStr); perr == nil {
+			device, _ = container.GetDevice(h.ctx, jid)
+		}
+	}
+	isNew := device == nil
+	if isNew {
+		device = container.NewDevice()
+	}
+	if suggested := h.client.MessengerLite.GetSuggestedDeviceID(); suggested != uuid.Nil {
+		device.FacebookUUID = suggested
+	}
+	h.client.SetDevice(device)
+
+	if isNew {
+		h.logger.Info().Msg("registering new E2EE device")
+		if err := h.client.RegisterE2EE(h.ctx, fbid); err != nil {
+			return fmt.Errorf("register e2ee: %w", err)
+		}
+		if device.ID != nil {
+			gometaSetSetting(h.account, gometaWADeviceSetting, device.ID.String())
+		}
+		if err := device.Save(h.ctx); err != nil {
+			return fmt.Errorf("save e2ee device: %w", err)
+		}
+	}
+
+	e2ee, err := h.client.PrepareE2EEClient()
+	if err != nil {
+		return fmt.Errorf("prepare e2ee client: %w", err)
+	}
+	e2ee.AddEventHandler(h.e2eeEventHandler)
+	if err := e2ee.Connect(); err != nil {
+		return fmt.Errorf("connect e2ee socket: %w", err)
+	}
+	h.e2ee = e2ee
+	h.logger.Info().Msg("E2EE (whatsmeow) client connected")
+	return nil
+}
+
+// e2eeEventHandler receives events from the encrypted (whatsmeow) socket.
+func (h *gometaHandler) e2eeEventHandler(rawEvt any) {
+	switch evt := rawEvt.(type) {
+	case *events.FBMessage:
+		h.handleE2EEMessage(evt)
+	case *events.Connected:
+		h.logger.Info().Msg("E2EE socket connected")
+	case *events.LoggedOut:
+		h.logger.Warn().Msg("E2EE socket logged out")
+	}
+}
+
+// handleE2EEMessage turns an encrypted message into a buddy + incoming message, and records the
+// chat/sender as E2EE so future sends to them route over the encrypted transport.
+func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
+	chatFbid, _ := strconv.ParseInt(evt.Info.Chat.User, 10, 64)
+	senderFbid, _ := strconv.ParseInt(evt.Info.Sender.User, 10, 64)
+	if chatFbid == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.e2eeContacts[chatFbid] = true
+	if senderFbid != 0 {
+		h.e2eeContacts[senderFbid] = true
+	}
+	name := h.contactName[senderFbid]
+	// Drop the echo of a message we just sent from here (tracked by the id we passed to SendFBMessage).
+	var mine bool
+	if otid, err := strconv.ParseInt(string(evt.Info.ID), 10, 64); err == nil {
+		mine = h.sentOtids[otid]
+		delete(h.sentOtids, otid)
+	}
+	h.mu.Unlock()
+	if mine {
+		return
+	}
+
+	var text string
+	if consumer, ok := evt.Message.(*waConsumerApplication.ConsumerApplication); ok {
+		text = consumer.GetPayload().GetContent().GetMessageText().GetText()
+	}
+	if text == "" {
+		return
+	}
+	h.addContact(chatFbid, name)
+	h.notifyMessage(strconv.FormatInt(chatFbid, 10), strconv.FormatInt(senderFbid, 10),
+		name, text, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe)
+}
+
+// sendE2EE sends a text message over the encrypted (whatsmeow) transport to a Messenger thread.
+func (h *gometaHandler) sendE2EE(threadID int64, text string) error {
+	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
+	msg := &waConsumerApplication.ConsumerApplication{
+		Payload: &waConsumerApplication.ConsumerApplication_Payload{
+			Payload: &waConsumerApplication.ConsumerApplication_Payload_Content{
+				Content: &waConsumerApplication.ConsumerApplication_Content{
+					Content: &waConsumerApplication.ConsumerApplication_Content_MessageText{
+						MessageText: &waCommon.MessageText{Text: proto.String(text)},
+					},
+				},
+			},
+		},
+	}
+	otid := methods.GenerateEpochID()
+	h.mu.Lock()
+	h.sentOtids[otid] = true
+	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
+	defer cancel()
+	_, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(strconv.FormatInt(otid, 10))})
+	return err
+}
