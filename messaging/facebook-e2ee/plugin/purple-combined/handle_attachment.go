@@ -139,9 +139,14 @@ func (handler *Handler) handle_attachment(message *waE2E.Message, id string, sou
 
 func (handler *Handler) download_attachment(local_file_path string, message whatsmeow.DownloadableMessage) error {
 	os.MkdirAll(filepath.Dir(local_file_path), 0o755)
-	file, err := os.Create(local_file_path)
+	// Download to memory then write the file ourselves. whatsmeow's DownloadToFile streams to an
+	// *os.File and unconditionally calls fallocate(2), which webOS filesystems (tmpfs/vfat) reject
+	// with EOPNOTSUPP; that gets misclassified as a network error, retried across hosts, and the
+	// reused-but-not-truncated file corrupts the payload into an "invalid media hmac" failure.
+	// The in-memory Download() path does io.ReadAll (no fallocate, no *os.File) and verifies the HMAC.
+	data, err := handler.client.Download(context.TODO(), message)
 	if err != nil {
 		return err
 	}
-	return handler.client.DownloadToFile(context.TODO(), message, file)
+	return os.WriteFile(local_file_path, data, 0o644)
 }
