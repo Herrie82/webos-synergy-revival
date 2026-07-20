@@ -342,7 +342,7 @@ async fn link(
  *
  * Based on presage-cli's receive.
  */
-async fn receive<S: presage::store::Store>(
+async fn receive<S: presage::store::Store + Clone + 'static>(
     mut manager: presage::Manager<S, presage::manager::Registered>,
     account: *mut crate::bridge_structs::PurpleAccount,
 ) {

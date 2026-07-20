@@ -55,6 +55,77 @@ pub async fn forward_contacts<C: presage::store::Store + 'static>(
     }
 }
 
+/*
+ * Resolve a display name for a single contact OFF the receive hot path.
+ *
+ * webOS: forward_contacts only names buddies that exist in the primary phone's Signal address
+ * book. Contacts you have only exchanged messages with (never saved on the phone) are added as
+ * bare-UUID buddies by the receive loop and stay nameless -- shown as a raw UUID, and never linked
+ * to an address-book Person. This fills that gap: prefer the synced address-book name if the store
+ * has one, else fall back to the contact's OWN Signal profile name (what they set for themselves).
+ *
+ * Runs as a fire-and-forget `spawn_local` task on a CLONED manager so it never blocks the receive
+ * loop, and the profile fetch is bounded by a timeout. An earlier version did this inline in
+ * process_incoming_message with an untimed fetch, which stalled the entire receive loop when the
+ * fetch hung -- so no further messages arrived (see the note in receive.rs). Here the receive loop
+ * keeps running regardless; the caller throttles to one attempt per UUID per session.
+ */
+pub async fn resolve_name_background<C: presage::store::Store + 'static>(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    mut manager: presage::Manager<C, presage::manager::Registered>,
+    uuid: presage::libsignal_service::prelude::Uuid,
+    hint_profile_key: Option<Vec<u8>>,
+) {
+    // Look up the stored contact first (address-book name is authoritative when present). The
+    // store() borrow is released at the end of this statement, before the &mut retrieve below.
+    let stored = manager
+        .store()
+        .contact_by_id(&presage::libsignal_service::protocol::ServiceId::Aci(uuid.into()))
+        .await
+        .ok()
+        .flatten();
+    let mut display_name = String::new();
+    let mut phone_number: Option<String> = None;
+    let mut profile_key: Option<Vec<u8>> = hint_profile_key;
+    if let Some(contact) = &stored {
+        phone_number = contact.phone_number.as_ref().map(|pn| pn.to_string());
+        if !contact.name.is_empty() {
+            display_name = contact.name.clone();
+        }
+        if profile_key.is_none() && contact.profile_key.len() == presage::libsignal_service::zkgroup::PROFILE_KEY_LEN {
+            profile_key = Some(contact.profile_key.clone());
+        }
+    }
+    // Fall back to the contact's own profile name for un-named (unsaved) contacts.
+    if display_name.is_empty() {
+        if let Some(pk) = profile_key {
+            if pk.len() == presage::libsignal_service::zkgroup::PROFILE_KEY_LEN {
+                if let Ok(profilek) = pk.try_into() {
+                    let profile_key = presage::libsignal_service::prelude::ProfileKey::create(profilek);
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), manager.retrieve_profile_by_uuid(uuid, profile_key)).await {
+                        Ok(Ok(profile)) => {
+                            if let Some(profile_name) = profile.name {
+                                display_name = profile_name.to_string();
+                            }
+                        }
+                        Ok(Err(err)) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("background name: no profile for {uuid}: {err:?}\n")),
+                        Err(_) => crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("background name: profile fetch timed out for {uuid}\n")),
+                    }
+                }
+            }
+        }
+    }
+    if !display_name.is_empty() {
+        crate::bridge::append_message(crate::bridge::Message {
+            account: account,
+            who: Some(uuid.to_string()),
+            name: Some(display_name),
+            phone_number: phone_number,
+            ..Default::default()
+        });
+    }
+}
+
 pub async fn get_group_members<C: presage::store::Store + 'static>(
     account: *mut crate::bridge_structs::PurpleAccount,
     manager: presage::Manager<C, presage::manager::Registered>,
