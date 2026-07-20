@@ -132,7 +132,7 @@ enyo.kind({
 		if(this.accounts == undefined) {
 	    		this.accounts = this.createComponent({name: "accounts", kind: "DBModel.Accounts",}, {"owner": this});
 	    	}
-		this.accounts.launchAccountSettingsUI(undefined, enyo.application.CallSynergizer.transports[enyo.application.CallSynergizer.TRANSPORTS.SKYPE]._accountId);
+		this.accounts.launchAccountSettingsUI(undefined, enyo.application.CallSynergizer.transports[enyo.application.CallSynergizer.TRANSPORTS.VOIP]._accountId);
 	},
 	openMenu : function(bShowCallHistory, isVoicemail) {		
 

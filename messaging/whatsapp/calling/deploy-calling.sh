@@ -1,8 +1,10 @@
 #!/bin/bash
 # deploy-calling.sh — install WhatsApp *calling* into the stock Phone app (com.palm.app.phone)
 # on the connected TouchPad via novacom. This is the phone-app side of WhatsApp calling: it
-# repurposes the dead Skype PHONE slot so the stock CallSynergizer/DialProxy drive the wacallm
-# mediator (LS2 service com.palm.whatsapp) with zero new UI. See README.md for the full picture.
+# repurposes the dead Skype PHONE slot (now CallSynergizer.TRANSPORTS.VOIP) so the stock
+# CallSynergizer/DialProxy drive the wacallm mediator (LS2 service com.palm.whatsapp) with zero
+# new UI. The SKYPE->VOIP rename spans the whole call flow, so ALL files below must ship together.
+# See README.md for the full picture.
 #
 # Prereqs NOT handled here (see README):
 #   1. wacallm mediator built + running   (build-output/wacallm-luna, LS2 role/.service)
@@ -18,16 +20,8 @@ SRC="$PKG/app-patches/com.palm.app.phone"
 echo "== remount rootfs rw =="
 nr "mount -o remount,rw /dev/mapper/store-root / || mount -o remount,rw /"
 
-echo "== push patched phone-app files =="
-for rel in \
-  source/CallSynergizer.js \
-  source/DialProxy.js \
-  source/utils/Utils.js \
-  phoneApp/source/AppMenu.js \
-  phoneApp/source/CallLogView.js \
-  phoneApp/source/SubItems.js \
-  phoneApp/source/styles-overrides.css \
-  resources/en.json ; do
+echo "== push every patched phone-app file (whole tree, so the VOIP rename stays consistent) =="
+( cd "$SRC" && find . -type f | sed 's#^\./##' ) | while read rel; do
   echo "   -> $rel"
   novacom put "file://$APP/$rel" < "$SRC/$rel"
 done

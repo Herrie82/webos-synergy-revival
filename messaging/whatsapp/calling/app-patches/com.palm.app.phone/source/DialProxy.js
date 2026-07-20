@@ -33,7 +33,7 @@ enyo.kind({
 			}else if (transport === undefined) {
 				var preferredService; 
 				
-				if (enyo.application.Cache.hasSkypeAcct === true && enyo.application.Cache.hasPairedPhone === true) {
+				if (enyo.application.Cache.hasVoipAcct === true && enyo.application.Cache.hasPairedPhone === true) {
 					//3G device with SIM ready
 					if (enyo.application.Cache.platformType !== "none" && enyo.application.Cache.simState === "simready"){
 						if (enyo.application.Utils.isInternationalNumber(address)) {
@@ -56,7 +56,7 @@ enyo.kind({
 							enyo.application.UI.event("dial", this.callData);
 							return false;
 						
-						case enyo.application.CallSynergizer.TRANSPORTS.SKYPE:
+						case enyo.application.CallSynergizer.TRANSPORTS.VOIP:
 							address = this._normalize(address);
 							
 						default:
@@ -64,8 +64,8 @@ enyo.kind({
 							break;
 					}								
 				} else { //only one transport is available
-					if (enyo.application.Cache.hasSkypeAcct === true) {
-						transport = enyo.application.CallSynergizer.TRANSPORTS.SKYPE; 
+					if (enyo.application.Cache.hasVoipAcct === true) {
+						transport = enyo.application.CallSynergizer.TRANSPORTS.VOIP; 
 					} else if (enyo.application.Cache.hasPairedPhone === true) {
 						transport = enyo.application.CallSynergizer.TRANSPORTS.TIL; 
 					} else {
@@ -90,7 +90,7 @@ enyo.kind({
 			this.executePlaceCall = true;
 			return;
 		}
-		else if (enyo.application.Cache.hasSkypeAcct) {
+		else if (enyo.application.Cache.hasVoipAcct) {
 			if (enyo.application.Utils.isInternationalNumber(address)) {
 				switch (enyo.application.Cache.phonePreferredIntlPhoneService) {
 					case "none":
@@ -120,24 +120,24 @@ enyo.kind({
 		}
 	},
 	onAccountsAvailable: function(inSender, inResponse) {
-		var previousAcctState = enyo.application.Cache.hasSkypeAcct;	
+		var previousAcctState = enyo.application.Cache.hasVoipAcct;	
         if (inResponse.templates) {
 			enyo.application.Cache.accountTemplate = inResponse.templates;	
 		}		
 		
-		enyo.application.Cache.hasSkypeAcct = false; 
+		enyo.application.Cache.hasVoipAcct = false; 
 		if (inResponse.accounts) {
 			var len = inResponse.accounts.length;
 			for (var i = 0; i < len; i++) {
 				if (inResponse.accounts[i].templateId === "com.palm.whatsapp") {
-					enyo.application.Cache.hasSkypeAcct = true;
+					enyo.application.Cache.hasVoipAcct = true;
 					break;
 				}
 			}
 		}
 		
 		//The account is remvoed, update contact look up page if necessary
-		if (previousAcctState === true && enyo.application.Cache.hasSkypeAcct === false) {
+		if (previousAcctState === true && enyo.application.Cache.hasVoipAcct === false) {
 			enyo.log("debug: skype account removed");
 			if (!enyo.application.hidden && !enyo.application.isCarded) {
 				if (!enyo.application.Cache.hasPairedPhone) {

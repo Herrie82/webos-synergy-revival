@@ -37,7 +37,7 @@ Three moving parts:
 
 | File | Change |
 |------|--------|
-| `source/CallSynergizer.js` | `TRANSPORTS.SKYPE = "com.palm.whatsapp"` (repurpose the dead Skype slot). `resubscribe: true` on the `callStateQuery` subscription so it survives mediator restarts (webOS only auto-resubscribed for the TIL transport). |
+| `source/CallSynergizer.js` | `TRANSPORTS.VOIP = "com.palm.whatsapp"` (the dead Skype slot, repurposed and **renamed** — see below). `resubscribe: true` on the `callStateQuery` subscription so it survives mediator restarts (webOS only auto-resubscribed for the TIL transport). |
 | `source/DialProxy.js` | Detect the WhatsApp account by `templateId === "com.palm.whatsapp"`; manual dials with no paired phone route to the WhatsApp transport. |
 | `phoneApp/source/AppMenu.js` | Hide "Check Skype Credit". |
 | `source/utils/Utils.js` | New `Utils.callNetworkName(service)` — the **single** place that names the VoIP transport in the UI (returns "WhatsApp" for the slot today; extend here for Telegram/Signal). |
@@ -45,6 +45,18 @@ Three moving parts:
 | `phoneApp/source/SubItems.js` | Call-detail drawer shows `callNetworkName`; WhatsApp numbers now go through `FormatPhoneNumber` (they're always phone numbers, so no more raw `+31…`). |
 | `phoneApp/source/styles-overrides.css` | Fixed-width network column in the call-detail drawer so longer names (WHATSAPP/TELEGRAM/SIGNAL) don't overlap the number. |
 | `resources/en.json` | Skype→WhatsApp string overrides. |
+
+### `SKYPE` → `VOIP` rename + generalized dial handler
+
+The internal `CallSynergizer.TRANSPORTS.SKYPE` constant and the `Cache.hasSkypeAcct` flag were renamed
+to `TRANSPORTS.VOIP` / `hasVoipAcct` across the **whole phone-app call flow** (~25 files) — the dead
+Skype slot is now honestly named for the multi-network VoIP role it plays. This is why the patch set
+spans far more than the calling-specific files: they all reference the constant and must ship together.
+`index.html`'s launch dial handler was also generalized — instead of only honouring the VOIP/TIL
+transports, it now accepts **any** transport CallSynergizer has discovered via `capability:"PHONE"`
+(keyed by account `templateId`), so a `dial` launched with `transport:"com.palm.telegram"` routes
+correctly instead of being nulled. (Legacy `"type_skype"`/`"com.palm.skype.call"` strings are still
+accepted as aliases for inbound compatibility.)
 
 ### Adding another network later (Telegram, Signal, …)
 

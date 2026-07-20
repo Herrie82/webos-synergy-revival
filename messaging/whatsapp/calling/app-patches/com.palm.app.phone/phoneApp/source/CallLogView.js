@@ -209,7 +209,7 @@ enyo.kind({
 		// CASE: unknown phone call, format and return
 		} else if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.TIL) {
 			return enyo.application.Utils.FormatPhoneNumber(address.addr);
-		} else if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.SKYPE) {
+		} else if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {
 			return enyo.application.Utils.callNetworkName(address.service);
 		} else {
 			enyo.error("listDisplayName unrecognized unknown address service: " + address.service);
@@ -218,7 +218,7 @@ enyo.kind({
 	},
 
 	listAddressLabel: function(address) {
-		if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.SKYPE) {
+		if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {
 			var addr = address.addr ? (" " + address.addr) : "";
 			return enyo.application.Utils.callNetworkName(address.service) + addr;
 		} else if (address.name == null) {
@@ -296,7 +296,7 @@ enyo.kind({
 				if ( callLog.recentcall_address.service === "phone" || callLog.recentcall_address.service === "skype_intl" ) {
 					callLog.recentcall_address.service = enyo.application.CallSynergizer.TRANSPORTS.TIL;
 				} else if ( callLog.recentcall_address.service === "skype") {
-					callLog.recentcall_address.service = enyo.application.CallSynergizer.TRANSPORTS.SKYPE;
+					callLog.recentcall_address.service = enyo.application.CallSynergizer.TRANSPORTS.VOIP;
 				}
 				
 				this.$.personsCache.addItem(callLog.recentcall_address.personId);
@@ -319,7 +319,7 @@ enyo.kind({
 			
 			// Only use the service if it is a Skype call that is not a ph#
 			var service = undefined;
-            if (itemData.recentcall_address.service === enyo.application.CallSynergizer.TRANSPORTS.SKYPE &&
+            if (itemData.recentcall_address.service === enyo.application.CallSynergizer.TRANSPORTS.VOIP &&
 				itemData.recentcall_address.addr === itemData.recentcall_address.normalizedAddr) // Work-around since we can't rely on personAddressType
             {
 				service = itemData.recentcall_address.service;
@@ -435,7 +435,7 @@ enyo.kind({
 				if (inPerson.ims[i].type === "type_skype") {
 					var ims = inPerson.ims[i];
 					this.createSubItem(undefined, ims.value, undefined, DrawerSubItemAction.DialSkypeIms, 
-						enyo.application.CallSynergizer.TRANSPORTS.SKYPE, ims.value, inPerson._id, bShowSeparator1, true);
+						enyo.application.CallSynergizer.TRANSPORTS.VOIP, ims.value, inPerson._id, bShowSeparator1, true);
 						
 					bShowSeparator1 = false;
 				}

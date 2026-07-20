@@ -61,7 +61,7 @@ enyo.kind({
 	imsChanged: function() {
 		if (this.ims) {
 			this.$.itemTextLbl.setContent(this.ims);
-			this.$.phTypeLbl.setContent(enyo.application.Utils.callNetworkName(enyo.application.CallSynergizer.TRANSPORTS.SKYPE)); // repurposed Skype IM slot -> current VoIP network name
+			this.$.phTypeLbl.setContent(enyo.application.Utils.callNetworkName(enyo.application.CallSynergizer.TRANSPORTS.VOIP)); // repurposed Skype IM slot -> current VoIP network name
 		}
 	},
 	
@@ -150,7 +150,7 @@ enyo.kind({
 	imsChanged: function() {
 		if (this.ims) {
 			this.$.itemTextLbl.setContent(this.ims);
-			this.$.phTypeLbl.setContent(enyo.application.Utils.callNetworkName(enyo.application.CallSynergizer.TRANSPORTS.SKYPE)); // repurposed Skype IM slot -> current VoIP network name
+			this.$.phTypeLbl.setContent(enyo.application.Utils.callNetworkName(enyo.application.CallSynergizer.TRANSPORTS.VOIP)); // repurposed Skype IM slot -> current VoIP network name
 		}
 	},
 	
@@ -209,7 +209,7 @@ enyo.kind({
 			}
 
 			// Can't always rely on personAddressType for Skype addresses, therefore hard-coding it here
-			this.$.itemPrefixTextLbl.setContent(addrData.service === enyo.application.CallSynergizer.TRANSPORTS.SKYPE ? enyo.application.Utils.callNetworkName(addrData.service) : enyo.application.Utils.getPhoneNumberType(addrData.personAddressType));
+			this.$.itemPrefixTextLbl.setContent(addrData.service === enyo.application.CallSynergizer.TRANSPORTS.VOIP ? enyo.application.Utils.callNetworkName(addrData.service) : enyo.application.Utils.getPhoneNumberType(addrData.personAddressType));
 			if (this.$.itemPrefixTextLbl.content.length > 0) {
 				this.$.itemPrefixTextLbl.setClassName("drawer-subItem-itemPrefixTextLbl");
 				this.$.itemTextLbl.setClassName("drawer-subItem-itemPartialAddrLbl");	
@@ -265,7 +265,7 @@ enyo.kind({
 				enyo.application.CallSynergizer.dial(inData.rawPhoneNumber, undefined, undefined, undefined, inData.personId, true);
 				break;
 			case DrawerSubItemAction.DialSkypeIms:
-				enyo.application.CallSynergizer.dial(inData.rawPhoneNumber, undefined, undefined, enyo.application.CallSynergizer.TRANSPORTS.SKYPE, inData.personId, true);
+				enyo.application.CallSynergizer.dial(inData.rawPhoneNumber, undefined, undefined, enyo.application.CallSynergizer.TRANSPORTS.VOIP, inData.personId, true);
 				break;
 			case DrawerSubItemAction.ChangeDefaultNumber:
 				enyo.application.UI.enter('favoritesadd', {person:inData.person});
@@ -294,7 +294,7 @@ enyo.kind({
 			composeParams.personId = inData.personId;
 		}
 
-		if ( inData.transport === enyo.application.CallSynergizer.TRANSPORTS.SKYPE ) {
+		if ( inData.transport === enyo.application.CallSynergizer.TRANSPORTS.VOIP ) {
 			composeParams.ims = [{value: inData.rawPhoneNumber, serviceName: "type_skype"}];
 		} else {
 			composeParams.phoneNumbers = [{value: inData.rawPhoneNumber}];
@@ -320,7 +320,7 @@ enyo.kind({
 			"id":"com.palm.app.contacts",
 			"params":{"contact":{},"launchType":"pseudo-card", "test":"aa"}
 		};
-		if(service === enyo.application.CallSynergizer.TRANSPORTS.SKYPE) {
+		if(service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {
 			contact.params.contact["ims"] = [{"value":rawPhoneNumber,"type":"type_skype"}];
 		} else {
 			contact.params.contact["phoneNumbers"] = [{"value":rawPhoneNumber}];
