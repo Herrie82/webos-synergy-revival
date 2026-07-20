@@ -202,6 +202,9 @@ enyo.kind({
 		if ( address.name ) {
 			if (address.name === "unknown") {
 				return enyo.application.Messages.unknownNumber;
+			} else if (enyo.application.Utils.isValidNumber(address.name)) {
+				// no contact resolved, "name" is just the raw phone number -> format it
+				return enyo.application.Utils.FormatPhoneNumber(address.name) || address.name;
 			} else {
 				return address.name;
 			}
@@ -219,7 +222,7 @@ enyo.kind({
 
 	listAddressLabel: function(address) {
 		if ( address.service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {
-			var addr = address.addr ? (" " + address.addr) : "";
+			var addr = address.addr ? (" " + (enyo.application.Utils.FormatPhoneNumber(address.addr) || address.addr)) : "";
 			return enyo.application.Utils.callNetworkName(address.service) + addr;
 		} else if (address.name == null) {
 			if (enyo.application.Utils.isVoicemailNumber(address.addr))

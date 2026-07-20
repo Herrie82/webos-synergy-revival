@@ -106,7 +106,9 @@ enyo.kind({
 			this.addressFormatted = enyo.application.Utils.FormatPhoneNumber(this.address) || enyo.application.Messages.unknownNumber;
 			this.normalizedAddress = Utils.PersonFind.normalizePhoneNumber(this.address);
 		} else {
-			this.addressFormatted = this.address;
+			// VoIP/IM addresses are usually phone numbers (WhatsApp) -> format them; a genuine
+			// non-numeric handle yields "" from FormatPhoneNumber, so we fall back to the raw address.
+			this.addressFormatted = enyo.application.Utils.FormatPhoneNumber(this.address) || this.address;
 			this.normalizedAddress = Utils.PersonFind.normalizeIm(this.address);
 		}
 	},
