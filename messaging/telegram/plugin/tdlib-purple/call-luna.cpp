@@ -25,7 +25,7 @@ extern void callBridgeHangup(PurpleAccount *account);
 
 /* On-device lifecycle trace (purple_debug never reaches /var/log/messages on webOS). Tail
  * /media/internal/tgcall.log to see exactly when/if the call service registers + dials. */
-static void tgcLog(const char *fmt, ...)
+void tgcLog(const char *fmt, ...)
 {
     FILE *f = fopen("/media/internal/tgcall.log", "a");
     if (!f) return;

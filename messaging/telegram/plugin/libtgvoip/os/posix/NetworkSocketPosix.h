@@ -63,6 +63,7 @@ private:
 	bool nat64Present;
 	double switchToV6at;
 	bool isV4Available;
+	bool isV4Socket=false;   // set when the kernel has no IPv6 and we fell back to a plain AF_INET socket
 	std::atomic<bool> closing;
 	NetworkAddress tcpConnectedAddress=NetworkAddress::Empty();
 	uint16_t tcpConnectedPort;

@@ -23,6 +23,10 @@ bool callLunaInit(PurpleAccount *account);
 /* Tear down the service (account disconnect / plugin unload). */
 void callLunaShutdown(PurpleAccount *account);
 
+/* On-device trace to /media/internal/tgcall.log (purple_debug doesn't reach the system log on webOS).
+ * printf-style; usable from call.cpp too (e.g. to trace the libtgvoip activateCall setup). */
+void tgcLog(const char *fmt, ...);
+
 /* Push the current call state to Phone-app callStateQuery subscribers. Called from call.cpp's
  * updateCall(). state is one of: "incoming", "dialing", "active", "disconnected", "" (idle).
  * NOTE: these strings must match the stock Phone app CallSynergizer STATES enum exactly

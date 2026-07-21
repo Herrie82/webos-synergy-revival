@@ -114,6 +114,10 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     config.enableAEC = true;
     config.enableNS  = true;
     config.enableAGC = true;
+    // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
+    // "Connecting") is invisible. Point it at a file to see the reflector connection + audio init.
+    config.logFilePath       = "/media/internal/tgvoip.log";
+    config.statsDumpFilePath = "/media/internal/tgvoip-stats.log";
     voip->SetConfig(config);
 
     std::vector<tgvoip::Endpoint> endpoints;
@@ -135,6 +139,9 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     std::vector<char> key(state.encryption_key_.length()+1);
     memmove(key.data(), state.encryption_key_.c_str(), key.size());
     voip->SetEncryptionKey(key.data(), call.is_outgoing_);
+    tgcLog("activateCall: endpoints=%zu p2p=%d max_layer=%d key_len=%zu outgoing=%d",
+           endpoints.size(), (int)(state.allow_p2p_ && state.protocol_->udp_p2p_),
+           (int)state.protocol_->max_layer_, state.encryption_key_.length(), (int)call.is_outgoing_);
     voip->Start();
     voip->Connect();
 
