@@ -332,6 +332,9 @@ pub unsafe extern "C" fn presage_rust_main(
 
     // create a channel for asynchronous communication of commands c → rust
     let (tx, rx) = tokio::sync::mpsc::channel(32);
+    // give the call media bridge a clone so its per-call reader thread can enqueue outgoing
+    // CallMessage Answer/IceUpdate for the command loop (which owns the Manager) to send.
+    crate::call_bridge::set_command_sender(tx.clone());
     // put the sender into a box so it can live in the C part
     let tx_box = Box::new(tx);
     append_message(Message {

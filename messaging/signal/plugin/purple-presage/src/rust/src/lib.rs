@@ -2,6 +2,7 @@
 
 mod attachment;
 mod bridge;
+mod call_bridge;
 mod call_media;
 mod bridge_commands;
 mod contacts;

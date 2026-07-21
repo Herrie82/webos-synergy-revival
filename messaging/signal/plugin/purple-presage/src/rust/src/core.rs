@@ -146,7 +146,63 @@ async fn run<C: presage::store::Store + 'static>(
             crate::attachment::get_attachment(account, manager, attachment_pointer, xfer).await;
             Ok(true)
         }
+        crate::structs::Cmd::SendCallAnswer { uuid, call_id, opaque } => {
+            let cm = presage::proto::CallMessage {
+                answer: Some(presage::proto::call_message::Answer {
+                    id: Some(call_id),
+                    opaque: Some(opaque),
+                }),
+                ..Default::default()
+            };
+            send_call_message(&mut manager, account, uuid, cm, "Answer").await;
+            Ok(true)
+        }
+        crate::structs::Cmd::SendCallIce { uuid, call_id, opaque } => {
+            let cm = presage::proto::CallMessage {
+                ice_update: vec![presage::proto::call_message::IceUpdate {
+                    id: Some(call_id),
+                    opaque: Some(opaque),
+                }],
+                ..Default::default()
+            };
+            send_call_message(&mut manager, account, uuid, cm, "IceUpdate").await;
+            Ok(true)
+        }
         crate::structs::Cmd::Exit {} => Ok(false),
+    }
+}
+
+/// Send a RingRTC CallMessage (Answer / IceUpdate) to `uuid`. Errors are logged, never fatal -- a
+/// dropped signaling message must not tear down the Signal connection (same policy as command_loop).
+async fn send_call_message<C: presage::store::Store + 'static>(
+    manager: &mut presage::Manager<C, presage::manager::Registered>,
+    account: *mut crate::bridge_structs::PurpleAccount,
+    uuid: presage::libsignal_service::prelude::Uuid,
+    call_message: presage::proto::CallMessage,
+    kind: &str,
+) {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    match manager
+        .send_message(
+            presage::libsignal_service::protocol::ServiceId::Aci(uuid.into()),
+            presage::libsignal_service::content::ContentBody::CallMessage(call_message),
+            timestamp,
+        )
+        .await
+    {
+        Ok(_) => crate::bridge::purple_debug(
+            account,
+            crate::bridge_structs::PURPLE_DEBUG_INFO,
+            format!("call bridge: sent {kind} to {uuid}\n"),
+        ),
+        Err(err) => crate::bridge::purple_debug(
+            account,
+            crate::bridge_structs::PURPLE_DEBUG_ERROR,
+            format!("call bridge: failed to send {kind} to {uuid}: {err}\n"),
+        ),
     }
 }
 

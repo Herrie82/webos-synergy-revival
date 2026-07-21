@@ -451,6 +451,34 @@ async fn process_received_message<C: presage::store::Store>(
                 });
                 crate::bridge::handle_call_state(message.account, message.who.clone(), name, state, call_id);
             }
+
+            // Media bridge (gated on /media/internal/signal_call_media). Drives the signal_media
+            // engine: offer -> auto-answer + start media; ice_update -> feed remote candidates;
+            // hangup/busy -> tear the engine down. Sends the Answer/our-ICE back via the command loop.
+            if crate::call_bridge::media_enabled() {
+                let caller_uuid = message
+                    .who
+                    .as_ref()
+                    .and_then(|w| presage::libsignal_service::prelude::Uuid::parse_str(w).ok());
+                if let Some(offer) = call_message.offer.as_ref() {
+                    if let (Some(uuid), Some(op)) = (caller_uuid, offer.opaque.as_ref()) {
+                        crate::call_bridge::start_incoming(uuid, call_id, op);
+                    }
+                }
+                if !call_message.ice_update.is_empty() {
+                    let opaques: Vec<Vec<u8>> = call_message
+                        .ice_update
+                        .iter()
+                        .filter_map(|ice| ice.opaque.clone())
+                        .collect();
+                    if !opaques.is_empty() {
+                        crate::call_bridge::feed_remote_ice(call_id, &opaques);
+                    }
+                }
+                if call_message.hangup.is_some() || call_message.busy.is_some() {
+                    crate::call_bridge::stop(call_id);
+                }
+            }
             chat
         }
         presage::libsignal_service::content::ContentBody::EditMessage(presage::proto::EditMessage {

@@ -21,7 +21,29 @@ pub enum Cmd {
         attachment_pointer: presage::proto::AttachmentPointer,
         xfer: *const crate::bridge_structs::PurpleXfer,
     },
+    // Emitted by the call media bridge (call_bridge.rs) so the command loop -- which owns the
+    // concrete Manager -- sends our RingRTC Answer / IceUpdate CallMessages back to the caller.
+    // `opaque` is the already-encoded ConnectionParametersV4 (answer) or IceCandidate (ice) blob.
+    SendCallAnswer {
+        uuid: presage::libsignal_service::prelude::Uuid,
+        call_id: u64,
+        opaque: Vec<u8>,
+    },
+    SendCallIce {
+        uuid: presage::libsignal_service::prelude::Uuid,
+        call_id: u64,
+        opaque: Vec<u8>,
+    },
 }
+
+// Cmd already crosses threads today: it is pushed onto a tokio mpsc from the C-invoked send_cmd
+// thread and drained on the runtime thread (tokio mpsc does not bound T: Send, so this compiles
+// without the marker). The call bridge additionally needs to hold the Sender<Cmd> in a global so a
+// std reader thread can enqueue SendCallAnswer/SendCallIce -- and a static Sender<Cmd> requires
+// Cmd: Send. The raw pointers in the Send/GetAttachment variants are only ever dereferenced on the
+// main/runtime thread (append_message etc.); the call-bridge variants carry only Send data. This
+// unsafe impl formalises the thread movement that already happens.
+unsafe impl Send for Cmd {}
 
 #[derive(Debug, Clone)]
 pub enum Recipient {
