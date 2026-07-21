@@ -43,6 +43,9 @@ void presage_login(PurpleAccount *account) {
     pc_flags |= PURPLE_CONNECTION_FLAG_NO_BGCOLOR;
     purple_connection_set_flags(connection, pc_flags);
     purple_connection_set_state(connection, PURPLE_CONNECTION_STATE_CONNECTING);
+    // Signal calling (signaling-only): register com.palm.signal.call so incoming Signal calls ring the
+    // stock Phone app. Idempotent - just (re)binds this account on reconnect.
+    callLunaInit(account);
     Presage *presage = g_new0(Presage, 1);
     purple_connection_set_protocol_data(connection, presage);
     #ifdef WIN32

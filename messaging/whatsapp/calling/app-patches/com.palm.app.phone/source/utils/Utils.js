@@ -845,8 +845,15 @@ Utils.contactPointLabels = {
 // mediator tag each call with a network name stored in the call-log record and return that.
 // Keep this the ONE place that names the VoIP transport.
 Utils.callNetworkName = function(service) {
-	if (service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {
+	// service == the account templateId of the PHONE transport used for the call.
+	if (service === enyo.application.CallSynergizer.TRANSPORTS.VOIP) {   // repurposed slot -> WhatsApp
 		return $L("WhatsApp");
+	}
+	if (service === "com.palm.telegram") {
+		return $L("Telegram");
+	}
+	if (service === "com.palm.signal") {
+		return $L("Signal");
 	}
 	return service || "";
 };

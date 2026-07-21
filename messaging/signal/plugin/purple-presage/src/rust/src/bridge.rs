@@ -109,6 +109,39 @@ extern "C" {
         account: *mut crate::bridge_structs::PurpleAccount,
         who: *const std::os::raw::c_char,
     ) -> *const std::os::raw::c_char;
+
+    // implemented by call.c - push a Signal call state to the com.palm.signal.call LS2 service
+    fn presage_handle_call_state(
+        account: *mut crate::bridge_structs::PurpleAccount,
+        who: *const std::os::raw::c_char,
+        name: *const std::os::raw::c_char,
+        state: u32,
+        call_id: u64,
+    );
+}
+
+// Signal call states pushed to the Phone app's com.palm.signal.call service (must match call.c).
+pub const CALL_STATE_INCOMING: u32 = 0;
+pub const CALL_STATE_ENDED: u32 = 1; // remote hung up / call ended
+pub const CALL_STATE_DECLINED: u32 = 2;
+pub const CALL_STATE_BUSY: u32 = 3;
+
+// Forward an incoming Signal CallMessage to the stock Phone app (ring / clear). Signaling only:
+// there is no media yet, so this is presence of a call, not a connected call.
+pub fn handle_call_state(
+    account: *const crate::bridge_structs::PurpleAccount,
+    who: Option<String>,
+    name: Option<String>,
+    state: u32,
+    call_id: u64,
+) {
+    let who = who.and_then(|s| std::ffi::CString::new(s).ok());
+    let name = name.and_then(|s| std::ffi::CString::new(s).ok());
+    let who_p = who.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    let name_p = name.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    unsafe {
+        presage_handle_call_state(account as *mut crate::bridge_structs::PurpleAccount, who_p, name_p, state, call_id);
+    }
 }
 
 // I want to forward a Vec of groups to the C part, but the rust-allocated C-compatible CStrings must live somewhere, so we have this intermediate type

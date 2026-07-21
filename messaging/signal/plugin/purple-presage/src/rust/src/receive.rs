@@ -390,7 +390,31 @@ async fn process_received_message<C: presage::store::Store>(
             );
             None
         }
-        presage::libsignal_service::content::ContentBody::CallMessage(_) => Some("is calling!".to_string()),
+        presage::libsignal_service::content::ContentBody::CallMessage(call_message) => {
+            // Signaling only (no media yet): ring the stock Phone app on an incoming call, clear it on
+            // hangup/busy, and drop a "Missed voice call" line into history. offer=incoming; hangup/busy
+            // end it; answer/ice belong to a call we don't drive, so ignore them.
+            let call_id = call_message
+                .offer
+                .as_ref()
+                .and_then(|o| o.id)
+                .or_else(|| call_message.hangup.as_ref().and_then(|h| h.id))
+                .or_else(|| call_message.busy.as_ref().and_then(|b| b.id))
+                .unwrap_or(0);
+            let (state, chat) = if call_message.offer.is_some() {
+                (crate::bridge::CALL_STATE_INCOMING, None)
+            } else if call_message.busy.is_some() {
+                (crate::bridge::CALL_STATE_BUSY, None)
+            } else if call_message.hangup.is_some() {
+                (crate::bridge::CALL_STATE_ENDED, Some("Missed voice call".to_string()))
+            } else {
+                (u32::MAX, None)
+            };
+            if state != u32::MAX {
+                crate::bridge::handle_call_state(message.account, message.who.clone(), message.name.clone(), state, call_id);
+            }
+            chat
+        }
         presage::libsignal_service::content::ContentBody::EditMessage(presage::proto::EditMessage {
             data_message: Some(data_message),
             ..

@@ -36,6 +36,12 @@ void presage_rust_get_group_members(PurpleAccount *, RustRuntimePtr, RustChannel
 void presage_rust_get_profile(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);
 void presage_rust_list_groups(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
 
+// call.c - Signal calling (signaling-only): the com.palm.signal.call LS2 service that rings the stock
+// Phone app on an incoming Signal call. presage_handle_call_state is called from the Rust receive loop.
+void callLunaInit(PurpleAccount *account);
+void callLunaShutdown(PurpleAccount *account);
+void presage_handle_call_state(PurpleAccount *account, const char *who, const char *name, uint32_t state, uint64_t call_id);
+
 extern RustRuntimePtr rust_runtime;
 
 // structures for receiving messages from rust

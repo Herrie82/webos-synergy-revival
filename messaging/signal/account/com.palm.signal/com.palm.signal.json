@@ -66,6 +66,14 @@
             "db_kinds": {
                 "contact": "com.palm.contact.libpurple:1"
             }
+        },
+        {
+            "capability": "PHONE",
+            "id": "com.palm.signal.call",
+            "alwaysOn": true,
+            "loc_shortName": "Signal",
+            "implementation": "palm://com.palm.signal.call/",
+            "serviceName": "type_signal"
         }
     ]
 }]

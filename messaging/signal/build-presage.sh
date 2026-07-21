@@ -55,6 +55,14 @@ C=$REPO/messaging/signal/plugin/purple-presage/src/c
 PURPLE=$REPO/messaging/libpurple
 BUILD=$REPO/messaging/signal/plugin/purple-presage/build-arm
 mkdir -p "$BUILD/obj"
+
+# luna-service2 for the com.palm.signal.call LS2 service (call.c). Link against the device stub .so;
+# the real /usr/lib/liblunaservice.so resolves at load inside imlibpurpletransport.
+# lunaservice.h itself does #include <luna-service2/...>, so BOTH include/public and its luna-service2/
+# subdir must be on the path (matches the Telegram build).
+LUNA_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/include/public
+PMLOG_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
+LSSTUB=$REPO/build-output/imtransport/lib/liblunaservice.so
 export PKG_CONFIG_PATH="$OSSL/lib/pkgconfig:$OSSL/../staging-glibc-252/lib/pkgconfig"
 GLIB=/home/herrie/webos/wpe/staging-glibc-252
 export PKG_CONFIG_PATH="$GLIB/lib/pkgconfig"
@@ -62,10 +70,11 @@ GLIB_CFLAGS=$(pkg-config --cflags glib-2.0 gobject-2.0)
 
 # NB: gdk-pixbuf deliberately NOT on the include path -> pixbuf.c uses its jpeg/png fallback.
 CFLAGS="-fPIC -O2 -march=armv7-a -mfloat-abi=soft --sysroot=$SR -DPURPLE_PLUGINS
-  -DPLUGIN_VERSION=\"0.0.0-webos\" -I$C -I$PURPLE/include/libpurple -I$PURPLE/include $GLIB_CFLAGS"
+  -DPLUGIN_VERSION=\"0.0.0-webos\" -I$C -I$PURPLE/include/libpurple -I$PURPLE/include $GLIB_CFLAGS
+  -I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC"
 
 SRCS="init.c bridge.c connection.c qrcode.c receive_text.c send_text.c blist.c status.c groups.c \
-      receive_attachment.c send_file.c profile.c options.c attachment_common.c pixbuf.c"
+      receive_attachment.c send_file.c profile.c options.c attachment_common.c pixbuf.c call.c"
 OBJS=""
 for s in $SRCS; do
   o="$BUILD/obj/${s%.c}.o"
@@ -80,6 +89,7 @@ echo "=== Linking libpresage.so ==="
 ${P}g++ -shared -fPIC -march=armv7-a -mfloat-abi=soft --sysroot=$SR -Wl,-soname,libpresage.so \
   $OBJS \
   -Wl,--start-group "$BACKEND" -L"$PURPLE/lib" -lpurple -L"$OSSL/lib" -lcrypto -Wl,--end-group \
+  "$LSSTUB" \
   -lstdc++ -lpthread -ldl -lm -lrt -lutil -lgcc_s \
   -o "$BUILD/libpresage.so"
 echo "=== Result ==="
