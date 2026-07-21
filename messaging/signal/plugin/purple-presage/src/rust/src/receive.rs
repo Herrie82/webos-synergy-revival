@@ -462,7 +462,31 @@ async fn process_received_message<C: presage::store::Store>(
                     .and_then(|w| presage::libsignal_service::prelude::Uuid::parse_str(w).ok());
                 if let Some(offer) = call_message.offer.as_ref() {
                     if let (Some(uuid), Some(op)) = (caller_uuid, offer.opaque.as_ref()) {
-                        crate::call_bridge::start_incoming(uuid, call_id, op);
+                        // Source the 32-byte RAW Curve25519 identity public keys the RingRTC SRTP KDF
+                        // binds in: caller = the offerer/peer's ACI identity key, callee = ours.
+                        // IdentityKey::serialize() is the 33-byte 0x05-prefixed form; strip the prefix.
+                        use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
+                        let aci_store = manager.store().aci_protocol_store();
+                        let callee_id: Vec<u8> = aci_store
+                            .get_identity_key_pair()
+                            .await
+                            .ok()
+                            .map(|kp| kp.identity_key().serialize()[1..].to_vec())
+                            .unwrap_or_default();
+                        let caller_id: Vec<u8> = match (message.who.as_ref(), DeviceId::try_from(1u32)) {
+                            (Some(w), Ok(dev)) => {
+                                let addr = ProtocolAddress::new(w.clone(), dev);
+                                aci_store
+                                    .get_identity(&addr)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .map(|ik| ik.serialize()[1..].to_vec())
+                                    .unwrap_or_default()
+                            }
+                            _ => Vec::new(),
+                        };
+                        crate::call_bridge::start_incoming(uuid, call_id, op, &caller_id, &callee_id);
                     }
                 }
                 if !call_message.ice_update.is_empty() {

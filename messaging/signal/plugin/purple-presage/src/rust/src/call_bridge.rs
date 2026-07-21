@@ -99,7 +99,18 @@ fn rand_token(n: usize) -> String {
 }
 
 /// Start (auto-answer) media for an incoming call. `caller_uuid` is who we send Answer/ICE back to.
-pub fn start_incoming(caller_uuid: Uuid, call_id: u64, offer_opaque: &[u8]) {
+///
+/// `caller_id` / `callee_id` are the 32-byte RAW Curve25519 identity public keys bound into the
+/// SRTP KDF (RingRTC negotiate_srtp_keys: caller = the offerer/remote peer's ACI identity key,
+/// callee = our ACI identity key). Pass empty slices if unavailable -- signaling/ICE still work but
+/// the SRTP keys won't match the peer, so there will be no audio.
+pub fn start_incoming(
+    caller_uuid: Uuid,
+    call_id: u64,
+    offer_opaque: &[u8],
+    caller_id: &[u8],
+    callee_id: &[u8],
+) {
     if !media_enabled() {
         return;
     }
@@ -110,14 +121,13 @@ pub fn start_incoming(caller_uuid: Uuid, call_id: u64, offer_opaque: &[u8]) {
             return;
         }
     };
+    if caller_id.is_empty() || callee_id.is_empty() {
+        eprintln!("call_bridge: WARNING starting call {call_id} without identity keys -> no audio (signaling/ICE only)");
+    }
 
     let priv32 = rand_bytes(32);
     let our_ufrag = rand_token(4);
     let our_pwd = rand_token(24);
-
-    // KNOWN UNKNOWN: RingRTC binds identity material into the SRTP KDF. Passing empty for now.
-    let caller_id: Vec<u8> = Vec::new();
-    let callee_id: Vec<u8> = Vec::new();
 
     let mut child = match Command::new(SIGNAL_MEDIA_BIN)
         .arg("--answer")
@@ -151,8 +161,8 @@ pub fn start_incoming(caller_uuid: Uuid, call_id: u64, offer_opaque: &[u8]) {
         "START {} {} {} {} {} {} {} {}\n",
         hex(&priv32),
         hex(&params.public_key),
-        hex(&caller_id),
-        hex(&callee_id),
+        hex(caller_id),
+        hex(callee_id),
         our_ufrag,
         our_pwd,
         params.ice_ufrag,
