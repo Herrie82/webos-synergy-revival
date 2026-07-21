@@ -284,6 +284,14 @@ of the op21–30 ↔ session-call ordering; translate its state machine directly
 
 ## 9. Milestones (realistic)
 
+> **Update (client scaffold landed):** the full layered client now exists under `src/`
+> and **cross-compiles + links to an ARM ELF that runs a no-network self-test green on
+> ARM** (opus round-trip + libdave MLS leaf-node creation + DAVE passthrough). All of
+> M1–M3 below is now WRITTEN but UNVERIFIED against a live server (no token/device at
+> build time). See **[STATUS.md](STATUS.md)** for the layer-by-layer state, the exact
+> DAVE-in-voice seam, the "add a bot token + run" instructions, and the honest per-layer
+> risks. The milestone bars below are unchanged; the code to attempt them now exists.
+
 - **M0 — libdave/mlspp cross-build + DAVE API proof.  ✅ DONE (this spike).**
   ARM `libdave.a` + mlspp built; probe runs on ARM: MLS KeyPackage generated + Opus
   frame AES-128-GCM round-trip verified. Ciphersuite 0x0002 confirmed. See README.
