@@ -9,8 +9,11 @@ bottom) so treat the first call as a signaling/ICE test that may or may not yiel
 - ✅ `signal_media --loopback` round-trips 25 Opus frames through AEAD_AES_256_GCM SRTP **on device**.
 - ✅ `signal_media --answer` IPC: parses START, gathers ICE, emits PUB + bare `candidate:` lines.
 - ✅ presage `call_bridge.rs` compiles into `libpresage.so`, relays offer→Answer + ICE both ways.
+- ✅ SRTP KDF derivation CONFIRMED against RingRTC source (identity keys, 32-byte raw; caller=peer,
+     callee=us) and the identity keys are now sourced from the ACI protocol store.
 - ❓ Real ICE connectivity to a live Signal peer (LAN host candidates should connect).
-- ❓ Two-way audio — depends on the SRTP KDF ids (see "Remaining unknown").
+- ❓ Two-way audio end-to-end — all inputs are now correct in theory; needs a live call to confirm
+     (the peer-identity store lookup uses device 1 + the ALSA route below).
 - ❓ ALSA `voip`/`voipsource` routing under a live call (same recipe as Telegram; may need the
      system libasound + audiod scenario that call.c drives).
 
@@ -65,10 +68,18 @@ bottom) so treat the first call as a signaling/ICE test that may or may not yiel
 - The engine's own stderr is dropped (Stdio::null) when spawned by presage; to see engine logs run
   the standalone `--answer` harness (see RUNTIME_STATUS.md) or temporarily point stderr to a file.
 
-## Remaining unknown (blocks two-way audio, not signaling)
-The SRTP master keys come from `signal_negotiate_srtp_keys(our_priv, peer_pub, caller_id, callee_id)`
-with HKDF info = `"Signal_Calling_20200807_SignallingDH_SRTPKey_KDF" + caller_id + callee_id`. The
-exact `caller_id`/`callee_id` bytes (RingRTC identity material) are **unverified** — `call_bridge.rs`
-passes them EMPTY. If ICE connects but audio is silent/garbled, this is the cause. To resolve: get
-RingRTC's exact V4 SRTP-key derivation (what it concatenates as caller/callee id) and fill those in
-`call_bridge::start_incoming` (they must match what the peer uses, or the keys won't agree).
+## SRTP KDF (RESOLVED — confirmed against RingRTC source)
+`connection.rs::negotiate_srtp_keys`: HKDF-SHA256(salt = 32×0x00, ikm = X25519(our_priv, peer_pub),
+info = `"Signal_Calling_20200807_SignallingDH_SRTPKey_KDF"` + caller_identity_key + callee_identity_key)
+→ 88 bytes split 32/12/32/12 = offer_key/offer_salt/answer_key/answer_salt (AES-256-GCM).
+- caller_identity_key = the offerer/peer's ACI identity key; callee_identity_key = ours.
+- Both are **32-byte RAW** Curve25519 public keys (strip the 0x05 prefix off the 33-byte serialize()).
+`receive.rs` sources ours via `get_identity_key_pair()` and the peer's via
+`get_identity(ProtocolAddress(peer_aci, device 1))`.
+
+### If audio is still silent after this
+1. Peer identity not stored under device 1 → `caller_id` empty (a WARNING is logged). Fix: look up
+   the caller's real device / any stored identity for that ACI.
+2. ALSA `voip`/`voipsource` not routing (pipeline "failed to set PLAYING") — apply the Telegram/
+   wacallm recipe (system libasound + audiod scenario driven by call.c).
+3. ICE never reaches `connected` (check the engine's `ICE component state` logs) — trickle/STUN.
