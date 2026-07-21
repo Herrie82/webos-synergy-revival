@@ -94,7 +94,7 @@ enyo.kind({
 	
 		// currently a late update can only affect an unknown contact
 		if ( ! this.personId ) {
-			this.name = this.displayName;
+			this.name = this._hasRealDisplayName() ? this.displayName : $L("Unknown Caller");
 		}
 
 		if(this.isDecorated == true) { //if already decorated other don't bother
@@ -141,7 +141,13 @@ enyo.kind({
 			}
 		// CASE: we are skype IM
 		} else if ( this.transport == enyo.application.CallSynergizer.TRANSPORTS.VOIP ) {
-			this.$.personLookupQuery.findByIm(this.address);
+			// WhatsApp callers are identified by phone number -> look them up by phone so a saved
+			// contact's NAME wins. Non-numeric handles (e.g. a Signal UUID) fall back to an IM lookup.
+			if ( enyo.application.Utils.isValidNumber(this.address) ) {
+				this.$.personLookupQuery.findByPhone(this.address);
+			} else {
+				this.$.personLookupQuery.findByIm(this.address);
+			}
 		
 		// DEFAULT: we're something else
 		// todo how do we reverse lookup 3rd party addresses?
@@ -151,7 +157,7 @@ enyo.kind({
 			this.labelFormatted = $L("Skype");
 			
 			// temp: need findPersonByIM
-			this.name = this.address;
+			this.name = $L("Unknown Caller");
 			this.dispatchCallbacks();
 		}
 	},
@@ -253,15 +259,25 @@ enyo.kind({
 		this.dispatchCallbacks();
 	},
 		
+	// True only if the mediator handed us a real NAME - not a bare phone number, a Signal UUID, or the
+	// address echoed back. Those are not names, so the caller is "Unknown Caller" (with the formatted
+	// number, when there is one, shown on the line below via addressFormatted).
+	_hasRealDisplayName: function() {
+		var dn = this.displayName;
+		return !!(dn && dn.match(/[^\s]/) && dn != "unknown"
+			&& dn !== this.address && dn !== this.addressFormatted
+			&& !enyo.application.Utils.isValidNumber(dn));
+	},
+
 	_formatWithoutPerson: function() {
 		// for unknown phone numbers only, eg "N. California"
 		this.locationFormatted = enyo.application.Utils.locationForAddress(this.address, this.transport) || "";
-		
-		// first use display name
-		if ( this.displayName && this.displayName.match(/[^\s]/) && this.displayName != "unknown"){
+
+		// A real display name (e.g. a WhatsApp push-name) wins; a bare number/UUID is not a name.
+		if ( this._hasRealDisplayName() ){
 			this.name = this.displayName;
 			this.dispatchCallbacks();
-			
+
 		} else if ( this.transport == enyo.application.CallSynergizer.TRANSPORTS.TIL ) {
 			this.$.carrierLookupQuery.call({
 				query: {
@@ -269,9 +285,11 @@ enyo.kind({
 				}
 			});
 		} else {
-			// todo handle skype
+			// VoIP/unknown caller with no resolvable name -> "Unknown Caller"; the formatted number
+			// (if the address is a phone number) shows beneath it via addressFormatted.
+			this.name = $L("Unknown Caller");
 			this.dispatchCallbacks();
-		}								
+		}
 	},
 	
 	displayNameChanged: function() {

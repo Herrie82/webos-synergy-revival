@@ -654,6 +654,12 @@ enyo.kind({
 			this.callSwap(otherLineToMakeActive.calls[0].id, otherLineToMakeActive.calls[0].transport);
 		}
 
+		// A user-initiated hangup (callDisconnect) must announce a normal "Call ended", never the
+		// "Call dropped"/Redial popup - the mediator may report a non-"normal" cause for a deliberate hangup.
+		this.userHangupCalls = this.userHangupCalls || {};
+		var userInitiatedHangup = !!(line.calls[0] && line.calls[0].id && this.userHangupCalls[line.calls[0].id]);
+		if (line.calls[0] && line.calls[0].id) { delete this.userHangupCalls[line.calls[0].id]; }
+
 		// debounce two disconnected calls: if the first call's original state was disconnected, don't log it
 		if ( line.calls.length == 0 || (line.calls[0].transport === this.TRANSPORTS.VOIP && line.calls[0].firstState == this.STATES.DISCONNECTED )) {
 
@@ -683,8 +689,8 @@ enyo.kind({
 			enyo.application.openPhoneAppPopup("NoCreditSkype", "noCreditSkypePopup", {"line": line}, height);
 
 
-		} // CASE: abnormal disconnect
-		else if (line.calls[0] && ! line.calls[0].ignored && line.disconnectDetails && line.disconnectDetails.cause && line.disconnectDetails.cause !== enyo.application.CallSynergizer.DISCONNECTDETAILS.NORMAL) {
+		} // CASE: abnormal disconnect (but NOT if the user deliberately hung up)
+		else if (!userInitiatedHangup && line.calls[0] && ! line.calls[0].ignored && line.disconnectDetails && line.disconnectDetails.cause && line.disconnectDetails.cause !== enyo.application.CallSynergizer.DISCONNECTDETAILS.NORMAL) {
 			enyo.error("abnormal disconnect: " + enyo.json.stringify(line.disconnectDetails));
 			var height = line.calls[0].contact.canBeCalled() ? 165 : 145;
 			enyo.application.openPhoneAppPopup("DroppedCall", "droppedCallPopup", {"line": line}, height);	
@@ -1151,6 +1157,15 @@ enyo.kind({
 			if ( isLine && isNotDisconnected ) {
 				lines.push(this.callStateLines[transport][i]);
 				this.markLineDisconnectPending(this.callStateLines[transport][i]);
+				// Remember this was a USER-initiated hangup, so its disconnect is announced as a
+				// normal "Call ended" rather than the "Call dropped" (network-drop) popup + Redial.
+				// VoIP mediators (WhatsApp/Signal/Telegram) may report a non-"normal" cause even for a
+				// deliberate hangup, which would otherwise wrongly trigger the DroppedCall popup.
+				this.userHangupCalls = this.userHangupCalls || {};
+				var _dc = this.callStateLines[transport][i].calls || [];
+				for (var _dj = 0; _dj < _dc.length; _dj++) {
+					if (_dc[_dj] && _dc[_dj].id) { this.userHangupCalls[_dc[_dj].id] = true; }
+				}
 			}
 		}
 		
