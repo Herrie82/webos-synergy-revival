@@ -2397,6 +2397,15 @@ void PurpleTdClient::cancelUpload(PurpleXfer *xfer)
 
 bool PurpleTdClient::startVoiceCall(const char *buddyName)
 {
+    // The stock dialer often dials an "id<n>" buddy whose tdlib user OBJECT isn't loaded yet (right
+    // after a fresh login / transport restart) - getUsersByPurpleName then returns nothing and the
+    // call fails with "User not found" / the Phone app shows "Call cannot be placed through this
+    // device". createCall only needs the numeric user id, so when the buddy name parses to one, call
+    // it directly; tdlib resolves the user server-side. Named/phone dials still go the lookup route.
+    UserId directId = purpleBuddyNameToUserId(buddyName);
+    if (directId.valid())
+        return initiateCall(directId.value(), m_data, m_transceiver);
+
     std::vector<const td::td_api::user *> users = getUsersByPurpleName(buddyName, m_data, "start voice call");
     if (users.size() != 1) {
         // Unlikely error messages not worth translating

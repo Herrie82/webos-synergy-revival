@@ -325,6 +325,21 @@ enyo.kind({
 	displayNameChanged: function() {
 		enyo.log("CallSynergyContact displayNameChanged " + this.displayName);
 	},
+
+	// Apply a display name that arrived AFTER the contact was created. On an outgoing call the dial-time
+	// contact is built with no name, then the mediator sends the real one ("Alan Morford") in a later
+	// callStateQuery push - without this the card kept showing the raw id. Re-resolves the shown name and
+	// refreshes the card (mirrors cnapChanged). A linked Person's name still wins.
+	setLateDisplayName: function(dn) {
+		if ( !dn || dn === this.displayName ) { return; }
+		this.displayName = dn;
+		if ( ! this.personId ) {
+			this.name = this._hasRealDisplayName() ? this.displayName
+			          : ( this._isImTransport() ? this.address : $L("Unknown Caller") );
+		}
+		if ( this.isDecorated == true ) { this.dispatchContactState(""); }
+		else { this.dispatchCallbacks(); }
+	},
 	
 	genericFailure: function(inSender, response) {
 		enyo.error(inSender.service + inSender.method + " failed with " + enyo.json.stringify(response));

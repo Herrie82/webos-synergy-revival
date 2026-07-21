@@ -368,6 +368,9 @@ enyo.kind({
 				
 				call.ignored = (oldCall && oldCall.ignored);
 				call.contact = (oldCall && oldCall.contact) || new CallSynergyContact({address: call.address, transport: transport, displayName: call.displayName});
+				// A reused (dial-time) contact may have been created before the mediator sent the name;
+				// apply a display name that arrives in a later push so the card shows it, not the raw id.
+				if ( call.displayName && call.contact.setLateDisplayName ) { call.contact.setLateDisplayName(call.displayName); }
 				call.isVideo = isVideo || (oldCall && oldCall.isVideo); // Keep isVideo set to true if video was ever used during the call	
 				
 				// TODO: late displayName updates are TIL only for now
