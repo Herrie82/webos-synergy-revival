@@ -651,6 +651,21 @@ static int run_answer_ipc(void)
             callee_len = unhex(ceh, callee_id, sizeof callee_id);
             if (caller_len < 0 || callee_len < 0) { emit("ERR bad-id-hex\n"); continue; }
 
+            /* Report OUR X25519 public key (derived from priv via the SAME OpenSSL primitive that
+             * does the DH) so the bridge puts a public key in the Answer that is guaranteed
+             * consistent with the SRTP keys this engine will derive. Emit before start so signaling
+             * can proceed even if the local media (ALSA) isn't up yet. */
+            {
+                unsigned char ourpub[32];
+                if (signal_x25519_public_from_private(priv, ourpub) == 0) {
+                    char hexp[65];
+                    for (int k = 0; k < 32; k++) g_snprintf(hexp + k * 2, 3, "%02x", ourpub[k]);
+                    emit("PUB %s\n", hexp);
+                } else {
+                    emit("ERR pubkey-derive-failed\n");
+                }
+            }
+
             int rc = signal_media_start(priv, pub,
                                         caller_id, (size_t)caller_len,
                                         callee_id, (size_t)callee_len,
