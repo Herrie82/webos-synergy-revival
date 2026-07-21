@@ -92,16 +92,20 @@ static GstElement *mk(const char *factory, const char *name)
     return e;
 }
 
-/* srtpenc/srtpdec want AEAD_AES_256_GCM on both RTP and RTCP, no extra auth transform. */
+/* srtpenc/srtpdec want AEAD_AES_256_GCM on both RTP and RTCP, no extra auth transform.
+ * NOTE: rtp-cipher/rtp-auth/rtcp-cipher/rtcp-auth are GEnum properties. g_object_set() varargs
+ * read a GEnum as an *integer*, so passing the string nick "aes-256-gcm" reinterprets the char*
+ * pointer as an int and silently keeps the default (AES-128-ICM, 30-byte key) -> srtpenc then
+ * rejects our 44-byte GCM master key ("Master key size is wrong"). Use gst_util_set_object_arg(),
+ * which parses the string nick against the enum, for those four properties. "key" is a boxed
+ * GstBuffer and is set the normal way. */
 static void configure_srtpenc(GstElement *enc, GstBuffer *master)
 {
-    g_object_set(enc,
-                 "key",          master,
-                 "rtp-cipher",   SRTP_CIPHER_GCM256,
-                 "rtp-auth",     SRTP_AUTH_NULL,
-                 "rtcp-cipher",  SRTP_CIPHER_GCM256,
-                 "rtcp-auth",    SRTP_AUTH_NULL,
-                 NULL);
+    g_object_set(enc, "key", master, NULL);
+    gst_util_set_object_arg(G_OBJECT(enc), "rtp-cipher",  SRTP_CIPHER_GCM256);
+    gst_util_set_object_arg(G_OBJECT(enc), "rtp-auth",    SRTP_AUTH_NULL);
+    gst_util_set_object_arg(G_OBJECT(enc), "rtcp-cipher", SRTP_CIPHER_GCM256);
+    gst_util_set_object_arg(G_OBJECT(enc), "rtcp-auth",   SRTP_AUTH_NULL);
 }
 
 /* srtpdec has no static key property: it fires "request-key" per SSRC and we return the caps
