@@ -18,6 +18,7 @@ QuickOffice engine.
 | **Google Drive** | DOCUMENTS — sign-in (OAuth2 + PKCE), file browse/upload/download, native-doc export, auth + file-picker apps | 🟡 **code-complete (personal/≤100-user)** — untested pending a Google client_id+secret; [recon](recon/google-drive.md) |
 | **pCloud** | Full stack — sign-in (OAuth2, ships secret), file browse/upload/download, auth + file-picker apps, photos provider; region-aware US/EU host | 🟡 **code-complete, mirrors Dropbox** — untested pending a pCloud `client_id`+secret; [recon](recon/pcloud.md) |
 | **Yandex Disk** | DOCUMENTS — sign-in (OAuth2, ships secret, PKCE-capable), path-based browse/upload/download, auth + file-picker apps | 🟡 **code-complete, mirrors Dropbox** — untested pending a Yandex `client_id`+secret; [recon](recon/yandex.md) |
+| **MEGA** | DOCUMENTS + PHOTO.UPLOAD — **email+password** sign-in (no OAuth) + **end-to-end crypto** done in pure JS (AES/RSA/PBKDF2), own auth app; browse/upload/download + photo album | 🟡 **code-complete; crypto validated off-device** (primitives vs native `crypto`, full login/list/download/upload flow vs a mock server) — on-device sign-in pending; [details](mega/README.md) |
 | **Flickr** | PHOTO.UPLOAD — sign-in (**OAuth 1.0a**, HMAC-SHA1 signed in node), album/photo browse + download into the Photos app | 🟡 **code-complete** (signer verified vs OAuth spec test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
@@ -81,6 +82,11 @@ yandex/
   apps/com.palm.app.yandexdisk-auth/  customUI OAuth login
   apps/com.palm.app.yandexdisk-files/ Enyo file-picker/manager (path breadcrumb)
   account/com.palm.yandexdisk.json    Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+mega/
+  service/com.palm.service.mega/      MEGA service — end-to-end-encrypted; pure-JS AES/RSA/PBKDF2 crypto,
+                                      /cs command queue, us0/us email+password login (DOCUMENTS + PHOTO.UPLOAD)
+  apps/com.palm.app.mega-auth/        customUI email+password sign-in (no OAuth webview)
+  account/com.palm.mega.json          Synergy template (DOCUMENTS + PHOTO.UPLOAD)
 flickr/
   service/com.palm.service.flickr/    Flickr service (OAuth 1.0a signed in node + REST, PHOTO.UPLOAD)
   apps/com.palm.app.flickr-auth/      customUI OAuth 1.0a login (captures oauth_verifier)
