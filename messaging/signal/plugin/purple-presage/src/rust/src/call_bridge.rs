@@ -129,6 +129,14 @@ pub fn start_incoming(
     let our_ufrag = rand_token(4);
     let our_pwd = rand_token(24);
 
+    // Capture the engine's stderr (gst/ICE/SRTP/ALSA logs) to a file so a live call is diagnosable;
+    // fall back to null if the file can't be opened.
+    let engine_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/media/internal/sigmedia_call.log")
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
     let mut child = match Command::new(SIGNAL_MEDIA_BIN)
         .arg("--answer")
         // The engine inherits imlibpurpletransport's env (the correct wpe LD_LIBRARY_PATH incl.
@@ -136,9 +144,10 @@ pub fn start_incoming(
         // a writable registry so it never rescans into a read-only location.
         .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
+        .env("GST_DEBUG", "2")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(engine_log)
         .spawn()
     {
         Ok(c) => c,
