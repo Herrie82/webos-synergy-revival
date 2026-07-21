@@ -42,7 +42,8 @@ static void sigcLog(const char *fmt, ...)
 #define SIG_CALL_BUSY     3u
 
 static LSPalmService *g_service = NULL;   /* pub+priv registration                     */
-static LSHandle      *g_pub     = NULL;   /* public connection (the dialer talks here) */
+static LSHandle      *g_pub     = NULL;   /* public connection (untrusted apps)        */
+static LSHandle      *g_prv     = NULL;   /* private connection (trusted Palm apps, incl. the Phone app) */
 static PurpleAccount *g_account = NULL;   /* the bound Signal account                  */
 static GMainLoop     *g_loopRef = NULL;   /* wraps the default context libpurple runs  */
 
@@ -91,10 +92,14 @@ static gchar *build_payload(void)
     gchar *disc = g_strcmp0(g_state, "disconnected") == 0
         ? g_strdup_printf("\"disconnectDetails\":{\"cause\":\"%s\"},", g_cause ? g_cause : "normal")
         : g_strdup("");
+    /* CallSynergizer reads call.address / call.displayName DIRECTLY off each call and
+     * CallSynergyContact.create() does enyo.require(address != undefined) which THROWS if address is
+     * missing - aborting the whole callStateQuery handler before the call card is shown. So the fields
+     * MUST be flat (like wacallm/TIL), not nested under "contact". origin=incoming (Signal only rings). */
     gchar *p = g_strdup_printf(
         "{\"returnValue\":true,\"allowVideoCalls\":false,\"videoURI\":\"\",\"lines\":["
-        "{\"state\":\"%s\",%s\"calls\":[{\"id\":\"sig\",\"isVideo\":false,"
-        "\"contact\":{\"address\":\"%s\",\"name\":\"%s\"}}]}]}",
+        "{\"state\":\"%s\",%s\"calls\":[{\"id\":\"sig\",\"origin\":\"incoming\",\"video\":false,"
+        "\"address\":\"%s\",\"displayName\":\"%s\"}]}]}",
         st, disc, addr, nm);
     g_free(st); g_free(addr); g_free(nm); g_free(disc);
     return p;
@@ -193,8 +198,9 @@ void callLunaInit(PurpleAccount *account)
         LSErrorFree(&err); return;
     }
     g_pub = LSPalmServiceGetPublicConnection(g_service);
+    g_prv = LSPalmServiceGetPrivateConnection(g_service);
     purple_debug_info(PLUGIN_NAME, "com.palm.signal.call registered\n");
-    sigcLog("OK com.palm.signal.call REGISTERED g_pub=%p", (void*)g_pub);
+    sigcLog("OK com.palm.signal.call REGISTERED g_pub=%p g_prv=%p", (void*)g_pub, (void*)g_prv);
 }
 
 void callLunaShutdown(PurpleAccount *account)
@@ -233,12 +239,23 @@ static gboolean call_state_apply(gpointer data)
             break;
     }
 
-    if (g_pub) {
-        LSError err; LSErrorInit(&err);
+    /* A subscriber's subscription lives on whichever connection it arrived on: untrusted apps come in
+     * on the public connection, trusted Palm apps (the stock Phone app / CallSynergizer) on the private
+     * one. LSSubscriptionReply only walks the list of the handle it's given, so push on BOTH - otherwise
+     * the Phone app gets only the initial reply and never the live incoming/disconnected pushes. */
+    if (g_pub || g_prv) {
         gchar *payload = build_payload();
-        LSSubscriptionReply(g_pub, SUBKEY, payload, &err);
+        if (g_pub) {
+            LSError err; LSErrorInit(&err);
+            LSSubscriptionReply(g_pub, SUBKEY, payload, &err);
+            if (LSErrorIsSet(&err)) { purple_debug_warning(PLUGIN_NAME, "call pushState pub: %s\n", err.message); LSErrorFree(&err); }
+        }
+        if (g_prv) {
+            LSError err; LSErrorInit(&err);
+            LSSubscriptionReply(g_prv, SUBKEY, payload, &err);
+            if (LSErrorIsSet(&err)) { purple_debug_warning(PLUGIN_NAME, "call pushState prv: %s\n", err.message); LSErrorFree(&err); }
+        }
         g_free(payload);
-        if (LSErrorIsSet(&err)) { purple_debug_warning(PLUGIN_NAME, "call pushState: %s\n", err.message); LSErrorFree(&err); }
     }
 
     /* after a terminal state, return to idle so the next call starts clean */

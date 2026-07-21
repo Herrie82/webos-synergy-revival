@@ -411,7 +411,16 @@ async fn process_received_message<C: presage::store::Store>(
                 (u32::MAX, None)
             };
             if state != u32::MAX {
-                crate::bridge::handle_call_state(message.account, message.who.clone(), message.name.clone(), state, call_id);
+                // message.name is None for a direct contact (only the async resolver fills the buddy
+                // alias), so resolve the caller's friendly name by UUID here. blist_get_alias returns
+                // the UUID unchanged when no alias is known yet; process_incoming_message has already
+                // kicked off resolve_name_background for this sender, so a saved/previously-messaged
+                // contact resolves immediately. Without this the Phone app shows the raw Signal UUID
+                // ("Unknown Caller") instead of the contact name.
+                let name = message.name.clone().or_else(|| {
+                    message.who.clone().map(|uuid| crate::bridge::blist_get_alias(message.account, uuid))
+                });
+                crate::bridge::handle_call_state(message.account, message.who.clone(), name, state, call_id);
             }
             chat
         }
