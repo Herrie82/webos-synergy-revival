@@ -44,11 +44,18 @@ pub async fn forward_contacts<C: presage::store::Store + 'static>(
             }
         }
 
+        // Last resort: a phone number beats a raw UUID as the visible name, AND lets the webOS
+        // Contacts app link this buddy to an address-book Person by number (which then shows the
+        // real saved name, e.g. "Alan"). Without any number the buddy is an unlinkable bare UUID.
+        let phone_number = phone_number.map(|pn| pn.to_string());
+        if display_name.is_empty() {
+            if let Some(pn) = &phone_number { display_name = pn.clone(); }
+        }
         let message = crate::bridge::Message {
             account: account,
             who: Some(uuid.to_string()),
             name: if display_name.is_empty() { None } else { Some(display_name) },
-            phone_number: phone_number.map(|pn| pn.to_string()),
+            phone_number: phone_number,
             ..Default::default()
         };
         crate::bridge::append_message(message);
@@ -114,6 +121,12 @@ pub async fn resolve_name_background<C: presage::store::Store + 'static>(
                 }
             }
         }
+    }
+    // Last resort: fall back to the phone number rather than leaving the buddy as a bare UUID -
+    // it's recognisable and lets webOS link the buddy to an address-book Person (which supplies
+    // the real saved name). Matches forward_contacts.
+    if display_name.is_empty() {
+        if let Some(pn) = &phone_number { display_name = pn.clone(); }
     }
     if !display_name.is_empty() {
         crate::bridge::append_message(crate::bridge::Message {
