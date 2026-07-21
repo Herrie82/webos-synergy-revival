@@ -391,6 +391,35 @@ async fn process_received_message<C: presage::store::Store>(
             None
         }
         presage::libsignal_service::content::ContentBody::CallMessage(call_message) => {
+            // DIAG (media-bridge step #1): dump the RAW opaque bytes of a real call so we can decode
+            // RingRTC's ConnectionParametersV4 (public_key / ice_ufrag / ice_pwd / codecs, no DTLS)
+            // off-device and ground the GStreamer/SRTP media plan on an actual message. Offer +
+            // answer + every ICE update. Remove once the format is confirmed.
+            {
+                use std::io::Write as _;
+                let hexify = |b: &[u8]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+                let mut dump = String::new();
+                if let Some(o) = call_message.offer.as_ref() {
+                    dump += &format!("OFFER id={:?} type={:?} opaque_len={} opaque_hex={}\n",
+                        o.id, o.r#type, o.opaque.as_ref().map_or(0, |v| v.len()),
+                        o.opaque.as_ref().map_or(String::new(), |v| hexify(v)));
+                }
+                if let Some(a) = call_message.answer.as_ref() {
+                    dump += &format!("ANSWER id={:?} opaque_len={} opaque_hex={}\n",
+                        a.id, a.opaque.as_ref().map_or(0, |v| v.len()),
+                        a.opaque.as_ref().map_or(String::new(), |v| hexify(v)));
+                }
+                for (i, ice) in call_message.ice_update.iter().enumerate() {
+                    dump += &format!("ICE[{i}] id={:?} opaque_len={} opaque_hex={}\n",
+                        ice.id, ice.opaque.as_ref().map_or(0, |v| v.len()),
+                        ice.opaque.as_ref().map_or(String::new(), |v| hexify(v)));
+                }
+                if !dump.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/media/internal/sigoffer.log") {
+                        let _ = f.write_all(dump.as_bytes());
+                    }
+                }
+            }
             // Signaling only (no media yet): ring the stock Phone app on an incoming call, clear it on
             // hangup/busy, and drop a "Missed voice call" line into history. offer=incoming; hangup/busy
             // end it; answer/ice belong to a call we don't drive, so ignore them.
