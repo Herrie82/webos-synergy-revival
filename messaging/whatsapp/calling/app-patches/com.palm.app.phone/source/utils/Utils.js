@@ -855,6 +855,9 @@ Utils.callNetworkName = function(service) {
 	if (service === "com.palm.signal") {
 		return $L("Signal");
 	}
+	if (service === enyo.application.CallSynergizer.TRANSPORTS.TIL || service === "com.palm.telephony") {
+		return $L("Cellular");
+	}
 	return service || "";
 };
 

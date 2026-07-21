@@ -104,7 +104,8 @@ enyo.kind({
 		// gather transports and register callStateQuery
 		payload.results.forEach(function(account) {
 			account.capabilityProviders.forEach(function(cap) {
-				if ( cap.capability == CallSynergizer.PHONE_CAPABILITY ) {					
+				if ( cap.capability == CallSynergizer.PHONE_CAPABILITY ) {
+					enyo.error("CALLSYN_DIAG PHONE-account=" + account.templateId + " impl=" + cap.implementation + " alreadyHave=" + !!(this.transports[account.templateId] && this.transports[account.templateId]._subs));
 					// include accountId with capability
 					if (this.transports[account.templateId] && this.transports[account.templateId]._accountId != account._id) {
 						this.transports[account.templateId]._accountId = account._id;
@@ -173,7 +174,8 @@ enyo.kind({
 				}
 			}, this);
 		}, this);
-		
+		enyo.error("CALLSYN_DIAG discovered transports=[" + Object.keys(this.transports).join(",") + "]");
+
 		// todo only call on first response
 		this.$.capabilitiesWatch.call();
 		
@@ -232,9 +234,13 @@ enyo.kind({
 	_emergencyModeQuery: function(inSender, payload) {
 		enyo.application.UI.event("emergency", payload.enabled);		
 	},
-	_callStateQueryResponse: function(inSender, payload) {	
+	_callStateQueryResponse: function(inSender, payload) {
 		var lines, transport, autoAcceptVideoCalls, allowVideoCalls, isIncoming, isVideo;
-		
+
+		// DIAG (remove after on-device visual confirmation): shows which transport pushed and the
+		// line state the phone app actually received - used to prove the private-bus dual-push fix.
+		enyo.error("CALLSYN_DIAG CSQRESP transport=" + (inSender && inSender.transport) + " state0=" + (payload.lines && payload.lines[0] ? payload.lines[0].state : "-"));
+
 		// ignore "{returnValue: true}" initial response
 		if ( ! enyo.isArray(payload.lines) ) {
 			return;
@@ -813,6 +819,15 @@ enyo.kind({
 	},
 	// debounce: disallow a second dial call if received within 1.5 sec of first (and both calls pass 'debounce')
 	dial: function(address, video, audio, transport /*optional*/, personId /*optional*/, debounce /*optional*/, manualDial /*optional*/) {
+		// A dial can arrive with the IM serviceName ("type_telegram") instead of the account templateId
+		// ("com.palm.telegram"). this.transports is keyed by templateId (each entry carries its serviceName),
+		// so translate here - ONE agnostic place that works for any current/future service, no per-service code.
+		if (transport && transport.indexOf("type_") === 0) {
+			for (var _tid in this.transports) {
+				if (this.transports[_tid] && this.transports[_tid].serviceName === transport) { transport = _tid; break; }
+			}
+		}
+		enyo.error("CALLSYN_DIAG PLACECALL transport=" + transport + " known=" + !!(this.transports && this.transports[transport]));
 		if ( debounce ) {
 			if ( ! this.debounceDial ) {
 				this.$.dialProxy.placeCall(address, video, audio, transport, personId, manualDial);

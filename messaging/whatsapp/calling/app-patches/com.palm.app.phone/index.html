@@ -204,6 +204,16 @@
 						
 						// If a service is specified then add backwards compatability for type_skype, otherwise set the service param if it is invalid
                         if (params.service) {
+                            enyo.error("CALLSYN_DIAG DIAL service=" + params.service + " transports=[" + (enyo.application.CallSynergizer.transports ? Object.keys(enyo.application.CallSynergizer.transports).join(",") : "NULL") + "] phoneAppLoaded=" + enyo.application.Cache.phoneAppLoaded);
+                            // A dial can arrive with the IM serviceName ("type_telegram") instead of the account
+                            // templateId ("com.palm.telegram"). CallSynergizer.transports is keyed by templateId
+                            // (each entry carries its serviceName), so translate it - otherwise the service is
+                            // treated as unknown, nulled, and the call wrongly falls back to cellular.
+                            if (params.service.indexOf("type_") === 0 && enyo.application.CallSynergizer.transports) {
+                                for (var _tid in enyo.application.CallSynergizer.transports) {
+                                    if (enyo.application.CallSynergizer.transports[_tid] && enyo.application.CallSynergizer.transports[_tid].serviceName === params.service) { params.service = _tid; break; }
+                                }
+                            }
                             if (params.service === "type_skype" || params.service == "com.palm.skype.call") {
 								params.service = enyo.application.CallSynergizer.TRANSPORTS.VOIP;
                             //e.g. service could be "phone" originating from justtype

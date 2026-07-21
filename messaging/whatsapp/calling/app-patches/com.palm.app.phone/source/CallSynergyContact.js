@@ -68,6 +68,10 @@ enyo.kind({
 		}
 	},
 	dispatchCallbacks: function() {
+		// Surface WHICH network the call uses (Telegram / WhatsApp / Signal / Cellular) as the
+		// secondary label on the in-call screen, so it is always visible which service is dialing.
+		var net = enyo.application.Utils.callNetworkName(this.transport);
+		if (net) { this.labelFormatted = net; }
 		if ( ! this.isDecorated ) {
 			this.isDecorated = true;
 			this.decoratedCallbacks.forEach(function(c) { c() });

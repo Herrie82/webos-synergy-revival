@@ -24,7 +24,9 @@ bool callLunaInit(PurpleAccount *account);
 void callLunaShutdown(PurpleAccount *account);
 
 /* Push the current call state to Phone-app callStateQuery subscribers. Called from call.cpp's
- * updateCall(). state is one of: "incoming", "outgoing", "active", "disconnected", "" (idle).
+ * updateCall(). state is one of: "incoming", "dialing", "active", "disconnected", "" (idle).
+ * NOTE: these strings must match the stock Phone app CallSynergizer STATES enum exactly
+ * (incoming/dialing/active/disconnected) or the call card won't render the state.
  * peerAddress = the Telegram user's +E.164 / id; peerName = resolved display name (may be NULL).
  * cause is only meaningful for "disconnected" (e.g. "rejected", "normal", "missed"). */
 void callLunaPushState(const char *state, const char *peerAddress, const char *peerName,

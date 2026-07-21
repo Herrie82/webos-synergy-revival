@@ -25,6 +25,8 @@ audio/Resampler.cpp \
 os/posix/NetworkSocketPosix.cpp \
 video/VideoSource.cpp \
 video/VideoRenderer.cpp \
+video/VideoPacketSender.cpp \
+video/VideoFEC.cpp \
 video/ScreamCongestionController.cpp \
 json11.cpp
 

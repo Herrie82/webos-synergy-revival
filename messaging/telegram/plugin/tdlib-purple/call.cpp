@@ -221,7 +221,10 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
     } else if (call.is_outgoing_ && (call.state_->get_id() == td::td_api::callStatePending::ID)) {
         if (!account.hasActiveCall()) {
             account.setActiveCall(call.id_);
-            callLunaPushState("outgoing", buddyName.c_str(),
+            // The stock Phone app's CallSynergizer keys the "dialing/ringback" UI off the line
+            // state string STATES.DIALING == "dialing" (not "outgoing"); send that so the call
+            // card shows "Connecting..." while the outgoing call is pending, same as WhatsApp.
+            callLunaPushState("dialing", buddyName.c_str(),
                               account.getDisplayName(getUserId(call)).c_str(), true, NULL);
         } else if (call.id_ != account.getActiveCallId()) {
             // This would happen if there was no active call when sending createCall, but there is one
