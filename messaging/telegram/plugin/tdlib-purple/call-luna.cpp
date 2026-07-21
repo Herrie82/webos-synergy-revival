@@ -241,3 +241,30 @@ void callLunaPushState(const char *state, const char *peerAddress, const char *p
         if (LSErrorIsSet(&err)) { purple_debug_warning(config::pluginId, "pushState prv: %s\n", err.message); LSErrorFree(&err); }
     }
 }
+
+// --- webOS call-audio routing (mirrors the working wacallm path) --------------------------------
+// libtgvoip captures/plays via the PulseAudio "voipsource"/"voip" PCMs, but those only carry the
+// real mic/loudspeaker when audiod has the PHONE scenario active. Tell audiod a voip call is up on
+// connect (route to loudspeaker; it auto-switches to headset/BT), and clear it on hangup.
+static bool audiodReply(LSHandle *sh, LSMessage *m, void *ctx) { (void)sh; (void)m; (void)ctx; return true; }
+static void audiodSend(const char *uri, const char *payload)
+{
+    if (!g_prv) return;
+    LSError err; LSErrorInit(&err);
+    LSMessageToken tok;
+    if (!LSCallOneReply(g_prv, uri, payload, audiodReply, NULL, &tok, &err)) {
+        purple_debug_warning(config::pluginId, "audiod %s: %s\n", uri, err.message);
+        LSErrorFree(&err);
+    }
+}
+void callLunaSetCallAudio(bool active)
+{
+    tgcLog("callLunaSetCallAudio active=%d g_prv=%p", (int)active, (void*)g_prv);
+    if (active) {
+        audiodSend("palm://com.palm.audio/phone/CallStatusUpdate",
+                   "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":1,\"address\":\"telegram\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.telegram\"}]}]}");
+        audiodSend("palm://com.palm.audio/phone/setCurrentScenario", "{\"scenario\":\"phone_back_speaker\"}");
+    } else {
+        audiodSend("palm://com.palm.audio/phone/CallStatusUpdate", "{\"lines\":[]}");
+    }
+}

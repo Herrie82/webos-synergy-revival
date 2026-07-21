@@ -111,9 +111,12 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
         return false;
 
     static tgvoip::VoIPController::Config config;
-    config.enableAEC = true;
-    config.enableNS  = true;
-    config.enableAGC = true;
+    // DIAG: disable the software AEC/NS/AGC while bringing up capture. On a loudspeaker call libtgvoip's
+    // echo canceller/noise suppressor can over-cancel the mic to silence (the peer hears nothing) - rule
+    // it out first; re-enable once two-way audio is confirmed.
+    config.enableAEC = false;
+    config.enableNS  = false;
+    config.enableAGC = false;
     // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
     // "Connecting") is invisible. Point it at a file to see the reflector connection + audio init.
     config.logFilePath       = "/media/internal/tgvoip.log";
@@ -144,6 +147,7 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
            (int)state.protocol_->max_layer_, state.encryption_key_.length(), (int)call.is_outgoing_);
     voip->Start();
     voip->Connect();
+    callLunaSetCallAudio(true);   // enable audiod phone scenario -> voip/voipsource carry real audio
 
     if (!buddyName.empty()) {
         // For an outgoing call, "type /hangup to terminate" has already been shown when the call
@@ -163,6 +167,7 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
 static void deactivateCall(TdAccountData &account)
 {
 #ifndef NoVoip
+    callLunaSetCallAudio(false);   // clear audiod phone scenario on hangup
     tgvoip::VoIPController *voip = account.getCallData();
     if (voip)
         voip->Stop();

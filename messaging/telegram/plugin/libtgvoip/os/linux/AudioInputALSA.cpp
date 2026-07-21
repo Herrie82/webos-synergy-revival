@@ -23,7 +23,7 @@ AudioInputALSA::AudioInputALSA(std::string devID){
 	isRecording=false;
 	handle=NULL;
 
-	lib=dlopen("libasound.so.2", RTLD_LAZY);
+	lib=dlopen("/usr/lib/libasound.so.2", RTLD_LAZY);
 	if(!lib)
 		lib=dlopen("libasound.so", RTLD_LAZY);
 	if(!lib){
@@ -81,6 +81,15 @@ void AudioInputALSA::RunThread(){
 			LOGE("snd_pcm_readi failed: %s\n", _snd_strerror(frames));
 			break;
 		}
+		// DIAG: mic level. If peak stays ~0 while speaking, the voipsource capture is silent (the mic
+		// isn't reaching this source) - the peer would hear nothing. Non-zero = capture works, look
+		// downstream (encode/send). Logged ~every 2s (100 x 20ms reads).
+		{
+			static int dbgN=0; static int dbgPeak=0;
+			const int16_t *s=(const int16_t*)buffer;
+			for(snd_pcm_sframes_t i=0;i<frames;i++){ int v=s[i]; if(v<0)v=-v; if(v>dbgPeak)dbgPeak=v; }
+			if(++dbgN>=100){ LOGW("MIC level peak=%d /32767 over %d reads", dbgPeak, dbgN); dbgN=0; dbgPeak=0; }
+		}
 		InvokeCallback(buffer, sizeof(buffer));
 	}
 }
@@ -94,9 +103,18 @@ void AudioInputALSA::SetCurrentDevice(std::string devID){
 	}
 	currentDevice=devID;
 
-	int res=_snd_pcm_open(&handle, devID.c_str(), SND_PCM_STREAM_CAPTURE, 0);
-	if(res<0)
-		res=_snd_pcm_open(&handle, "default", SND_PCM_STREAM_CAPTURE, 0);
+	// webOS: capture from the PulseAudio call-audio source ("voipsource" -> pvoipsource), which
+	// module-palm-policy routes to the real mic under the phone scenario. "default"/devID is the
+	// MEDIA source = silence during a call, so the peer heard nothing. Mirrors the working wacallm path.
+	const char *capDev="voipsource";
+	int res=_snd_pcm_open(&handle, "voipsource", SND_PCM_STREAM_CAPTURE, 0);
+	if(res<0){
+		capDev="devID"; res=_snd_pcm_open(&handle, devID.c_str(), SND_PCM_STREAM_CAPTURE, 0);
+	}
+	if(res<0){
+		capDev="default"; res=_snd_pcm_open(&handle, "default", SND_PCM_STREAM_CAPTURE, 0);
+	}
+	LOGW("ALSA capture opened device '%s' (res=%d)", capDev, res);
 	CHECK_ERROR(res, "snd_pcm_open failed");
 
 	res=_snd_pcm_set_params(handle, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 1, 48000, 1, 100000);
@@ -112,7 +130,7 @@ void AudioInputALSA::EnumerateDevices(std::vector<AudioInputDevice>& devs){
 	int (*_snd_device_name_hint)(int card, const char* iface, void*** hints);
 	char* (*_snd_device_name_get_hint)(const void* hint, const char* id);
 	int (*_snd_device_name_free_hint)(void** hinst);
-	void* lib=dlopen("libasound.so.2", RTLD_LAZY);
+	void* lib=dlopen("/usr/lib/libasound.so.2", RTLD_LAZY);
 	if(!lib)
 		dlopen("libasound.so", RTLD_LAZY);
 	if(!lib)

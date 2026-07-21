@@ -105,8 +105,20 @@ enyo.kind({
 			this.dispatchContactState("");
 		}
 	},
+	// A discovered IM transport (Telegram, Signal, ...) whose address is an IM id/@handle/UUID, not a
+	// phone number. Excludes cellular (TIL) and the VoIP slot (WhatsApp, whose addresses ARE numbers).
+	_isImTransport: function() {
+		var T = enyo.application.CallSynergizer.TRANSPORTS;
+		return this.transport !== T.TIL && this.transport !== T.VOIP
+			&& !!(enyo.application.CallSynergizer.transports && enyo.application.CallSynergizer.transports[this.transport]);
+	},
 	_formatAddress: function() {
-		if ( this.transport == enyo.application.CallSynergizer.TRANSPORTS.TIL || this.isIntlNumber === true) {
+		if ( this._isImTransport() ) {
+			// IM id/@handle/UUID (e.g. Telegram "id8823012961", a Signal UUID): show it verbatim, do
+			// NOT format it as a phone number.
+			this.addressFormatted = this.address;
+			this.normalizedAddress = Utils.PersonFind.normalizeIm(this.address);
+		} else if ( this.transport == enyo.application.CallSynergizer.TRANSPORTS.TIL || this.isIntlNumber === true) {
 			this.addressFormatted = enyo.application.Utils.FormatPhoneNumber(this.address) || enyo.application.Messages.unknownNumber;
 			this.normalizedAddress = Utils.PersonFind.normalizePhoneNumber(this.address);
 		} else {
@@ -132,6 +144,20 @@ enyo.kind({
 		} else if ( this.person && this.person._id ) {
 			this._personLookupComplete(this,{person:this.person});
 			
+		// CASE: discovered IM transport (Telegram / Signal / ...). The mediator already provided the
+		// displayName, and the address is an IM id/@handle/UUID, NOT a phone number. Use the name as-is
+		// and let dispatchCallbacks label the call by network (callNetworkName -> "Telegram"); skip the
+		// phone/person lookup that otherwise mislabels the call "Mobile" and formats the id as a number.
+		// Falls back to the raw address (e.g. "id8823012961") when no real name was sent.
+		} else if ( this._isImTransport() ) {
+			enyo.error("CALLSYN_DIAG IMCONTACT address=" + this.address + " displayName=" + this.displayName + " addressFormatted=" + this.addressFormatted + " hasReal=" + this._hasRealDisplayName() + " person=" + this.person + " personId=" + this.personId);
+			this.name = this._hasRealDisplayName() ? this.displayName : this.address;
+			// Also try to link a saved address-book Person by IM address, so a stored contact's name/
+			// photo wins over the raw Telegram display name (proper name lookup).
+			if ( this.$.personLookupQuery && this.$.personLookupQuery.findByIm ) {
+				this.$.personLookupQuery.findByIm(this.address);
+			}
+			this.dispatchCallbacks();
 		// CASE: we are a phone number
 		} else if ( this.transport == enyo.application.CallSynergizer.TRANSPORTS.TIL || this.isIntlNumber === true) {
 			if (enyo.application.Utils.isEmergencyNumber(this.address)){

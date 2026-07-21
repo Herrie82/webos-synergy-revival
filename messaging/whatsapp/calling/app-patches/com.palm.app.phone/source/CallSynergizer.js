@@ -237,9 +237,9 @@ enyo.kind({
 	_callStateQueryResponse: function(inSender, payload) {
 		var lines, transport, autoAcceptVideoCalls, allowVideoCalls, isIncoming, isVideo;
 
-		// DIAG (remove after on-device visual confirmation): shows which transport pushed and the
-		// line state the phone app actually received - used to prove the private-bus dual-push fix.
-		enyo.error("CALLSYN_DIAG CSQRESP transport=" + (inSender && inSender.transport) + " state0=" + (payload.lines && payload.lines[0] ? payload.lines[0].state : "-"));
+		// DIAG (remove after confirmation): full payload so we can see address/displayName/transport
+		// the card actually got (debugging "Unknown Caller"/"Mobile"/number-formatted-id on TG dial).
+		enyo.error("CALLSYN_DIAG CSQRESP transport=" + (inSender && inSender.transport) + " PAYLOAD=" + enyo.json.stringify(payload));
 
 		// ignore "{returnValue: true}" initial response
 		if ( ! enyo.isArray(payload.lines) ) {

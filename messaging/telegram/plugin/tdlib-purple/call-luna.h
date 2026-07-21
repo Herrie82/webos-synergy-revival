@@ -27,6 +27,10 @@ void callLunaShutdown(PurpleAccount *account);
  * printf-style; usable from call.cpp too (e.g. to trace the libtgvoip activateCall setup). */
 void tgcLog(const char *fmt, ...);
 
+/* Drive audiod's phone scenario so the libtgvoip "voip"/"voipsource" PCMs carry real loudspeaker/mic
+ * audio. Call with true when the call becomes active, false on hangup. Mirrors wacallm. */
+void callLunaSetCallAudio(bool active);
+
 /* Push the current call state to Phone-app callStateQuery subscribers. Called from call.cpp's
  * updateCall(). state is one of: "incoming", "dialing", "active", "disconnected", "" (idle).
  * NOTE: these strings must match the stock Phone app CallSynergizer STATES enum exactly
