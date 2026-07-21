@@ -1,0 +1,75 @@
+[  5%] Building CXX object CMakeFiles/libdave.dir/src/bindings_capi.cpp.o
+[ 11%] Building CXX object CMakeFiles/libdave.dir/src/cryptor.cpp.o
+[ 16%] Building CXX object CMakeFiles/libdave.dir/src/cryptor_manager.cpp.o
+[ 22%] Building CXX object CMakeFiles/libdave.dir/src/codec_utils.cpp.o
+[ 27%] Building CXX object CMakeFiles/libdave.dir/src/decryptor.cpp.o
+[ 33%] Building CXX object CMakeFiles/libdave.dir/src/frame_processors.cpp.o
+[ 38%] Building CXX object CMakeFiles/libdave.dir/src/logger.cpp.o
+[ 50%] Building CXX object CMakeFiles/libdave.dir/src/mls/util.cpp.o
+[ 50%] Building CXX object CMakeFiles/libdave.dir/src/encryptor.cpp.o
+[ 61%] Building CXX object CMakeFiles/libdave.dir/src/mls/user_credential.cpp.o
+[ 61%] Building CXX object CMakeFiles/libdave.dir/src/mls/parameters.cpp.o
+[ 77%] Building CXX object CMakeFiles/libdave.dir/src/mls_key_ratchet.cpp.o
+[ 77%] Building CXX object CMakeFiles/libdave.dir/src/openssl_cryptor.cpp.o
+[ 77%] Building CXX object CMakeFiles/libdave.dir/src/mls/session.cpp.o
+[ 88%] Building CXX object CMakeFiles/libdave.dir/src/version.cpp.o
+[ 83%] Building CXX object CMakeFiles/libdave.dir/src/utils/leb128.cpp.o
+[ 94%] Building CXX object CMakeFiles/libdave.dir/src/mls/persisted_key_pair_null.cpp.o
+In file included from /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/array:43,
+                 from /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt/include/mlspp/mls/common.h:3,
+                 from /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt/include/mlspp/mls/credential.h:3,
+                 from /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt/include/mlspp/mls/core_types.h:3,
+                 from /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.h:4,
+                 from /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp:1:
+In static member function 'static _Up* std::__copy_move<_IsMove, true, std::random_access_iterator_tag>::__copy_m(_Tp*, _Tp*, _Up*) [with _Tp = const mlspp::CipherSuite::ID; _Up = mlspp::CipherSuite::ID; bool _IsMove = false]',
+    inlined from '_OI std::__copy_move_a2(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CipherSuite::ID*; _OI = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:501:30,
+    inlined from '_OI std::__copy_move_a1(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CipherSuite::ID*; _OI = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:528:42,
+    inlined from '_OI std::__copy_move_a(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CipherSuite::ID*; _OI = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:535:31,
+    inlined from '_OI std::copy(_II, _II, _OI) [with _II = const mlspp::CipherSuite::ID*; _OI = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:626:7,
+    inlined from 'static _ForwardIterator std::__uninitialized_copy<true>::__uninit_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const mlspp::CipherSuite::ID*; _ForwardIterator = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:147:27,
+    inlined from '_ForwardIterator std::uninitialized_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const mlspp::CipherSuite::ID*; _ForwardIterator = mlspp::CipherSuite::ID*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:185:15,
+    inlined from '_ForwardIterator std::__uninitialized_copy_a(_InputIterator, _InputIterator, _ForwardIterator, allocator<_Tp>&) [with _InputIterator = const mlspp::CipherSuite::ID*; _ForwardIterator = mlspp::CipherSuite::ID*; _Tp = mlspp::CipherSuite::ID]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:372:37,
+    inlined from 'void std::vector<_Tp, _Alloc>::_M_assign_aux(_ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [with _ForwardIterator = const mlspp::CipherSuite::ID*; _Tp = mlspp::CipherSuite::ID; _Alloc = std::allocator<mlspp::CipherSuite::ID>]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/vector.tcc:339:35,
+    inlined from 'std::vector<_Tp, _Alloc>& std::vector<_Tp, _Alloc>::operator=(std::initializer_list<_Tp>) [with _Tp = mlspp::CipherSuite::ID; _Alloc = std::allocator<mlspp::CipherSuite::ID>]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_vector.h:790:21,
+    inlined from 'mlspp::Capabilities discord::dave::mls::LeafNodeCapabilitiesForProtocolVersion(discord::dave::ProtocolVersion)' at /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp:33:75:
+/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:434:30: warning: 'void* __builtin_memcpy(void*, const void*, unsigned int)' reading between 3 and 2147483647 bytes from a region of size 2 [-Wstringop-overread]
+  434 |             __builtin_memmove(__result, __first, sizeof(_Tp) * _Num);
+      |             ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp: In function 'mlspp::Capabilities discord::dave::mls::LeafNodeCapabilitiesForProtocolVersion(discord::dave::ProtocolVersion)':
+/tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp:33:75: note: at offset [0, 1] into source object '<anonymous>' of size 2
+   33 |     capabilities.cipher_suites = {CiphersuiteIDForProtocolVersion(version)};
+      |                                                                           ^
+In static member function 'static _Up* std::__copy_move<_IsMove, true, std::random_access_iterator_tag>::__copy_m(_Tp*, _Tp*, _Up*) [with _Tp = const mlspp::CredentialType; _Up = mlspp::CredentialType; bool _IsMove = false]',
+    inlined from '_OI std::__copy_move_a2(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CredentialType*; _OI = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:501:30,
+    inlined from '_OI std::__copy_move_a1(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CredentialType*; _OI = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:528:42,
+    inlined from '_OI std::__copy_move_a(_II, _II, _OI) [with bool _IsMove = false; _II = const mlspp::CredentialType*; _OI = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:535:31,
+    inlined from '_OI std::copy(_II, _II, _OI) [with _II = const mlspp::CredentialType*; _OI = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:626:7,
+    inlined from 'static _ForwardIterator std::__uninitialized_copy<true>::__uninit_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const mlspp::CredentialType*; _ForwardIterator = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:147:27,
+    inlined from '_ForwardIterator std::uninitialized_copy(_InputIterator, _InputIterator, _ForwardIterator) [with _InputIterator = const mlspp::CredentialType*; _ForwardIterator = mlspp::CredentialType*]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:185:15,
+    inlined from '_ForwardIterator std::__uninitialized_copy_a(_InputIterator, _InputIterator, _ForwardIterator, allocator<_Tp>&) [with _InputIterator = const mlspp::CredentialType*; _ForwardIterator = mlspp::CredentialType*; _Tp = mlspp::CredentialType]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_uninitialized.h:372:37,
+    inlined from 'void std::vector<_Tp, _Alloc>::_M_assign_aux(_ForwardIterator, _ForwardIterator, std::forward_iterator_tag) [with _ForwardIterator = const mlspp::CredentialType*; _Tp = mlspp::CredentialType; _Alloc = std::allocator<mlspp::CredentialType>]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/vector.tcc:339:35,
+    inlined from 'std::vector<_Tp, _Alloc>& std::vector<_Tp, _Alloc>::operator=(std::initializer_list<_Tp>) [with _Tp = mlspp::CredentialType; _Alloc = std::allocator<mlspp::CredentialType>]' at /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_vector.h:790:21,
+    inlined from 'mlspp::Capabilities discord::dave::mls::LeafNodeCapabilitiesForProtocolVersion(discord::dave::ProtocolVersion)' at /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp:34:63:
+/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/stl_algobase.h:434:30: warning: 'void* __builtin_memcpy(void*, const void*, unsigned int)' reading between 3 and 2147483647 bytes from a region of size 2 [-Wstringop-overread]
+  434 |             __builtin_memmove(__result, __first, sizeof(_Tp) * _Num);
+      |             ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp: In function 'mlspp::Capabilities discord::dave::mls::LeafNodeCapabilitiesForProtocolVersion(discord::dave::ProtocolVersion)':
+/tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/parameters.cpp:34:63: note: at offset [0, 1] into source object '<anonymous>' of size 2
+   34 |     capabilities.credentials = {::mlspp::CredentialType::basic};
+      |                                                               ^
+In file included from /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/vector:70,
+                 from /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/functional:62,
+                 from /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/session.h:3,
+                 from /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/session.cpp:1:
+/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/vector.tcc: In member function 'void std::vector<_Tp, _Alloc>::_M_realloc_insert(iterator, _Args&& ...) [with _Args = {}; _Tp = mlspp::MLSMessage; _Alloc = std::allocator<mlspp::MLSMessage>]':
+/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/vector.tcc:439:7: note: parameter passing for argument of type 'std::vector<mlspp::MLSMessage>::iterator' changed in GCC 7.1
+  439 |       vector<_Tp, _Alloc>::
+      |       ^~~~~~~~~~~~~~~~~~~
+In member function 'std::vector<_Tp, _Alloc>::reference std::vector<_Tp, _Alloc>::emplace_back(_Args&& ...) [with _Args = {}; _Tp = mlspp::MLSMessage; _Alloc = std::allocator<mlspp::MLSMessage>]',
+    inlined from 'mlspp::tls::istream& mlspp::tls::operator>>(istream&, std::vector<T>&) [with T = mlspp::MLSMessage]' at /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt/include/mlspp/tls/tls_syntax.h:305:21,
+    inlined from 'virtual std::optional<std::vector<unsigned char> > discord::dave::mls::Session::ProcessProposals(std::vector<unsigned char>, const std::set<std::__cxx11::basic_string<char> >&)' at /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/src/mls/session.cpp:199:21:
+/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/include/c++/12.5.0/bits/vector.tcc:123:28: note: parameter passing for argument of type '__gnu_cxx::__normal_iterator<mlspp::MLSMessage*, std::vector<mlspp::MLSMessage> >' changed in GCC 7.1
+  123 |           _M_realloc_insert(end(), std::forward<_Args>(__args)...);
+      |           ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[100%] Linking CXX static library libdave.a
+[100%] Built target libdave

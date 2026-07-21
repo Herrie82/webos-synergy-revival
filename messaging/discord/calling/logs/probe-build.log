@@ -1,0 +1,5 @@
+[probe] CXX     = /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/bin/arm-unknown-linux-gnueabi-g++
+[probe] prefix  = /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt
+[probe] openssl = /home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update/openssl-1.1.1w
+[probe] built: /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/logs/dave_probe
+/home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/logs/dave_probe: ELF 32-bit LSB executable, ARM, EABI5 version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux.so.3, for GNU/Linux 2.6.32, with debug_info, not stripped

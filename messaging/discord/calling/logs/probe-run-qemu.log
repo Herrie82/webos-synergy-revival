@@ -1,0 +1,39 @@
+=== DAVE / libdave API probe (ARMv7 webOS foundation spike) ===
+
+== PART A: MLS key package (C API) ==
+  daveMaxSupportedProtocolVersion() = 1
+(session.cpp:51) Creating a new MLS session
+  [ ok ] daveSessionCreate returned a session handle
+(session.cpp:82) Resetting MLS session
+(session.cpp:65) Initializing MLS session with protocol version 1 and group ID 81985529216486895
+(session.cpp:620) Created MLS leaf node
+(session.cpp:76) Waiting for external sender to create a pending group
+  [ ok ] daveSessionInit set the protocol version
+(session.cpp:646) Generated key package: 000100024041042f8b9bbb4ac54f930f3db7923942df90a7d978399e1f8461eed1d9fc675afc81e5d4125601edf4763cdbac83f3cc6d5a4bdf85b0578939bcf7b0dac1ab272b244041045337f5e7b3233f4c2a08730cc44c6e91212adba6cb792206d68d007684503dc962962b3b2db91a446c0cdd2febbdc7a5ab4e2cd696f38604003bb19fcde3c0624041040afb3870b1280549dc4ee810f4e724170ef6e94d2ac10850642f490db77fae14b1740b4f440402d7e9ade4d7bb2eea5d5cbf4961b700a9780915f0a439e328f8000108018abef7846071c70200010200020000020001010000000000000000ffffffffffffffff0040483046022100affd8043b7d05b8ed5c7f446b58bece3b527cc0f550cfe8a3741eb39f3f794d10221009d2ad899532e581675d1a5a59d0a589b5142887af805bc24915a4ed4e2801fbd0040473045022100efe436e5baa0272f14e95bc4e7c1d15d429f5f17b18e508b8d8c7acd50a4295202206aa6992436da9c78f6f9fad6f8ecf2d4ee814d66a17f37f0f2c2cf30888ce05a
+  marshalled KeyPackage length = 393 bytes
+  [ ok ] daveSessionGetMarshalledKeyPackage produced a non-empty MLS KeyPackage
+  KeyPackage[0..3] = 00 01 00 02
+
+== PART B: Opus frame encrypt/decrypt round-trip ==
+  [ ok ] CreateEncryptor()
+  [ ok ] encryptor has key ratchet
+  [ ok ] encryptor is NOT in passthrough mode
+  [ ok ] CreateDecryptor()
+(decryptor.cpp:27) Transitioning to new key ratchet: 0xf2458, expiry: 10
+  plaintext=160 bytes, max ciphertext=235 bytes (overhead=75)
+(mls_key_ratchet.cpp:21) Retrieving key for generation 0 from HashRatchet
+(encryptor.cpp:214) Encrypted audio: 1, video: 0. Failed audio: 0, video: 0
+(encryptor.cpp:218) Last encrypted frame, type: audio, ssrc: 3735928559, size: 160
+  Encrypt result=0 bytesWritten=172
+  [ ok ] Encrypt returned Success
+  [ ok ] ciphertext is larger than plaintext (tag+nonce+magic)
+  [ ok ] encrypted frame carries the 0xFAFA magic marker
+(mls_key_ratchet.cpp:21) Retrieving key for generation 0 from HashRatchet
+(cryptor_manager.cpp:155) Creating cryptor for new generation: 0
+(decryptor.cpp:145) Decrypted audio: 1, video: 0. Failed audio: 0, video: 0
+  Decrypt result=0 bytesWritten=160
+  [ ok ] Decrypt returned Success
+  [ ok ] decrypted length matches original
+  [ ok ] decrypted bytes match original plaintext (round-trip OK)
+
+=== ALL CHECKS PASSED (0 check failures) ===

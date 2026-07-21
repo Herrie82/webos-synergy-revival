@@ -1,0 +1,20 @@
+-- The CXX compiler identification is GNU 12.5.0
+-- The C compiler identification is GNU 12.5.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/bin/arm-unknown-linux-gnueabi-g++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/bin/arm-unknown-linux-gnueabi-gcc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Found OpenSSL: /home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update/openssl-1.1.1w/libcrypto.so (found version "1.1.1w")  
+-- OpenSSL Found: 1.1.1w
+-- OpenSSL Include: /home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update/openssl-1.1.1w/include
+-- OpenSSL Libraries: /home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update/openssl-1.1.1w/libssl.so;/home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update/openssl-1.1.1w/libcrypto.so
+-- Found nlohmann_json: /home/herrie/Documents/GitHub/webos-synergy-revival/messaging/discord/calling/prebuilt/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake (found version "3.11.3") 
+-- Configuring done (0.8s)
+-- Generating done (0.0s)
+-- Build files have been written to: /tmp/claude-1000/-home-herrie-webos-touchpad-kernel-doctor305-nova-cust-image-topaz-rootfs/8badea34-8e5a-458a-900f-d348b1935abf/scratchpad/libdave-spike/libdave/cpp/build-verify
