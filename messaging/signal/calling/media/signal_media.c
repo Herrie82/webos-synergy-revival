@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "srtp_kdf.h"
 #include "signal_media.h"
@@ -176,7 +177,10 @@ static void on_nice_candidate(NiceAgent *agent, NiceCandidate *cand, gpointer us
     if (!sm->cand_cb) return;
     gchar *sdp = nice_agent_generate_local_candidate_sdp(agent, cand);
     if (sdp) {
-        sm->cand_cb(sdp, sm->cand_user);   /* bridge -> Signal IceUpdate */
+        /* libnice emits the SDP attribute form "a=candidate:...", but Signal's IceCandidate opaque
+         * carries the bare "candidate:..." line (verified vs a real capture). Strip the "a=". */
+        const char *bare = (strncmp(sdp, "a=", 2) == 0) ? sdp + 2 : sdp;
+        sm->cand_cb(bare, sm->cand_user);   /* bridge -> Signal IceUpdate */
         g_free(sdp);
     }
 }
@@ -369,7 +373,13 @@ int signal_media_start(const unsigned char local_priv[32],
 int signal_media_add_remote_candidate(const char *sdp_candidate)
 {
     if (!g_sm.agent || !sdp_candidate) return -1;
-    NiceCandidate *c = nice_agent_parse_remote_candidate_sdp(g_sm.agent, g_sm.stream_id, sdp_candidate);
+    /* Peer candidates arrive bare ("candidate:...") from the Signal opaque; libnice's parser wants
+     * the SDP attribute form "a=candidate:...". Prepend "a=" if it isn't already there. */
+    gchar *attr = (strncmp(sdp_candidate, "a=", 2) == 0)
+                      ? g_strdup(sdp_candidate)
+                      : g_strconcat("a=", sdp_candidate, NULL);
+    NiceCandidate *c = nice_agent_parse_remote_candidate_sdp(g_sm.agent, g_sm.stream_id, attr);
+    g_free(attr);
     if (!c) { g_printerr("signal_media: could not parse remote candidate: %s\n", sdp_candidate); return -1; }
     GSList *list = g_slist_append(NULL, c);
     int added = nice_agent_set_remote_candidates(g_sm.agent, g_sm.stream_id, g_sm.component, list);
@@ -560,6 +570,108 @@ int signal_media_loopback_selftest(void)
 
 /* ------------------------------------------------------------------ standalone main ------------ */
 #ifndef SIGNAL_MEDIA_NO_MAIN
+
+/* --answer IPC driver: the separate-process contract the presage bridge speaks (see RUNTIME_STATUS).
+ * presage spawns `signal_media --answer`, then talks a line protocol over the pipes:
+ *
+ *   presage -> us (stdin):
+ *     START <priv_hex64> <pub_hex64> <callerid_hex> <calleeid_hex> <ourufrag> <ourpwd> <remufrag> <rempwd>
+ *     RCAND <candidate:... sdp line>      (peer IceUpdate, may repeat / trickle)
+ *     STOP
+ *   us -> presage (stdout, line-buffered):
+ *     CAND <candidate:... sdp line>       (our local candidate to send as an IceUpdate)
+ *     AUDIOD <0|1>                        (bridge should drive audiod scenario)
+ *     READY                               (engine started ok)
+ *     ERR <msg>                           (fatal; we exit non-zero)
+ *
+ * Keys/ids are lowercase hex. ufrag/pwd are single whitespace-free tokens (ICE creds never contain
+ * spaces). Our callbacks fire from the engine's GMainContext thread, so stdout writes take a lock. */
+static GMutex g_out_lock;
+
+static void emit(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    g_mutex_lock(&g_out_lock);
+    vfprintf(stdout, fmt, ap);
+    fflush(stdout);
+    g_mutex_unlock(&g_out_lock);
+    va_end(ap);
+}
+
+static void ipc_candidate_cb(const char *sdp, void *user) { (void)user; emit("CAND %s\n", sdp); }
+static void ipc_audiod_cb(int active, void *user)         { (void)user; emit("AUDIOD %d\n", active ? 1 : 0); }
+
+/* hex -> bytes; returns byte count, or -1 on bad/odd input. out must hold len(hex)/2 bytes. */
+static int unhex(const char *h, unsigned char *out, size_t out_max)
+{
+    size_t n = strlen(h);
+    if (n % 2) return -1;
+    if (n / 2 > out_max) return -1;
+    for (size_t i = 0; i < n; i += 2) {
+        int hi = g_ascii_xdigit_value(h[i]), lo = g_ascii_xdigit_value(h[i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i / 2] = (unsigned char)((hi << 4) | lo);
+    }
+    return (int)(n / 2);
+}
+
+static int run_answer_ipc(void)
+{
+    char line[8192];
+    int started = 0;
+    unsigned char priv[32], pub[32], caller_id[64], callee_id[64];
+    int caller_len = 0, callee_len = 0;
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    g_mutex_init(&g_out_lock);
+
+    while (fgets(line, sizeof line, stdin)) {
+        char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
+        if (line[0] == '\0') continue;
+
+        if (strncmp(line, "START ", 6) == 0) {
+            if (started) { emit("ERR already-started\n"); continue; }
+            /* Tokenise the 8 START fields. strtok is fine: no field contains whitespace. */
+            char *sp = NULL;
+            char *ph  = strtok_r(line + 6, " ", &sp);
+            char *pubh= strtok_r(NULL, " ", &sp);
+            char *cah = strtok_r(NULL, " ", &sp);
+            char *ceh = strtok_r(NULL, " ", &sp);
+            char *ouf = strtok_r(NULL, " ", &sp);
+            char *opw = strtok_r(NULL, " ", &sp);
+            char *ruf = strtok_r(NULL, " ", &sp);
+            char *rpw = strtok_r(NULL, " ", &sp);
+            if (!ph || !pubh || !cah || !ceh || !ouf || !opw || !ruf || !rpw) {
+                emit("ERR start-missing-fields\n"); continue;
+            }
+            if (unhex(ph, priv, sizeof priv) != 32 || unhex(pubh, pub, sizeof pub) != 32) {
+                emit("ERR bad-key-hex\n"); continue;
+            }
+            caller_len = unhex(cah, caller_id, sizeof caller_id);
+            callee_len = unhex(ceh, callee_id, sizeof callee_id);
+            if (caller_len < 0 || callee_len < 0) { emit("ERR bad-id-hex\n"); continue; }
+
+            int rc = signal_media_start(priv, pub,
+                                        caller_id, (size_t)caller_len,
+                                        callee_id, (size_t)callee_len,
+                                        ouf, opw, ruf, rpw,
+                                        ipc_candidate_cb, NULL, ipc_audiod_cb, NULL);
+            if (rc != 0) { emit("ERR start-failed\n"); return 1; }
+            started = 1;
+            emit("READY\n");
+        } else if (strncmp(line, "RCAND ", 6) == 0) {
+            if (!started) { emit("ERR rcand-before-start\n"); continue; }
+            signal_media_add_remote_candidate(line + 6);
+        } else if (strcmp(line, "STOP") == 0) {
+            break;
+        } else {
+            emit("ERR unknown-cmd\n");
+        }
+    }
+    if (started) signal_media_stop();
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     signal_media_init(&argc, &argv);
@@ -567,10 +679,12 @@ int main(int argc, char **argv)
         int rc = signal_media_loopback_selftest();
         return rc;
     }
+    if (argc >= 2 && strcmp(argv[1], "--answer") == 0) {
+        return run_answer_ipc();
+    }
     g_print("Signal call media engine (webOS).\n");
     g_print("  %s --loopback   run the SRTP-GCM+RTP+Opus loopback self-test\n", argv[0]);
-    g_print("The live-call path is the signal_media_start()/add_remote_candidate()/stop() API\n"
-            "(driven by the presage bridge) - see README.md.\n");
+    g_print("  %s --answer     drive a live incoming call over the stdin/stdout IPC (presage bridge)\n", argv[0]);
     return 0;
 }
 #endif
