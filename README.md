@@ -21,6 +21,7 @@ QuickOffice engine.
 | **MEGA** | DOCUMENTS + PHOTO.UPLOAD — **email+password** sign-in (no OAuth) + **end-to-end crypto** done in pure JS (AES/RSA/PBKDF2), own auth app; browse/upload/download + photo album | 🟡 **code-complete; crypto validated off-device** (primitives vs native `crypto`, full login/list/download/upload flow vs a mock server) — on-device sign-in pending; [details](mega/README.md) |
 | **S3-compatible** (AWS S3 / IDrive e2 / Backblaze B2 / Wasabi / MinIO) | DOCUMENTS + PHOTO.UPLOAD — **generic** connector: endpoint+bucket+access-key form, **AWS SigV4** request signing (native `crypto`), presigned-URL photos; browse/upload/download | 🟢 **code-complete; SigV4 vs AWS official test vectors + full mock-server flow validated** — on-device account pending; [details](s3/README.md) |
 | **HiDrive** (STRATO) | DOCUMENTS + PHOTO.UPLOAD — OAuth2 (native app + refresh), path-based browse/upload/download, shared auth webview | 🟡 **code-complete, mirrors Yandex** — untested pending a HiDrive `client_id`+secret (mock-flow incl. refresh-on-401 validated); [details](hidrive/README.md) |
+| **Koofr** | DOCUMENTS + PHOTO.UPLOAD — **app-password / HTTP Basic** (no OAuth), mount+path model, own auth app; browse/upload/download + photo album | 🟢 **code-complete; wiring validated off-device** (mount resolution, Basic auth, list/download/upload/link vs a mock server) — on-device account pending; [details](koofr/README.md) |
 | **Flickr** | PHOTO.UPLOAD — sign-in (**OAuth 1.0a**, HMAC-SHA1 signed in node), album/photo browse + download into the Photos app | 🟡 **code-complete** (signer verified vs OAuth spec test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
 | Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
@@ -89,6 +90,10 @@ mega/
                                       /cs command queue, us0/us email+password login (DOCUMENTS + PHOTO.UPLOAD)
   apps/com.palm.app.mega-auth/        customUI email+password sign-in (no OAuth webview)
   account/com.palm.mega.json          Synergy template (DOCUMENTS + PHOTO.UPLOAD)
+koofr/
+  service/com.palm.service.koofr/     Koofr service (app-password/HTTP Basic, mount+path, DOCUMENTS + PHOTO.UPLOAD)
+  apps/com.palm.app.koofr-auth/       customUI email + app-password form
+  account/com.palm.koofr.json         Synergy template (DOCUMENTS + PHOTO.UPLOAD)
 hidrive/
   service/com.palm.service.hidrive/   HiDrive service (OAuth2 + REST 2.1, path-based, refresh, DOCUMENTS + PHOTO.UPLOAD)
   account/com.palm.hidrive.json       Synergy template (shared cloud-auth OAuth webview)

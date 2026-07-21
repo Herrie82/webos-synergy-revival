@@ -1,0 +1,14 @@
+{
+	"id": "com.palm.app.koofr-auth",
+	"version": "1.0.0",
+	"vendor": "webOS Ports",
+	"type": "web",
+	"main": "index.html",
+	"title": "Koofr Account",
+	"visible": false,
+	"icon": "icon.png",
+	"splashicon": "icon.png",
+	"noWindow": true,
+	"uiRevision": 2,
+	"requiredMemory": 32
+}

@@ -1,0 +1,39 @@
+{
+	"templateId": "com.palm.koofr",
+	"loc_name": "Koofr",
+	"loc_usernameLabel": "EMAIL ADDRESS",
+	"icon": {
+		"loc_32x32": "images/koofr-32x32.png",
+		"loc_48x48": "images/koofr-48x48.png"
+	},
+
+	"__comment": "Koofr uses HTTP Basic with an APP PASSWORD (not OAuth): the customUI app com.palm.app.koofr-auth collects the account email + an app password (generated at app.koofr.net -> Preferences -> Password) and calls com.palm.service.koofr/login, which validates them (GET /user), resolves the primary mount, and returns the stored credentials. Koofr provides BOTH DOCUMENTS and PHOTO.UPLOAD.",
+	"validator": {
+		"customUI": { "appId": "com.palm.app.koofr-auth", "name": "login.html" },
+		"address":  "palm://com.palm.service.koofr/login"
+	},
+	"onCredentialsChanged": "palm://com.palm.service.koofr/checkCredentials",
+
+	"__comment2": "com.palm.app.koofr-auth MUST be in write/readPermissions: createAccount runs under the customUI auth app's identity and is permission-checked against these lists.",
+	"__comment3": "com.palm.service.koofr is in read+writePermissions so the service can readCredentials(accountId) for file ops. Koofr app passwords are static (no refresh), so the service does not normally write back, but the permission is kept for symmetry.",
+	"readPermissions":  ["com.palm.app.koofr-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
+	"writePermissions": ["com.palm.app.koofr-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
+
+	"capabilityProviders": [
+		{
+			"capability": "DOCUMENTS",
+			"id": "com.palm.koofr.documents",
+			"implementation": "palm://com.palm.service.koofr/",
+			"__comment": "The file-picker app and the account-derived QuickOffice reroute consume listFolder/downloadFile/uploadFile. Locators are absolute paths within the primary mount; the root sentinel maps to the mount root '/'."
+		},
+		{
+			"capability": "PHOTO.UPLOAD",
+			"id": "com.palm.koofr.photos",
+			"implementation": "palm://com.palm.service.photos",
+			"onEnabled": "palm://com.palm.service.photos/onEnabled",
+			"onDelete": "palm://com.palm.service.photos/onDelete",
+			"onCredentialsChanged": "palm://com.palm.service.photos/onCredentialsChanged",
+			"__comment": "Makes the Koofr account a photo source. The Photos aggregator calls com.palm.service.koofr/listAlbums+listPhotos; one folder ('Camera Uploads' at the mount root) is surfaced as one album. src_big is Koofr's files/download link, fetched by the aggregator's curl."
+		}
+	]
+}
