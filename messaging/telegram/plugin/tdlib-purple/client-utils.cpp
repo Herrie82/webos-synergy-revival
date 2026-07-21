@@ -155,6 +155,18 @@ std::vector<const td::td_api::user *> getUsersByPurpleName(const char *buddyName
             result.push_back(tdUser);
         else if (action)
             purple_debug_warning(config::pluginId, "Cannot %s: no user with id %s\n", action, buddyName);
+    } else if (isPhoneNumber(buddyName)) {
+        // webOS: the stock Phone app / Contacts dials a Telegram contact by PHONE NUMBER (e.g.
+        // "+31611745571") rather than an "id<n>" buddy or display name, so resolve the number to the
+        // Telegram user via the existing phone index. Without this an outgoing call placed from the
+        // dialer/Contacts fails silently ("User not found"): tdlib never starts the call, no state is
+        // pushed, and the Phone app is left on a blank/video screen. (Calling from the Telegram
+        // Messaging thread already works because it passes the "id<n>" buddy.)
+        const td::td_api::user *tdUser = account.getUserByPhone(buddyName);
+        if (tdUser != nullptr)
+            result.push_back(tdUser);
+        else if (action)
+            purple_debug_warning(config::pluginId, "Cannot %s: no Telegram user with phone number %s\n", action, buddyName);
     } else {
         account.getUsersByDisplayName(buddyName, result);
         // webOS: webOS may address a conversation by Telegram @username (composed by handle or

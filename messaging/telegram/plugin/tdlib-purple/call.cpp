@@ -18,14 +18,18 @@ static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
     return protocol;
 }
 
-bool initiateCall(int32_t userId, TdAccountData &account, TdTransceiver &transceiver)
+bool initiateCall(int64_t userId, TdAccountData &account, TdTransceiver &transceiver)
 {
+    // userId is tdlib's int53 (createCall.user_id_): Telegram user ids exceed INT32_MAX (e.g. Alan =
+    // 8823012961), so this MUST be 64-bit - an int32_t param truncated large ids to a garbage user and
+    // the call silently never started (no state pushed -> Phone app stuck on the video tab).
 #ifndef NoVoip
     if (!account.hasActiveCall()) {
         td::td_api::object_ptr<td::td_api::createCall> callRequest = td::td_api::make_object<td::td_api::createCall>();
         callRequest->user_id_  = userId;
         callRequest->protocol_ = getCallProtocol();
         transceiver.sendQuery(std::move(callRequest), nullptr);
+        return true;   // call request sent; report success so the dial isn't logged as FAILED TO DIAL
     } else
         // TRANSLATOR: Dialog title of an error message.
         purple_notify_warning(account.purpleAccount, _("Voice call"),
