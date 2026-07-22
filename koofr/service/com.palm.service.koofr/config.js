@@ -41,11 +41,15 @@ var Config = {
 	SERVICE_NAME:  "com.palm.service.koofr",
 	DISPLAY_NAME:  "Koofr",
 	STATE:         "koofr",
-	// Request offline access so Hydra issues a REFRESH token (access tokens expire; without a
-	// refresh token the account would break after ~1h). If Koofr rejects this scope at the
-	// consent screen, try "offline" or an empty scope - this is the first thing to verify on a
-	// real sign-in.
-	SCOPE:            "offline_access",
+	// Koofr's Hydra accepts EXACTLY ONE scope: "public". Requesting "offline_access" makes the
+	// authorize endpoint 303 straight back to the redirect_uri with
+	//   ?error=invalid_scope&error_description=Invalid scope: offline_access. Valid scopes: public
+	// which cloud-auth captures as an empty result, so sign-in "returns right away" and fails.
+	// With "public" the consent/login page loads normally. CAVEAT: without offline_access Hydra
+	// may not issue a refresh_token; if the account breaks after the access token's lifetime,
+	// revisit (Koofr may issue long-lived tokens, or need re-auth) - but "public" is the only
+	// scope the server will accept.
+	SCOPE:            "public",
 	AUTHORIZE_EXTRA:  "",
 	TOKEN_SEND_SCOPE: false,             // Koofr derives scope from the grant
 	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
