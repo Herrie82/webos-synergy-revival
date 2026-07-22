@@ -659,6 +659,17 @@ enyo.kind(
                 }
             }
         }
+        // webos-synergy-revival: no cached entry for this folder. This happens in the Create-New
+        // flow, which opens straight at the destination subfolder (e.g. "/My documents"), so the
+        // PARENT listing - where the folder's own entry (with its fileStem) lives - was never
+        // fetched. Fall back to the path's leaf so the title shows the folder name instead of
+        // "undefined" (title was "<account> / undefined"). Path locators aren't URL-encoded here
+        // (the adapters build them from raw names), so the leaf is already display-ready.
+        if (uri && typeof uri === "string") {
+            var leaf = uri.replace(/\/+$/, "");
+            leaf = leaf.substring(leaf.lastIndexOf("/") + 1);
+            if (leaf) { return leaf; }
+        }
         return undefined;
     },
 
