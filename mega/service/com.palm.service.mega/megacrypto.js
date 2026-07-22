@@ -213,8 +213,45 @@ var MegaCrypto = (function () {
 	}
 
 	// ---- Mega password key derivation (v1) ---------------------------------------------
+	// ---- native AES-ECB engine (for the HOT key-derivation loops) -----------------------
+	// prepare_key (65536 rounds) and stringhash (16384 rounds) are far too slow in pure-JS AES
+	// on the device's ancient node (v0.4.12 interpreter) - a sign-in would spin for minutes.
+	// OpenSSL via node `crypto` does the same AES in C. The device's 0.4.12 createCipheriv wants
+	// BINARY-STRING key/iv (not Buffers, which it rejects) and has no setAutoPadding, but a reused
+	// ECB cipher chains 16-byte blocks correctly (verified on-device: byte-identical to the pure-JS
+	// AES). Modern node accepts Buffers - detect which and use it. NEVER call final() (that would
+	// add padding on modern node); ECB update() returns each block immediately.
+	var _cipherUsesBuf = null;
+	function _detectCipherBuf() {
+		if (_cipherUsesBuf !== null) { return _cipherUsesBuf; }
+		_cipherUsesBuf = false;
+		if (_nc && _nc.createCipheriv) {
+			try { _nc.createCipheriv("aes-128-ecb", toBuffer(_zeros(16)), toBuffer(_zeros(16))); _cipherUsesBuf = true; }
+			catch (e) { _cipherUsesBuf = false; }
+		}
+		return _cipherUsesBuf;
+	}
+	function _zeros(n) { var a = []; for (var i = 0; i < n; i++) { a.push(0); } return a; }
+	function _binStr(bytes) { var s = "", i; for (i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i] & 0xff); } return s; }
+	function _binToBytes(s) { var b = [], i; for (i = 0; i < s.length; i++) { b.push(s.charCodeAt(i) & 0xff); } return b; }
+	// Make a reusable ECB cipher for a 16-byte key; returns an object with update(state)->state,
+	// where `state` is a Buffer (modern) or binary string (device) held across the whole loop.
+	function _ecbCipher(keyBytes) {
+		var useBuf = _detectCipherBuf(), iv = _zeros(16), ci;
+		if (useBuf) {
+			ci = _nc.createCipheriv("aes-128-ecb", toBuffer(keyBytes), toBuffer(iv));
+			if (ci.setAutoPadding) { ci.setAutoPadding(false); }
+			return { buf: true, ci: ci, seed: function (b) { return toBuffer(b); },
+				step: function (s) { return ci.update(s); }, out: function (s) { return [].slice.call(s); } };
+		}
+		ci = _nc.createCipheriv("aes-128-ecb", _binStr(keyBytes), _binStr(iv));
+		if (ci.setAutoPadding) { ci.setAutoPadding(false); }
+		return { buf: false, ci: ci, seed: function (b) { return _binStr(b); },
+			step: function (s) { return ci.update(s, "binary", "binary"); }, out: function (s) { return _binToBytes(s); } };
+	}
+
 	// prepare_key: 65536 rounds of AES-encrypting a fixed seed, keyed by the password words.
-	function prepareKey(passwordStr) {
+	function prepareKeyJS(passwordStr) {
 		var a = strToA32(passwordStr);
 		if (a.length % 4) { a = a.concat([0,0,0].slice(0, 4 - (a.length % 4))); }
 		var pkey = [0x93C467E3, 0x1A76B2A5, 0x3210A5A9, 0x2CBE6FB3];
@@ -226,10 +263,38 @@ var MegaCrypto = (function () {
 		}
 		return pkey;
 	}
+	function prepareKeyNative(passwordStr) {
+		var a = strToA32(passwordStr);
+		if (a.length % 4) { a = a.concat([0,0,0].slice(0, 4 - (a.length % 4))); }
+		var engines = [];
+		for (var j = 0; j < a.length; j += 4) {
+			engines.push(_ecbCipher(a32ToBytes([a[j] || 0, a[j + 1] || 0, a[j + 2] || 0, a[j + 3] || 0])));
+		}
+		var state = engines[0].seed(a32ToBytes([0x93C467E3, 0x1A76B2A5, 0x3210A5A9, 0x2CBE6FB3]));
+		for (var r = 65536; r--; ) {
+			for (var e = 0; e < engines.length; e++) { state = engines[e].step(state); }
+		}
+		return bytesToA32(engines[0].out(state));
+	}
+	function prepareKey(passwordStr) {
+		if (_nc && _nc.createCipheriv) {
+			try { return prepareKeyNative(passwordStr); } catch (e) { /* fall back */ }
+		}
+		return prepareKeyJS(passwordStr);
+	}
 	// stringhash: the v1 login user-hash (uh) from email + the password AES key.
 	function stringHash(str, aesKeyA32) {
 		var s32 = strToA32(str), h32 = [0, 0, 0, 0], i;
 		for (i = 0; i < s32.length; i++) { h32[i % 4] ^= s32[i]; }
+		if (_nc && _nc.createCipheriv) {
+			try {
+				var eng = _ecbCipher(a32ToBytes(aesKeyA32.slice(0, 4)));
+				var st = eng.seed(a32ToBytes(h32));
+				for (i = 16384; i--; ) { st = eng.step(st); }
+				var w = bytesToA32(eng.out(st));
+				return a32ToB64([w[0], w[2]]);
+			} catch (e) { /* fall back */ }
+		}
 		for (i = 16384; i--; ) { h32 = ecbEncryptA32(aesKeyA32, h32); }
 		return a32ToB64([h32[0], h32[2]]);
 	}
@@ -349,7 +414,35 @@ var MegaCrypto = (function () {
 		for (var i = 0; i < block; i++) { oKey.push(key[i] ^ 0x5c); iKey.push(key[i] ^ 0x36); }
 		return sha512(oKey.concat(sha512(iKey.concat(msgBytes))));
 	}
+	// PBKDF2-HMAC-SHA512. v2 Mega accounts use 100000 iterations - pure-JS SHA-512 would take
+	// many minutes on the device, so this drives NATIVE HMAC-SHA512 (one-time, at sign-in). The
+	// hot path stays entirely in Buffers: the password Buffer is built once, and each iteration's
+	// digest Buffer is fed straight back into the next update with NO array<->Buffer conversion
+	// (those conversions dominated an earlier version). Falls back to pure-JS if no node crypto.
+	function pbkdf2Native(passwordBytes, saltBytes, iterations, dkLen) {
+		var pw = toBuffer(passwordBytes);
+		var out = [], block = 1;
+		while (out.length < dkLen) {
+			var bl = [(block >>> 24) & 0xff, (block >>> 16) & 0xff, (block >>> 8) & 0xff, block & 0xff];
+			var h0 = _nc.createHmac("sha512", pw); h0.update(toBuffer(saltBytes.concat(bl)));
+			var u = h0.digest();                 // Buffer (64)
+			var t = new Buffer(u.length);
+			for (var c = 0; c < u.length; c++) { t[c] = u[c]; }
+			for (var it = 1; it < iterations; it++) {
+				var h = _nc.createHmac("sha512", pw);
+				h.update(u);                     // u is a Buffer - accepted on device 0.4.12
+				u = h.digest();                  // Buffer in, Buffer out - no conversion
+				for (var k = 0; k < t.length; k++) { t[k] ^= u[k]; }
+			}
+			for (var m = 0; m < t.length; m++) { out.push(t[m]); }
+			block++;
+		}
+		return out.slice(0, dkLen);
+	}
 	function pbkdf2Sha512(passwordBytes, saltBytes, iterations, dkLen) {
+		if (_nc && _nc.createHmac) {
+			try { return pbkdf2Native(passwordBytes, saltBytes, iterations, dkLen); } catch (e) { /* fall back */ }
+		}
 		var out = [], block = 1;
 		while (out.length < dkLen) {
 			var bl = [(block >>> 24) & 0xff, (block >>> 16) & 0xff, (block >>> 8) & 0xff, block & 0xff];
