@@ -202,6 +202,52 @@ var Adapter = {
 	},
 
 	// --- PHOTO.UPLOAD helpers ------------------------------------------------------------
+	// Enumerate BROWSABLE photo albums: the account HOME (its direct image children - people keep
+	// photos at the top level, as this account does) plus every immediate sub-folder that holds at
+	// least one image. aid = the absolute path (listPhotos lists it directly). This replaces the
+	// old "only Camera Uploads" view so real photos actually show up in Photos & Videos.
+	_isImg: function (e) {
+		var m = this._mime(e && e.name, false);
+		return e && e.type === "file" && m && m.indexOf("image/") === 0;
+	},
+	photoAlbums: function (creds, cb) {
+		var self = this, f = new Future();
+		var hf = this._ensureHome(creds, cb);
+		f.now(this, function () { return hf; });
+		f.then(this, function () {
+			var home;
+			try { home = hf.result; } catch (e) { f.setException(e); return; }
+			var lf = self.listFolder(creds, home, cb);
+			lf.then(self, function () {
+				var entries;
+				try { entries = (lf.result && lf.result.entries) || []; } catch (e2) { entries = []; }
+				var albums = [], homeImgs = 0, folders = [];
+				entries.forEach(function (e) {
+					if (self._isImg(e)) { homeImgs++; }
+					else if (e.type === "folder") { folders.push(e); }
+				});
+				if (homeImgs) { albums.push({ aid: home, name: "HiDrive", images: homeImgs }); }
+				// Probe each immediate sub-folder for images (bounded to one level).
+				var i = 0;
+				function nextFolder() {
+					if (i >= folders.length) { f.result = { albums: albums }; return; }
+					var fld = folders[i++];
+					var sf = self.listFolder(creds, fld.id, cb);
+					sf.then(self, function () {
+						var se;
+						try { se = (sf.result && sf.result.entries) || []; } catch (e3) { se = []; }
+						var c = 0;
+						se.forEach(function (x) { if (self._isImg(x)) { c++; } });
+						if (c) { albums.push({ aid: fld.id, name: fld.name, images: c }); }
+						nextFolder();
+					});
+				}
+				nextFolder();
+			});
+		});
+		return f;
+	},
+
 	resolvePhotoAlbum: function (creds, cb) {
 		var self = this, f = new Future();
 		var name = Config.PHOTO_ALBUM_NAME || "Camera Uploads";

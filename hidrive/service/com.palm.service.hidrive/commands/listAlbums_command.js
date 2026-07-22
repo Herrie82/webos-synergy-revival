@@ -1,10 +1,10 @@
 /*global Adapter, AccountCreds, PhotoLib, Config, console */
 /* listAlbums - Photos-aggregator contract. args: { accountId }
- * Surfaces ONE HiDrive folder ("Camera Uploads" under the account home) as one album:
  *   { returnValue:true, albums:[ { aid, name, size:{images:N} } ] }
- * aid is the bare folder NAME (filesystem-safe - the album path has slashes, so listPhotos
- * re-resolves the full path from the home instead of trusting a slashed aid). If the folder
- * doesn't exist yet the album is still surfaced (0 images); it is created on first upload.
+ * aid is the album's absolute HiDrive path (handed to listPhotos verbatim). We surface the
+ * account HOME (its direct images) plus every immediate sub-folder that holds images (see
+ * Adapter.photoAlbums). If there are no images anywhere we still surface an empty "Camera
+ * Uploads" placeholder so the source appears in Photos (created on first device->cloud upload).
  */
 function ListAlbumsCommandAssistant() {}
 
@@ -17,27 +17,18 @@ ListAlbumsCommandAssistant.prototype = {
 			var creds;
 			try { creds = credF.result; } catch (e) { future.setException(e); return; }
 			var renewed = null;
-			var albF = Adapter.resolvePhotoAlbum(creds, function (nc) { renewed = nc; });
-			albF.then(self, function () {
-				var album;
-				try { album = albF.result; }
-				catch (e2) { album = { path: "", name: (Config.PHOTO_ALBUM_NAME || "Camera Uploads"), exists: false }; }
-				if (!album.exists || !album.path) {
-					future.result = { returnValue: true,
-						albums: [{ aid: album.name, name: album.name, size: { images: 0 } }] };
-					return;
-				}
-				var lf = Adapter.listFolder(creds, album.path, function (nc) { renewed = nc; });
-				lf.then(self, function () {
-					var entries;
-					try { entries = (lf.result && lf.result.entries) || []; }
-					catch (e3) { entries = []; }
-					if (renewed && args.accountId) { AccountCreds.save(args.accountId, renewed); }
-					var count = 0;
-					entries.forEach(function (e) { if (PhotoLib.isImage(e)) { count++; } });
-					future.result = { returnValue: true,
-						albums: [{ aid: album.name, name: album.name, size: { images: count } }] };
+			var af = Adapter.photoAlbums(creds, function (nc) { renewed = nc; });
+			af.then(self, function () {
+				var albums;
+				try { albums = (af.result && af.result.albums) || []; } catch (e2) { albums = []; }
+				if (renewed && args.accountId) { AccountCreds.save(args.accountId, renewed); }
+				var out = albums.map(function (a) {
+					return { aid: a.aid, name: a.name, size: { images: a.images || 0 } };
 				});
+				if (!out.length) {
+					out = [{ aid: "", name: (Config.PHOTO_ALBUM_NAME || "Camera Uploads"), size: { images: 0 } }];
+				}
+				future.result = { returnValue: true, albums: out };
 			});
 		});
 	}
