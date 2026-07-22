@@ -54,8 +54,18 @@ enyo.kind({
         ]},
         { className: "accounts-footer-shadow" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
-            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
+            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" },
+            { kind: "Button", name: "removeButton", caption: "Remove Account", showing: false, className: "accounts-toolbar-btn", onclick: "confirmRemove" }
         ]},
+        { kind: "Dialog", name: "confirmDialog", modal: true, scrim: true, components: [
+            { className: "accounts-body-text", style: "padding: 16px; line-height: 1.4;",
+              content: "Remove this account? Its messages will be deleted from this device." },
+            { kind: "HFlexBox", style: "padding: 8px 12px 12px;", components: [
+                { kind: "Button", flex: 1, caption: "Cancel", onclick: "closeConfirm" },
+                { kind: "Button", flex: 1, name: "confirmRemoveBtn", caption: "Remove", className: "enyo-button-negative", onclick: "doRemove" }
+            ]}
+        ]},
+        { kind: "PalmService", name: "acctService", service: "palm://com.palm.service.accounts/", onSuccess: "removeDone", onFailure: "removeDone" },
         { kind: "CrossAppResult" }
     ],
 
@@ -89,6 +99,10 @@ enyo.kind({
                 if (params.allTemplates[i].templateId === "com.palm.googlechat") { this.template = params.allTemplates[i]; break; }
             }
         }
+        // Re-auth of an existing account also offers Remove (this flow bypasses the framework
+        // account-detail view, the only other place with a Remove button).
+        this.accountId = (params.account && (params.account._id || params.account.id)) || params.accountId || null;
+        if (this.accountId) { this.$.removeButton.show(); }
         if (params.account && params.account.username) {
             this.$.username.setValue(params.account.username);
             this.$.username.setDisabled(true);
@@ -126,6 +140,24 @@ enyo.kind({
         this.$.crossAppResult.sendResult(result);
     },
 
+    confirmRemove: function() {
+        this.$.confirmRemoveBtn.setDisabled(false);
+        this.$.confirmDialog.openAtCenter();
+    },
+    closeConfirm: function() {
+        this.$.confirmDialog.close();
+    },
+    doRemove: function() {
+        this.$.confirmRemoveBtn.setDisabled(true);
+        if (!this.accountId) { this.closeConfirm(); return; }
+        this.$.acctService.call({ accountId: this.accountId }, { method: "deleteAccount" });
+    },
+    // deleteAccount can return returnValue:false + "Account has been deleted" even on
+    // success, so do not branch on it - the account is gone either way; close + exit.
+    removeDone: function() {
+        this.$.confirmDialog.close();
+        this.$.crossAppResult.sendResult({ returnValue: false });
+    },
     cancel: function() {
         this.$.crossAppResult.sendResult({ returnValue: false });
     }
