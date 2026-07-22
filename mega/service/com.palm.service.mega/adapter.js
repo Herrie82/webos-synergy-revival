@@ -282,6 +282,37 @@ var Adapter = {
 		return f;
 	},
 
+	// Enumerate BROWSABLE photo albums from the decrypted tree: the Cloud Drive ROOT (its direct
+	// image children - many people keep photos at the top level, as this account does) followed by
+	// every folder that directly holds at least one image. aid is the node HANDLE (the root album
+	// uses the root handle, which listFolder/_folderHandle resolves back to the root's children).
+	// This replaces the old "only Camera Uploads" view so real photos actually show up in Photos.
+	photoAlbums: function (creds, cb) {
+		var self = this, f = new Future();
+		var tf = this._fetchTree(creds, cb);
+		f.now(this, function () { return tf; });
+		f.then(this, function () {
+			var tree, counts = {}, i, n, mime;
+			try { tree = tf.result; } catch (e) { f.setException(e); return; }
+			for (i = 0; i < tree.nodes.length; i++) {
+				n = tree.nodes[i];
+				if (n.t !== 0) { continue; }               // files only
+				mime = self._mime(n.name, false);
+				if (mime && mime.indexOf("image/") === 0) { counts[n.p] = (counts[n.p] || 0) + 1; }
+			}
+			var albums = [];
+			if (counts[tree.rootHandle]) {
+				albums.push({ aid: tree.rootHandle, name: "Cloud Drive", images: counts[tree.rootHandle] });
+			}
+			for (i = 0; i < tree.nodes.length; i++) {
+				n = tree.nodes[i];
+				if (n.t === 1 && counts[n.h]) { albums.push({ aid: n.h, name: n.name || n.h, images: counts[n.h] }); }
+			}
+			f.result = { albums: albums };
+		});
+		return f;
+	},
+
 	// Create (or find) a folder by name under the Cloud Drive root; returns its handle.
 	ensureAlbumFolder: function (creds, name, cb) {
 		var self = this, f = new Future();
