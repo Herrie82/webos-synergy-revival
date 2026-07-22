@@ -54,19 +54,19 @@ same verified plumbing.
 ## Messaging / IM connectors
 
 Synergy **IM** account providers, each bridging a `libpurple` protocol plugin into the stock
-Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Media** = image/video
-attachments · **Voice** / **Video** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
+Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images / Audio / Video**
+= attachments · **Voice / Video call** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
 ❔ not documented as verified on webOS · ❌ none.
 
-| Connector | Plugin | Auth | IM | Media | Voice | Video |
-|---|---|---|:--:|:--:|:--:|:--:|
-| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❌ | ❌ |
-| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | 🟡 | ❌ |
-| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | 🟡 | ❔ | 🟡 | ❌ |
-| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | 🟡 | ❌ |
-| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) | phone + QR / pairing code | ✅ | 🟡 | ❌ | ❌ |
-| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❌ | ❌ |
-| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | `c_user`/`xs`/`datr` cookies | 🟡 | ❌ | ❌ | ❌ |
+| Connector | Plugin | Auth | IM | Images | Audio | Video | Voice call | Video call |
+|---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
+| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
+| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | 🟡 | ❔ | ❔ | ❔ | 🟡 | ❌ |
+| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
+| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | ❌ | ❌ |
+| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
+| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | `c_user`/`xs`/`datr` cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
@@ -82,8 +82,8 @@ Notes:
   DAVE E2EE stack) that has **never completed a live voice handshake**.
 - **Facebook**: the plain `purple-facebook` (email+password) is **retired** — it can't reach
   today's E2EE Messenger threads. The current path is `purple-gometa` (cookie auth, Signal-protocol
-  E2EE), still at the login-spike/prpl-glue-in-progress stage. Uses the original Facebook account
-  icon.
+  E2EE), and **text IM now works**; attachment media is not yet wired up. Uses the original
+  Facebook account icon.
 
 ## The transport reality (shapes the whole design)
 
