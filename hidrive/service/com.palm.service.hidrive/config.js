@@ -17,10 +17,10 @@ var Config = {
 	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
-	CLIENT_ID:     "PLACEHOLDER_HIDRIVE_CLIENT_ID",       // TODO: HiDrive "native" app Client ID
+	CLIENT_ID:     "2c0b0760455d5390b9a682232f844c8e",   // HiDrive "Synergy connector for webOS and LuneOS"
 	// REQUIRED for HiDrive (no PKCE - the token exchange must send the secret). It ships in the
 	// package; oauth2.js sends it because it is not left as the PLACEHOLDER sentinel.
-	CLIENT_SECRET: "PLACEHOLDER_HIDRIVE_CLIENT_SECRET",   // TODO: HiDrive app Client secret
+	CLIENT_SECRET: "10f40a8e67a590a758d507026bc0d7fc",   // HiDrive app Client secret
 	// HiDrive "native" apps require a localhost redirect WITH a port (http://localhost:<port>).
 	// The cloud-auth webview captures it by URL-prefix match, so nothing listens on the port -
 	// this value MUST match the redirect URI registered for the app verbatim.
