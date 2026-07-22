@@ -164,11 +164,11 @@ details. Messaging connectors have their own build/deploy scripts (ARM cross-com
 
 ## License / attribution
 
-Original Palm/HP account-service and Photos-app code is **not** vendored here — the Photos changes
-ship as **patches** against the stock files. Messaging plugin **source** is vendored (built binaries
-are git-ignored) and tracks the upstream forks listed in `messaging/README.md`. Everything under the
-cloud connectors and the account templates is new work.
+Original Palm/HP account-service code is **not** vendored here. Messaging plugin **source** is
+vendored (built binaries are git-ignored) and tracks the upstream forks listed in
+`messaging/README.md`. Everything under the cloud connectors and the account templates is new work.
 
-Changes to the stock **core apps** (Messaging / Contacts / Phone) are **not** in this repo — they
-live in the separate **core-apps** repository. Any app-level patches still present here are
-superseded and stale; treat core-apps as the source of truth for those apps.
+Changes to the stock **core apps** (Photos / Messaging / Contacts / Phone) are **not** in this
+repo — they live in the separate **core-apps** repository. Any app-level patches still present here
+(e.g. `photos-integration/`) are superseded and stale; treat core-apps as the source of truth for
+those apps.
