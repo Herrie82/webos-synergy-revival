@@ -41,33 +41,30 @@ revived libraries fall through to the default and render the generic icon.
 
 ## The fix (`patches/LibraryNavigationPanel.css.patch`)
 
-Append the two missing service classes (plus their 20x20 variants), pointing at bundled 40x40 /
-20x20 badges:
+Append the missing service classes (plus their 20x20 variants). Rather than bundle a second set of
+badges into the Photos app, each rule points **straight at the account-template artwork already on
+disk** under `/usr/palm/public/accounts/<template>/images/` - a single source of truth, so an icon
+only ever needs updating in one place. `-webkit-background-size: contain` fits the 48px account tile
+into the 40px (and 20px) library-icon slots.
 
-| Template | `type` | CSS class | Icon |
+| Template | `type` | CSS class | Reused account icon |
 |---|---|---|---|
-| `com.palm.boxnet` | `boxnet` | `.library-navigation-icon-boxnet` | `icon_boxnet_40x40.png` (blue badge, white box) |
-| `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `icon_dropbox_40x40.png` (white badge, flat glyph) |
-| `com.palm.kdrive` | `kdrive` | `.library-navigation-icon-kdrive` | `icon_kdrive_40x40.png` (blue→cyan gradient, white "k") |
-| `com.palm.yandexdisk` | `yandexdisk` | `.library-navigation-icon-yandexdisk` | `icon_yandexdisk_40x40.png` (Yandex Disk badge) |
-| `com.palm.onedrive` | `onedrive` | `.library-navigation-icon-onedrive` | `icon_onedrive_40x40.png` (2025 OneDrive cloud) |
+| `com.palm.boxnet` | `boxnet` | `.library-navigation-icon-boxnet` | `com.palm.boxnet/images/box_net_48.png` |
+| `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `com.palm.dropbox/images/dropbox-48x48.png` |
+| `com.palm.kdrive` | `kdrive` | `.library-navigation-icon-kdrive` | `com.palm.kdrive/images/kdrive-48x48.png` |
+| `com.palm.yandexdisk` | `yandexdisk` | `.library-navigation-icon-yandexdisk` | `com.palm.yandexdisk/images/yandexdisk-48x48.png` |
+| `com.palm.onedrive` | `onedrive` | `.library-navigation-icon-onedrive` | `com.palm.onedrive/images/onedrive-48x48.png` |
+| `com.palm.mega` | `mega` | `.library-navigation-icon-mega` | `com.palm.mega/images/mega-48x48.png` |
+| `com.palm.koofr` | `koofr` | `.library-navigation-icon-koofr` | `com.palm.koofr/images/koofr-48x48.png` |
+| `com.palm.hidrive` | `hidrive` | `.library-navigation-icon-hidrive` | `com.palm.hidrive/images/hidrive-48x48.png` |
 
-No JS change is needed - the class is already applied per account; only the CSS rule + image were
-missing. Box gets a mostly-blue badge and Dropbox a mostly-white one, so the two "same holder name"
-libraries are easy to tell apart at a glance.
+No JS change is needed - the class is already applied per account; only the CSS rule was missing.
 
 ## Applying
 
 ```sh
 D=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
 patch -p1 -d "$D" < patches/LibraryNavigationPanel.css.patch
-cp assets/icon_boxnet_40x40.png  assets/icon_boxnet_20x20.png  "$D/images/"
-cp assets/icon_dropbox_40x40.png assets/icon_dropbox_20x20.png "$D/images/"
-cp assets/icon_kdrive_40x40.png  assets/icon_kdrive_20x20.png  "$D/images/"
-cp assets/icon_yandexdisk_40x40.png assets/icon_yandexdisk_20x20.png "$D/images/"
-cp assets/icon_onedrive_40x40.png assets/icon_onedrive_20x20.png "$D/images/"
+# no image copies needed - the rules reference the account-template icons in place
 # relaunch the Photos card (cold launch reloads its CSS)
 ```
-
-The badges are derived from the official brand art (Box's box-social wordmark; the current flat
-Dropbox glyph) - the same sources used for the account-template icons under `box/` and `dropbox/`.
