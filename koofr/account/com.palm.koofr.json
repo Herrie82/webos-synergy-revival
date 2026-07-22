@@ -7,17 +7,17 @@
 		"loc_48x48": "images/koofr-48x48.png"
 	},
 
-	"__comment": "Koofr uses HTTP Basic with an APP PASSWORD (not OAuth): the customUI app com.palm.app.koofr-auth collects the account email + an app password (generated at app.koofr.net -> Preferences -> Password) and calls com.palm.service.koofr/login, which validates them (GET /user), resolves the primary mount, and returns the stored credentials. Koofr provides BOTH DOCUMENTS and PHOTO.UPLOAD.",
+	"__comment": "OAuth2 (Ory Hydra). The shared customUI app com.palm.app.cloud-auth hosts the Koofr consent webview; it loads OAuth2.buildAuthorizeUrl(), captures ?code= from the redirect to Config.REDIRECT_URI, then calls exchangeCode which returns the stored token credentials. The primary mount is resolved lazily by the adapter (GET /mounts). Koofr provides BOTH DOCUMENTS and PHOTO.UPLOAD.",
 	"validator": {
-		"customUI": { "appId": "com.palm.app.koofr-auth", "name": "login.html" },
-		"address":  "palm://com.palm.service.koofr/login"
+		"customUI": { "appId": "com.palm.app.cloud-auth", "name": "oauth.html" },
+		"address":  "palm://com.palm.service.koofr/exchangeCode"
 	},
 	"onCredentialsChanged": "palm://com.palm.service.koofr/checkCredentials",
 
-	"__comment2": "com.palm.app.koofr-auth MUST be in write/readPermissions: createAccount runs under the customUI auth app's identity and is permission-checked against these lists.",
-	"__comment3": "com.palm.service.koofr is in read+writePermissions so the service can readCredentials(accountId) for file ops. Koofr app passwords are static (no refresh), so the service does not normally write back, but the permission is kept for symmetry.",
-	"readPermissions":  ["com.palm.app.koofr-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
-	"writePermissions": ["com.palm.app.koofr-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
+	"__comment2": "com.palm.app.cloud-auth MUST be in write/readPermissions: createAccount runs under the customUI auth app's identity and is permission-checked against these lists.",
+	"__comment3": "com.palm.service.koofr is in read+writePermissions so the service can readCredentials(accountId) for file ops and writeCredentials back after a token refresh (Koofr access tokens expire; the refresh token renews them).",
+	"readPermissions":  ["com.palm.app.cloud-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
+	"writePermissions": ["com.palm.app.cloud-auth", "com.palm.app.koofr-files", "com.palm.app.photos", "com.palm.service.koofr", "com.palm.service.photos"],
 
 	"capabilityProviders": [
 		{

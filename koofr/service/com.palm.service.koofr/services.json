@@ -1,5 +1,5 @@
 {
-	"description": "Koofr Service - REST v2 (app-password / HTTP Basic)",
+	"description": "Koofr Service - OAuth2 / REST v2",
 	"commandTimeout": 30,
 	"activityTimeout": 30,
 	"engine": "node",
@@ -10,7 +10,8 @@
 			"assistant": "CloudService",
 			"globalized": true,
 			"commands": [
-				{ "name": "login",            "assistant": "LoginCommandAssistant",            "public": true, "commandTimeout": 60 },
+				{ "name": "getAuthorizeUrl",  "assistant": "GetAuthorizeUrlCommandAssistant",  "public": true },
+				{ "name": "exchangeCode",     "assistant": "ExchangeCodeCommandAssistant",     "public": true },
 				{ "name": "checkCredentials", "assistant": "CheckCredentialsCommandAssistant", "public": true },
 				{ "name": "listFolder",       "assistant": "ListFolderCommandAssistant",       "public": true, "commandTimeout": 120 },
 				{ "name": "uploadFile",       "assistant": "UploadFileCommandAssistant",       "public": true, "commandTimeout": 300 },

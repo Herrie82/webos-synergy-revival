@@ -1,23 +1,34 @@
-/* config.js - Koofr REST v2 endpoints for the modern connector.
+/* config.js - Koofr OAuth2 + REST v2 endpoints for the modern connector.
  *
- * Koofr uses HTTP BASIC auth with an APP PASSWORD (not OAuth): the account owner generates an app
- * password at https://app.koofr.net/app/admin/preferences/password and signs in with their email
- * + that password. So - like the Mega/S3 connectors - Koofr has its OWN credentials form
- * (com.palm.app.koofr-auth) and a `login` command; there is nothing to register centrally.
- * (Koofr does have OAuth2, but third-party client registration is support-gated, so the
- * self-service app-password path is the pragmatic one, and it is what rclone's Koofr backend uses.)
+ * Koofr is OAuth2 (Ory-Hydra-style) + MOUNT/PATH based. This connector mirrors the Yandex/
+ * HiDrive OAuth connectors: it reuses _cloudcore (oauth2.js + the generic commands) and the
+ * SHARED consent webview app com.palm.app.cloud-auth. Files live under a mount (the user's
+ * primary personal storage), addressed by (mountId, absolute path); the primary mount is
+ * resolved lazily and cached in the credentials. Every API call sends "Authorization: Bearer
+ * <token>" and shells through the modern curl (device node is ancient).
  *
- * Koofr is MOUNT + PATH based: files live under a mount (the user's primary personal storage),
- * addressed by (mountId, absolute path). The connector resolves the primary mount at login and
- * stores its id in the credentials. Every request sends "Authorization: Basic <email:apppw>" and
- * shells through the modern curl (device node is 0.9.8k).
+ * REGISTER a "Desktop app" client at https://app.koofr.net/developers/api . Set the redirect URI
+ * to REDIRECT_URI below verbatim. Koofr is a confidential client (a client_secret is issued and
+ * IS sent on the token exchange), and oauth2.js ALSO sends a PKCE challenge (harmless - Hydra
+ * binds it and we send the matching verifier).
  */
 var Config = {
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	// Modern-TLS HTTP: device node can't handshake with app.koofr.net, so ALL HTTPS shells out
+	// to the bundled modern curl (same binary + CA store as the other connectors).
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
-	// Same host for API and content - only the path prefix differs.
+	CLIENT_ID:     "DMUXM62M6F6EI3DCAR5TIMJBEP5EETPJ",   // Koofr OAuth2 "Desktop app" Client ID
+	// Koofr is a confidential client: the secret IS sent on the token exchange/refresh.
+	CLIENT_SECRET: "MS7G6OULP3HKIM7A2AGZHI7VJZ7MDA3X64YCW6HVNUMLINK2YZR5FUUKS6GV4MIC",
+	REDIRECT_URI:  "http://localhost/koofr/oauth2callback",
+
+	// Koofr OAuth2 (Ory Hydra) endpoints (verified live).
+	AUTHORIZE_URL: "https://app.koofr.net/oauth2/auth",
+	TOKEN_URL:     "https://app.koofr.net/oauth2/token",
+
+	// Koofr REST v2. Same host for API and content - only the path prefix differs.
 	API_BASE:     "https://app.koofr.net/api/v2",
 	CONTENT_BASE: "https://app.koofr.net/content/api/v2",
 	KOOFR_VERSION: "2.1",   // sent as X-Koofr-Version on every request
@@ -30,7 +41,14 @@ var Config = {
 	SERVICE_NAME:  "com.palm.service.koofr",
 	DISPLAY_NAME:  "Koofr",
 	STATE:         "koofr",
-	AUTH_APP_IDS:  ["com.palm.app.koofr-auth"],
+	// Request offline access so Hydra issues a REFRESH token (access tokens expire; without a
+	// refresh token the account would break after ~1h). If Koofr rejects this scope at the
+	// consent screen, try "offline" or an empty scope - this is the first thing to verify on a
+	// real sign-in.
+	SCOPE:            "offline_access",
+	AUTHORIZE_EXTRA:  "",
+	TOKEN_SEND_SCOPE: false,             // Koofr derives scope from the grant
+	AUTH_APP_IDS:  ["com.palm.app.cloud-auth"],
 	FILE_APP_IDS:  ["com.palm.app.koofr-files", "com.quickoffice.webos", "com.quickoffice.ar"]
 };
 

@@ -1,27 +1,23 @@
-/*global IMPORTS, Config, HttpCurl, Buffer, require, console */
+/*global IMPORTS, Config, OAuth2, HttpCurl, console */
 /* adapter.js - Koofr provider ADAPTER for _cloudcore. Koofr is MOUNT + PATH based: files live
  * under a mount (the user's primary personal storage), addressed by (mountId, absolute path). The
- * primary mount id is resolved at login and carried in the credentials; a locator handed to
- * consumers is the absolute path within that mount (the ROOT_FOLDER sentinel "/" is the mount
- * root). Auth is HTTP Basic (email:app-password) - app passwords don't expire, so there is no
- * refresh. All HTTPS runs through the modern curl (device node is 0.9.8k). The content host is the
- * same host with a "/content/api/v2" path prefix.
+ * primary mount id is resolved lazily (GET /mounts) and cached in the credentials; a locator is
+ * the absolute path within that mount (the ROOT_FOLDER sentinel "/" is the mount root). Auth is
+ * OAuth2 Bearer with transparent refresh-on-401 (access tokens expire; the refresh token renews
+ * them). All HTTPS runs through the modern curl. The content host is the same host with a
+ * "/content/api/v2" path prefix.
  *
- * Credentials (creds): { accessToken:<app password>, email, mountId }. The app password doubles
- * as _cloudcore's accessToken so AccountCreds + the generic commands work unchanged.
+ * Credentials (creds): { accessToken, refreshToken, expiresAt, mountId? }.
+ *
+ * Exposes the uniform _cloudcore adapter interface (normalised shapes) plus the PHOTO.UPLOAD
+ * helpers. getTemporaryLink hands back Koofr's files/download URL for the Photos aggregator.
  */
 var Foundations = IMPORTS.foundations;
 var Future = Foundations.Control.Future;
 
 var Adapter = {
-	_b64: function (s) {
-		if (typeof Buffer !== "undefined") {
-			return (Buffer.from ? Buffer.from(s, "utf8") : new Buffer(s, "utf8")).toString("base64");
-		}
-		return s;   // should not happen in the node service
-	},
 	_hdr: function (c) {
-		return { "Authorization": "Basic " + this._b64((c.email || "") + ":" + (c.accessToken || "")),
+		return { "Authorization": "Bearer " + c.accessToken,
 			"X-Koofr-Version": Config.KOOFR_VERSION || "2.1" };
 	},
 	_enc: function (p) { return encodeURIComponent(p); },
@@ -44,19 +40,41 @@ var Adapter = {
 		return map[ext] || null;
 	},
 
-	// Basic-auth HttpCurl call (no refresh - app passwords are static). opts: { method, url,
-	// headers, outFile, dataFile, multipart, body }. Resolves to { status, responseText }.
-	_req: function (creds, opts) {
+	// Bearer HttpCurl call with transparent refresh-on-401. opts: { method, url, headers, outFile,
+	// dataFile, multipart, body }. Resolves to { status, responseText }.
+	_req: function (creds, opts, onRenewed) {
 		var self = this, f = new Future();
-		var o = { method: opts.method || "GET", url: opts.url, headers: this._hdr(creds) };
-		if (opts.headers) { Object.keys(opts.headers).forEach(function (k) { o.headers[k] = opts.headers[k]; }); }
-		if (opts.outFile) { o.outFile = opts.outFile; o.follow = true; }
-		if (opts.dataFile) { o.dataFile = opts.dataFile; }
-		if (opts.multipart) { o.multipart = opts.multipart; }
-		if (opts.body != null) { o.body = opts.body; }
-		var call = HttpCurl.request(o);
+		function fire(c) {
+			var o = { method: opts.method || "GET", url: opts.url, headers: self._hdr(c) };
+			if (opts.headers) { Object.keys(opts.headers).forEach(function (k) { o.headers[k] = opts.headers[k]; }); }
+			if (opts.outFile) { o.outFile = opts.outFile; o.follow = true; }
+			if (opts.dataFile) { o.dataFile = opts.dataFile; }
+			if (opts.multipart) { o.multipart = opts.multipart; }
+			if (opts.body != null) { o.body = opts.body; }
+			return HttpCurl.request(o);
+		}
+		var call = fire(creds);
 		f.now(this, function () { return call; });
-		f.then(this, function () { f.result = call.result; });
+		f.then(this, function () {
+			var r = call.result;
+			if (r && r.status === 401 && creds.refreshToken) {
+				var rf = OAuth2.refresh(creds.refreshToken);
+				rf.then(self, function () {
+					var t = null, tErr = null;
+					try { t = rf.result; } catch (e) { tErr = e; }
+					if (tErr) { f.setException(tErr); return; }
+					var nc = { accessToken: t.accessToken,
+						refreshToken: t.refreshToken || creds.refreshToken,
+						expiresAt: Date.now() + (t.expiresIn * 1000),
+						mountId: creds.mountId };
+					if (onRenewed) { onRenewed(nc); }
+					var retry = fire(nc);
+					retry.then(self, function () { f.result = retry.result; });
+				});
+				return;
+			}
+			f.result = r;
+		});
 		return f;
 	},
 	_parse: function (r) {
@@ -69,7 +87,7 @@ var Adapter = {
 	// GET /mounts -> the primary personal mount id (isPrimary==true), else the first mount.
 	resolveMount: function (creds, cb) {
 		var self = this, f = new Future();
-		var call = this._req(creds, { method: "GET", url: Config.API_BASE + "/mounts" });
+		var call = this._req(creds, { method: "GET", url: Config.API_BASE + "/mounts" }, cb);
 		call.then(this, function () {
 			try {
 				var d = self._parse(call.result) || {}; var mounts = d.mounts || [];
@@ -92,10 +110,10 @@ var Adapter = {
 		return f;
 	},
 
-	// GET /user -> identity (validates the Basic credentials).
+	// GET /user -> identity (validates the token).
 	getAccountInfo: function (creds, cb) {
 		var self = this, f = new Future();
-		var call = this._req(creds, { method: "GET", url: Config.API_BASE + "/user" });
+		var call = this._req(creds, { method: "GET", url: Config.API_BASE + "/user" }, cb);
 		call.then(this, function () {
 			try {
 				var u = self._parse(call.result) || {};
@@ -117,7 +135,7 @@ var Adapter = {
 			var mid;
 			try { mid = mf.result; } catch (e0) { f.setException(e0); return; }
 			var url = Config.API_BASE + "/mounts/" + mid + "/files/list?path=" + self._enc(folderPath);
-			var call = self._req(creds, { method: "GET", url: url });
+			var call = self._req(creds, { method: "GET", url: url }, cb);
 			call.then(self, function () {
 				try {
 					var d = self._parse(call.result) || {}; var files = d.files || [];
@@ -143,7 +161,7 @@ var Adapter = {
 			var mid;
 			try { mid = mf.result; } catch (e0) { f.setException(e0); return; }
 			var url = Config.CONTENT_BASE + "/mounts/" + mid + "/files/get?path=" + self._enc(self._norm(fileId));
-			var call = self._req(creds, { method: "GET", url: url, outFile: localDest });
+			var call = self._req(creds, { method: "GET", url: url, outFile: localDest }, cb);
 			call.then(self, function () {
 				try {
 					var r = call.result;
@@ -174,7 +192,7 @@ var Adapter = {
 			var url = Config.CONTENT_BASE + "/mounts/" + mid + "/files/put?path=" + self._enc(folderPath) +
 				"&filename=" + self._enc(name) + "&info=true&overwrite=true";
 			var call = self._req(creds, { method: "POST", url: url,
-				multipart: [{ name: "file", file: localPath }] });
+				multipart: [{ name: "file", file: localPath }] }, cb);
 			call.then(self, function () {
 				try {
 					var meta = self._parse(call.result) || {};
@@ -197,7 +215,7 @@ var Adapter = {
 			var mid;
 			try { mid = mf.result; } catch (e) { f.result = { path: path, name: name, exists: false }; return; }
 			var url = Config.API_BASE + "/mounts/" + mid + "/files/info?path=" + self._enc(path);
-			var probe = self._req(creds, { method: "GET", url: url });
+			var probe = self._req(creds, { method: "GET", url: url }, cb);
 			probe.then(self, function () {
 				var ok = false;
 				try { var r = probe.result; ok = !!(r && r.status >= 200 && r.status < 300); } catch (e2) { ok = false; }
@@ -217,10 +235,9 @@ var Adapter = {
 			try { mid = mf.result; } catch (e0) { f.setException(e0); return; }
 			var url = Config.API_BASE + "/mounts/" + mid + "/files/folder?path=" + self._enc("/");
 			var call = self._req(creds, { method: "POST", url: url,
-				headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: leaf }) });
+				headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: leaf }) }, cb);
 			call.then(self, function () {
 				var r = call.result;
-				// 200/201 created, or 409 already exists -> success.
 				if (r && (r.status === 409 || (r.status >= 200 && r.status < 300))) { f.result = "/" + leaf; }
 				else { f.setException({ returnValue: false, errorCode: "KOOFR_MKDIR_FAILED", status: r && r.status }); }
 			});
@@ -236,7 +253,7 @@ var Adapter = {
 			var mid;
 			try { mid = mf.result; } catch (e0) { f.setException(e0); return; }
 			var url = Config.API_BASE + "/mounts/" + mid + "/files/download?path=" + self._enc(self._norm(fileId));
-			var call = self._req(creds, { method: "GET", url: url });
+			var call = self._req(creds, { method: "GET", url: url }, cb);
 			call.then(self, function () {
 				try { var d = self._parse(call.result) || {}; f.result = { link: d.link, method: "GET" }; }
 				catch (e) { f.setException(e); }
@@ -253,7 +270,7 @@ var Adapter = {
 			var mid;
 			try { mid = mf.result; } catch (e0) { f.setException(e0); return; }
 			var url = Config.API_BASE + "/mounts/" + mid + "/files/remove?path=" + self._enc(self._norm(fileId));
-			var call = self._req(creds, { method: "DELETE", url: url });
+			var call = self._req(creds, { method: "DELETE", url: url }, cb);
 			call.then(self, function () {
 				var r = call.result;
 				if (r && (r.status === 200 || r.status === 204 || (r.status >= 200 && r.status < 300))) { f.result = { deleted: true }; }
