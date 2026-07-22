@@ -96,11 +96,12 @@ enyo.kind({
         ]},
 
         { className: "accounts-footer-shadow" },
+        { name: "removeButton", kind: "Button", caption: "Remove Account", showing: false,
+          className: "accounts-btn", style: "background-color: #be0003; color: #fff;", onclick: "confirmRemove" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
-            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" },
-            { kind: "Button", name: "removeButton", caption: "Remove Account", showing: false, className: "enyo-button-negative", onclick: "confirmRemove" }
+            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
         ]},
-        { kind: "Popup", name: "confirmDialog", modal: true, scrim: true, style: "width: 340px; max-width: 92%;", components: [
+        { kind: "Popup", name: "confirmDialog", modal: true, scrim: true, style: "width: 340px; max-width: 92%; background-color: #f4f4f4; color: #333; border-radius: 8px; box-shadow: 0 2px 14px rgba(0,0,0,0.6);", components: [
             { className: "accounts-body-text", style: "padding: 16px; line-height: 1.4;",
               content: "Remove this account? Its messages will be deleted from this device." },
             { kind: "HFlexBox", style: "padding: 8px 12px 12px;", components: [
