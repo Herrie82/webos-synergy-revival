@@ -59,7 +59,12 @@ typedef struct {
     GstElement     *pipeline;
 
     signal_srtp_keys keys;      /* offer_* = decrypt caller, answer_* = encrypt us */
-    GstBuffer      *rx_master;  /* offer_key||offer_salt   (44B) - handed to srtpdec on request-key */
+    GstBuffer      *rx_master;  /* the master we hand srtpdec on request-key (44B) */
+    /* Role. As the ANSWERER (callee, default) we DECRYPT the caller with offer_key and ENCRYPT
+     * ours with answer_key. As the CALLER (outgoing) it is the mirror image: DECRYPT the answerer
+     * with answer_key, ENCRYPT ours with offer_key. Both peers derive the identical offer/answer
+     * keys from the same X25519 DH; only which one is RX vs TX flips. */
+    gboolean        is_caller;
 
     signal_media_candidate_cb cand_cb;
     void           *cand_user;
@@ -286,7 +291,10 @@ static gboolean build_pipeline(SignalMedia *sm)
       g_object_set(txcaps, "caps", c, NULL); gst_caps_unref(c); }
     g_object_set(asrc, "device", "voipsource", NULL);
     g_object_set(pay,  "pt", SIGNAL_OPUS_PT, NULL);
-    { GstBuffer *tx_master = master_key_buffer(sm->keys.answer_key, sm->keys.answer_salt);
+    /* TX (encrypt our stream): answerer uses answer_key, caller uses offer_key. */
+    { GstBuffer *tx_master = sm->is_caller
+          ? master_key_buffer(sm->keys.offer_key,  sm->keys.offer_salt)
+          : master_key_buffer(sm->keys.answer_key, sm->keys.answer_salt);
       configure_srtpenc(senc, tx_master);
       gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
 
@@ -338,12 +346,14 @@ int signal_media_start(const unsigned char local_priv[32],
                        const unsigned char *callee_id, size_t callee_id_len,
                        const char *our_ufrag, const char *our_pwd,
                        const char *remote_ufrag, const char *remote_pwd,
+                       int is_caller,
                        signal_media_candidate_cb cand_cb, void *user,
                        signal_media_audiod_cb audiod_cb, void *aud_user)
 {
     signal_media_init(NULL, NULL);
 
     memset(&g_sm, 0, sizeof g_sm);
+    g_sm.is_caller = is_caller ? TRUE : FALSE;
     g_sm.cand_cb = cand_cb; g_sm.cand_user = user;
     g_sm.audiod_cb = audiod_cb; g_sm.audiod_user = aud_user;
 
@@ -352,7 +362,10 @@ int signal_media_start(const unsigned char local_priv[32],
         g_printerr("signal_media: SRTP key derivation failed (non-contributory / bad key?)\n");
         return -1;
     }
-    g_sm.rx_master = master_key_buffer(g_sm.keys.offer_key, g_sm.keys.offer_salt);
+    /* RX (decrypt the peer): answerer uses offer_key, caller uses answer_key. */
+    g_sm.rx_master = g_sm.is_caller
+        ? master_key_buffer(g_sm.keys.answer_key, g_sm.keys.answer_salt)
+        : master_key_buffer(g_sm.keys.offer_key,  g_sm.keys.offer_salt);
 
     g_sm.ctx  = g_main_context_new();
     g_sm.loop = g_main_loop_new(g_sm.ctx, FALSE);
@@ -615,7 +628,21 @@ static int unhex(const char *h, unsigned char *out, size_t out_max)
     return (int)(n / 2);
 }
 
-static int run_answer_ipc(void)
+/* Derive + emit our X25519 public key from a hex private key ("PUB <pub_hex>"); returns 0 on ok.
+ * Used by the CALLER's two-phase flow to get its public key BEFORE the Answer arrives (so it can be
+ * put in the outgoing Offer) and by the START path (so the Answer's key matches the SRTP keys). */
+static int emit_pubkey_from_priv_hex(const char *ph)
+{
+    unsigned char priv[32], ourpub[32];
+    if (unhex(ph, priv, sizeof priv) != 32) { emit("ERR bad-key-hex\n"); return -1; }
+    if (signal_x25519_public_from_private(priv, ourpub) != 0) { emit("ERR pubkey-derive-failed\n"); return -1; }
+    char hexp[65];
+    for (int k = 0; k < 32; k++) g_snprintf(hexp + k * 2, 3, "%02x", ourpub[k]);
+    emit("PUB %s\n", hexp);
+    return 0;
+}
+
+static int run_ipc(int is_caller)
 {
     char line[8192];
     int started = 0;
@@ -629,7 +656,11 @@ static int run_answer_ipc(void)
         char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
         if (line[0] == '\0') continue;
 
-        if (strncmp(line, "START ", 6) == 0) {
+        if (strncmp(line, "PREPARE ", 8) == 0) {
+            /* Caller phase 1: just report our public key so the bridge can send the Offer. No media
+             * yet - the answerer's key + ICE creds arrive later in START. */
+            emit_pubkey_from_priv_hex(line + 8);
+        } else if (strncmp(line, "START ", 6) == 0) {
             if (started) { emit("ERR already-started\n"); continue; }
             /* Tokenise the 8 START fields. strtok is fine: no field contains whitespace. */
             char *sp = NULL;
@@ -653,23 +684,15 @@ static int run_answer_ipc(void)
 
             /* Report OUR X25519 public key (derived from priv via the SAME OpenSSL primitive that
              * does the DH) so the bridge puts a public key in the Answer that is guaranteed
-             * consistent with the SRTP keys this engine will derive. Emit before start so signaling
-             * can proceed even if the local media (ALSA) isn't up yet. */
-            {
-                unsigned char ourpub[32];
-                if (signal_x25519_public_from_private(priv, ourpub) == 0) {
-                    char hexp[65];
-                    for (int k = 0; k < 32; k++) g_snprintf(hexp + k * 2, 3, "%02x", ourpub[k]);
-                    emit("PUB %s\n", hexp);
-                } else {
-                    emit("ERR pubkey-derive-failed\n");
-                }
-            }
+             * consistent with the SRTP keys this engine will derive. The CALLER already reported it
+             * in PREPARE (and put it in the Offer), so only the answerer emits it here. */
+            if (!is_caller) { emit_pubkey_from_priv_hex(ph); }
 
             int rc = signal_media_start(priv, pub,
                                         caller_id, (size_t)caller_len,
                                         callee_id, (size_t)callee_len,
                                         ouf, opw, ruf, rpw,
+                                        is_caller,
                                         ipc_candidate_cb, NULL, ipc_audiod_cb, NULL);
             if (rc != 0) { emit("ERR start-failed\n"); return 1; }
             started = 1;
@@ -695,11 +718,15 @@ int main(int argc, char **argv)
         return rc;
     }
     if (argc >= 2 && strcmp(argv[1], "--answer") == 0) {
-        return run_answer_ipc();
+        return run_ipc(0);   /* answerer: RX=offer_key, TX=answer_key */
+    }
+    if (argc >= 2 && strcmp(argv[1], "--caller") == 0) {
+        return run_ipc(1);   /* caller (outgoing): RX=answer_key, TX=offer_key */
     }
     g_print("Signal call media engine (webOS).\n");
     g_print("  %s --loopback   run the SRTP-GCM+RTP+Opus loopback self-test\n", argv[0]);
-    g_print("  %s --answer     drive a live incoming call over the stdin/stdout IPC (presage bridge)\n", argv[0]);
+    g_print("  %s --answer     drive a live INCOMING call over the stdin/stdout IPC (presage bridge)\n", argv[0]);
+    g_print("  %s --caller     drive a live OUTGOING call over the stdin/stdout IPC (presage bridge)\n", argv[0]);
     return 0;
 }
 #endif

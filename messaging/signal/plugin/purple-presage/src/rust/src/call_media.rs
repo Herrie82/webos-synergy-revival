@@ -105,6 +105,27 @@ pub fn encode_answer_opaque(public_key: &[u8], ufrag: &str, pwd: &str) -> Vec<u8
     op
 }
 
+/// Build OUR Offer opaque (OUTGOING call): message { ConnectionParametersV4 v4 = 4 {
+///   public_key=1, ice_ufrag=2, ice_pwd=3, <field4 const>, max_bitrate_bps=5 } }.
+/// Same ConnectionParametersV4 as the Answer, plus the two fields a real RingRTC OFFER carries (the
+/// small field-4 sub-message and the max-bitrate) so a live Signal answerer accepts it.
+/// decode_offer_opaque round-trips fields 1/2/3/5.
+pub fn encode_offer_opaque(public_key: &[u8], ufrag: &str, pwd: &str, max_bitrate_bps: u64) -> Vec<u8> {
+    let mut v4 = Vec::new();
+    put_len_field(&mut v4, 1, public_key);
+    put_len_field(&mut v4, 2, ufrag.as_bytes());
+    put_len_field(&mut v4, 3, pwd.as_bytes());
+    // Field 4: the small nested message a real RingRTC offer includes (constant { 1: 8 } in the
+    // captured reference). Carried verbatim for interop; the answerer's decoder ignores it.
+    put_len_field(&mut v4, 4, &[0x08, 0x08]);
+    // Field 5: max audio bitrate (varint). Real offers advertise 2_000_000.
+    put_varint(&mut v4, (5 << 3) | 0);
+    put_varint(&mut v4, max_bitrate_bps);
+    let mut op = Vec::new();
+    put_len_field(&mut op, 4, &v4);
+    op
+}
+
 /// IceUpdate opaque = message { IceCandidate added = field 2 { string candidate = field 1 } }.
 pub fn decode_ice_opaque(op: &[u8]) -> Option<String> {
     for f in iter_fields(op) {
@@ -155,6 +176,17 @@ mod tests {
         assert_eq!(back.public_key, pk);
         assert_eq!(back.ice_ufrag, "AbCd");
         assert_eq!(back.ice_pwd, "our24charpasswordxxxxxxxx");
+    }
+
+    #[test]
+    fn offer_round_trips() {
+        let pk = unhex("07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c");
+        let off = encode_offer_opaque(&pk, "AbCd", "our24charpasswordxxxxxxxx", 2_000_000);
+        let back = decode_offer_opaque(&off).unwrap();
+        assert_eq!(back.public_key, pk);
+        assert_eq!(back.ice_ufrag, "AbCd");
+        assert_eq!(back.ice_pwd, "our24charpasswordxxxxxxxx");
+        assert_eq!(back.max_bitrate_bps, 2_000_000);
     }
 
     #[test]

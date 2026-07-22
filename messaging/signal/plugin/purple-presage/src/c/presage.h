@@ -35,6 +35,7 @@ void presage_rust_drop_attachment(RustAttachmentPtr);
 void presage_rust_get_group_members(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);
 void presage_rust_get_profile(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);
 void presage_rust_list_groups(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
+void presage_rust_place_call(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *); /* outgoing call: callee address */
 
 // call.c - Signal calling (signaling-only): the com.palm.signal.call LS2 service that rings the stock
 // Phone app on an incoming Signal call. presage_handle_call_state is called from the Rust receive loop.

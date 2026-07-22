@@ -40,6 +40,7 @@ static void sigcLog(const char *fmt, ...)
 #define SIG_CALL_ENDED    1u
 #define SIG_CALL_DECLINED 2u
 #define SIG_CALL_BUSY     3u
+#define SIG_CALL_ACTIVE   4u   /* peer answered OUR outgoing call -> connected */
 
 static LSPalmService *g_service = NULL;   /* pub+priv registration                     */
 static LSHandle      *g_pub     = NULL;   /* public connection (untrusted apps)        */
@@ -48,11 +49,12 @@ static PurpleAccount *g_account = NULL;   /* the bound Signal account           
 static GMainLoop     *g_loopRef = NULL;   /* wraps the default context libpurple runs  */
 
 /* last state we pushed, so a late subscriber gets the current picture immediately */
-static char *g_state    = NULL;   /* "incoming" | "disconnected" | NULL (idle) */
+static char *g_state    = NULL;   /* "incoming" | "dialing" | "active" | "disconnected" | NULL (idle) */
 static char *g_cause    = NULL;   /* only meaningful for "disconnected"        */
 static char *g_addr     = NULL;
 static char *g_name     = NULL;
 static uint64_t g_call_id = 0;
+static bool g_outgoing = false;   /* true while an OUTGOING call is up (origin=outgoing in the card) */
 
 static const char *SUBKEY = "callState";
 
@@ -102,12 +104,36 @@ static gchar *build_payload(void)
      * show the Signal handle/UUID verbatim under "Signal". */
     gchar *p = g_strdup_printf(
         "{\"returnValue\":true,\"allowVideoCalls\":false,\"videoURI\":\"\",\"lines\":["
-        "{\"state\":\"%s\",%s\"calls\":[{\"id\":\"sig\",\"origin\":\"incoming\",\"video\":false,"
+        "{\"state\":\"%s\",%s\"calls\":[{\"id\":\"sig\",\"origin\":\"%s\",\"video\":false,"
         "\"transport\":\"com.palm.signal\","
         "\"address\":\"%s\",\"displayName\":\"%s\"}]}]}",
-        st, disc, addr, nm);
+        st, disc, g_outgoing ? "outgoing" : "incoming", addr, nm);
     g_free(st); g_free(addr); g_free(nm); g_free(disc);
     return p;
+}
+
+/* Minimal JSON string-field extractor for the flat LS2 dial payload (e.g. {"address":"<uuid>"}).
+ * Returns a newly-allocated unescaped value, or NULL if absent. Good enough for the dialer's simple,
+ * machine-generated payloads (no nested objects with the same key, no unicode escapes expected). */
+static gchar *json_get_string(const char *payload, const char *key)
+{
+    if (!payload || !key) return NULL;
+    gchar *needle = g_strdup_printf("\"%s\"", key);
+    const char *k = strstr(payload, needle);
+    g_free(needle);
+    if (!k) return NULL;
+    const char *c = strchr(k, ':');
+    if (!c) return NULL;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (*c != '"') return NULL;   /* only string values */
+    c++;
+    GString *o = g_string_new(NULL);
+    for (; *c && *c != '"'; ++c) {
+        if (*c == '\\' && c[1]) { c++; g_string_append_c(o, *c); }
+        else g_string_append_c(o, *c);
+    }
+    return g_string_free(o, FALSE);
 }
 
 static bool cb_call_state_query(LSHandle *sh, LSMessage *msg, void *ctx)
@@ -123,12 +149,56 @@ static bool cb_call_state_query(LSHandle *sh, LSMessage *msg, void *ctx)
     return true;
 }
 
-/* Outgoing calls are not supported in the signaling-only build (no media engine yet). */
+/* Place an OUTGOING Signal call. The dialer POSTs {"address":"<signal-uuid>"[, "displayName":...]}.
+ * We hand the address to the Rust command loop (presage_rust_place_call), which generates our media
+ * keypair and sends the RingRTC Offer; the peer's Answer then starts the media engine in caller role
+ * (call_bridge.rs on_answer). Locally we put the dialer straight into the "dialing" outgoing state so
+ * the call card shows immediately. Gated on the same media flag as incoming auto-answer. */
 static bool cb_dial(LSHandle *sh, LSMessage *msg, void *ctx)
 {
     LSError err; LSErrorInit(&err);
-    LSMessageReply(sh, msg, "{\"returnValue\":false,\"errorText\":\"Signal outgoing calls not yet supported\"}", &err);
+    const char *payload = LSMessageGetPayload(msg);
+    gchar *addr = json_get_string(payload, "address");
+    gchar *name = json_get_string(payload, "displayName");
+    sigcLog("cb_dial address=%s name=%s", addr ? addr : "(null)", name ? name : "(null)");
+
+    if (!addr || !*addr) {
+        LSMessageReply(sh, msg, "{\"returnValue\":false,\"errorText\":\"dial: missing address\"}", &err);
+        if (LSErrorIsSet(&err)) LSErrorFree(&err);
+        g_free(addr); g_free(name);
+        return true;
+    }
+    if (!g_account) {
+        LSMessageReply(sh, msg, "{\"returnValue\":false,\"errorText\":\"Signal account not connected\"}", &err);
+        if (LSErrorIsSet(&err)) LSErrorFree(&err);
+        g_free(addr); g_free(name);
+        return true;
+    }
+
+    /* Fire the Signal Offer via the account's Rust command channel. */
+    PurpleConnection *pc = purple_account_get_connection(g_account);
+    Presage *presage = pc ? (Presage *)purple_connection_get_protocol_data(pc) : NULL;
+    if (!presage || !presage->tx_ptr) {
+        LSMessageReply(sh, msg, "{\"returnValue\":false,\"errorText\":\"Signal command channel unavailable\"}", &err);
+        if (LSErrorIsSet(&err)) LSErrorFree(&err);
+        g_free(addr); g_free(name);
+        return true;
+    }
+    presage_rust_place_call(g_account, rust_runtime, presage->tx_ptr, addr);
+
+    /* Show the outgoing call card locally (dialing). call_id becomes known when we send the Offer;
+     * the dialer only needs the line/origin to render, and hangup clears by line state. */
+    g_outgoing = true;
+    set_str(&g_state, "dialing"); set_str(&g_cause, NULL);
+    set_str(&g_addr, addr); set_str(&g_name, (name && *name) ? name : addr);
+    { gchar *p = build_payload();
+      if (g_pub) { LSError e; LSErrorInit(&e); LSSubscriptionReply(g_pub, SUBKEY, p, &e); if (LSErrorIsSet(&e)) LSErrorFree(&e); }
+      if (g_prv) { LSError e; LSErrorInit(&e); LSSubscriptionReply(g_prv, SUBKEY, p, &e); if (LSErrorIsSet(&e)) LSErrorFree(&e); }
+      g_free(p); }
+
+    LSMessageReply(sh, msg, "{\"returnValue\":true}", &err);
     if (LSErrorIsSet(&err)) LSErrorFree(&err);
+    g_free(addr); g_free(name);
     return true;
 }
 
@@ -229,8 +299,15 @@ static gboolean call_state_apply(gpointer data)
     CallEvt *e = (CallEvt *)data;
     switch (e->state) {
         case SIG_CALL_INCOMING:
+            g_outgoing = false;
             set_str(&g_state, "incoming"); set_str(&g_cause, NULL);
             set_str(&g_addr, e->who); set_str(&g_name, e->name); g_call_id = e->call_id;
+            break;
+        case SIG_CALL_ACTIVE:
+            /* Peer answered our outgoing call. Keep addr/name/origin; flip the line to active so the
+             * dialer shows a connected call. call_id may arrive here for the first time. */
+            set_str(&g_state, "active"); set_str(&g_cause, NULL);
+            if (e->call_id) g_call_id = e->call_id;
             break;
         case SIG_CALL_DECLINED:
             set_str(&g_state, "disconnected"); set_str(&g_cause, "rejected");
@@ -267,6 +344,7 @@ static gboolean call_state_apply(gpointer data)
     if (g_strcmp0(g_state, "disconnected") == 0) {
         set_str(&g_state, NULL); set_str(&g_cause, NULL);
         set_str(&g_addr, NULL);  set_str(&g_name, NULL); g_call_id = 0;
+        g_outgoing = false;
     }
 
     g_free(e->who); g_free(e->name); g_free(e);

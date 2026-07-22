@@ -168,6 +168,57 @@ async fn run<C: presage::store::Store + 'static>(
             send_call_message(&mut manager, account, uuid, cm, "IceUpdate").await;
             Ok(true)
         }
+        crate::structs::Cmd::PlaceCall { callee } => {
+            // Resolve the callee (the dialer passes the Signal UUID) to an ACI.
+            let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(callee.trim()) {
+                Ok(u) => u,
+                Err(_) => {
+                    crate::bridge::purple_debug(
+                        account,
+                        crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                        format!("call bridge: place_call: cannot resolve callee '{callee}' to a UUID\n"),
+                    );
+                    return Ok(true);
+                }
+            };
+            // Identity keys bound into the SRTP KDF: caller_id = OURS (we are the caller),
+            // callee_id = the peer's (empty if we have no session yet -> signaling/ICE still work,
+            // audio needs the ids; same known-unknown as the incoming path).
+            use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
+            let aci_store = manager.store().aci_protocol_store();
+            let caller_id: Vec<u8> = aci_store
+                .get_identity_key_pair()
+                .await
+                .ok()
+                .map(|kp| kp.identity_key().serialize()[1..].to_vec())
+                .unwrap_or_default();
+            let callee_id: Vec<u8> = match DeviceId::try_from(1u32) {
+                Ok(dev) => {
+                    let addr = ProtocolAddress::new(uuid.to_string(), dev);
+                    aci_store
+                        .get_identity(&addr)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|ik| ik.serialize()[1..].to_vec())
+                        .unwrap_or_default()
+                }
+                Err(_) => Vec::new(),
+            };
+            if let Some((call_id, opaque)) = crate::call_bridge::place_call(uuid, caller_id, callee_id) {
+                let cm = presage::proto::CallMessage {
+                    offer: Some(presage::proto::call_message::Offer {
+                        id: Some(call_id),
+                        r#type: Some(presage::proto::call_message::offer::Type::OfferAudioCall as i32),
+                        opaque: Some(opaque),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                send_call_message(&mut manager, account, uuid, cm, "Offer").await;
+            }
+            Ok(true)
+        }
         crate::structs::Cmd::Exit {} => Ok(false),
     }
 }

@@ -215,8 +215,192 @@ pub fn start_incoming(
     calls().lock().unwrap().insert(call_id, CallProc { child, stdin });
 }
 
-/// Feed the engine one or more remote ICE candidates decoded from incoming IceUpdate opaques.
+// ---------------------------------------------------------------------------------------------
+// OUTGOING (caller) side.
+//
+// Unlike an incoming call (where the Offer already carries the peer's key + ICE creds so the engine
+// starts immediately), a caller sends its Offer FIRST and only learns the peer's key/creds from the
+// Answer. So place_call() generates our ephemeral keypair + ICE creds, derives our public key via a
+// throwaway `signal_media --caller` PREPARE (reusing the engine's verified X25519), and returns the
+// Offer opaque for the command loop to send. The engine proper is not started until on_answer().
+// ---------------------------------------------------------------------------------------------
+
+/// Outgoing call awaiting the peer's Answer (keyed by call_id).
+struct Pending {
+    callee: Uuid,          // who we send the Offer/ICE to (and receive the Answer from)
+    priv32: Vec<u8>,       // our ephemeral X25519 private key
+    our_ufrag: String,
+    our_pwd: String,
+    caller_id: Vec<u8>,    // OUR identity key (we are the caller) - bound into the SRTP KDF
+    callee_id: Vec<u8>,    // the peer's identity key
+    buffered_ice: Vec<Vec<u8>>, // peer IceUpdate opaques that arrived before the engine started
+}
+static PENDING: OnceLock<Mutex<HashMap<u64, Pending>>> = OnceLock::new();
+fn pending() -> &'static Mutex<HashMap<u64, Pending>> {
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The env every engine invocation needs (wpe LD_LIBRARY_PATH is inherited; we pin gst + libasound).
+fn engine_command(mode: &str) -> Command {
+    let mut c = Command::new(SIGNAL_MEDIA_BIN);
+    c.arg(mode)
+        .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
+        .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
+        .env("GST_DEBUG", "2")
+        .env("LD_PRELOAD", "/usr/lib/libasound.so.2");
+    c
+}
+
+/// Derive our X25519 public key from `priv32` by driving a throwaway engine PREPARE. Returns the
+/// 32-byte public key, or None on failure. Short-lived: the child exits when we drop its stdin.
+fn derive_pubkey(priv32: &[u8]) -> Option<Vec<u8>> {
+    let mut child = engine_command("--caller")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let _ = writeln!(stdin, "PREPARE {}", hex(priv32));
+    let _ = stdin.flush();
+    let mut pub_hex = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        if let Some(p) = line.strip_prefix("PUB ") {
+            pub_hex = Some(p.trim().to_string());
+            break;
+        }
+        if line.starts_with("ERR") {
+            break;
+        }
+    }
+    drop(stdin); // EOF -> engine leaves its IPC loop and exits
+    let _ = child.kill();
+    let _ = child.wait();
+    pub_hex.and_then(|h| unhex(&h))
+}
+
+/// Place an OUTGOING call. Generates our ephemeral keypair + ICE creds, stores pending state (so
+/// on_answer can start media), and returns (call_id, offer_opaque) for the command loop to send as
+/// a CallMessage Offer to `callee`. Returns None if media is disabled or key derivation fails.
+pub fn place_call(callee: Uuid, caller_id: Vec<u8>, callee_id: Vec<u8>) -> Option<(u64, Vec<u8>)> {
+    if !media_enabled() {
+        eprintln!("call_bridge: place_call ignored - media gate file absent");
+        return None;
+    }
+    let priv32 = rand_bytes(32);
+    let pub32 = match derive_pubkey(&priv32) {
+        Some(p) => p,
+        None => {
+            eprintln!("call_bridge: place_call could not derive our public key");
+            return None;
+        }
+    };
+    let our_ufrag = rand_token(4);
+    let our_pwd = rand_token(24);
+    // RingRTC call_id is a random u64.
+    let mut idb = [0u8; 8];
+    idb.copy_from_slice(&rand_bytes(8));
+    let call_id = u64::from_be_bytes(idb);
+
+    let opaque = crate::call_media::encode_offer_opaque(&pub32, &our_ufrag, &our_pwd, 2_000_000);
+    pending().lock().unwrap().insert(
+        call_id,
+        Pending { callee, priv32, our_ufrag, our_pwd, caller_id, callee_id, buffered_ice: Vec::new() },
+    );
+    Some((call_id, opaque))
+}
+
+/// The peer ANSWERED our outgoing call: decode their ConnectionParametersV4, start the media engine
+/// in caller role, wire its CAND lines to outgoing IceUpdates, and flush any early remote ICE.
+pub fn on_answer(call_id: u64, answer_opaque: &[u8]) {
+    let p = match pending().lock().unwrap().remove(&call_id) {
+        Some(p) => p,
+        None => return, // not our outgoing call (or already started)
+    };
+    let params = match crate::call_media::decode_offer_opaque(answer_opaque) {
+        Some(p) => p,
+        None => {
+            eprintln!("call_bridge: could not decode answer opaque for call {call_id}");
+            return;
+        }
+    };
+
+    let engine_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/media/internal/sigmedia_call.log")
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+    let mut child = match engine_command("--caller")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(engine_log)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("call_bridge: failed to spawn caller engine: {e}");
+            return;
+        }
+    };
+    let mut stdin = match child.stdin.take() { Some(s) => s, None => return };
+    let stdout = match child.stdout.take() { Some(s) => s, None => return };
+
+    // Caller START: same 8 fields as the answerer, but the engine (--caller) flips RX/TX keys, and
+    // remote_pub / remote_ufrag / remote_pwd come from the ANSWER; caller_id = OUR identity.
+    let start = format!(
+        "START {} {} {} {} {} {} {} {}\n",
+        hex(&p.priv32),
+        hex(&params.public_key),
+        hex(&p.caller_id),
+        hex(&p.callee_id),
+        p.our_ufrag,
+        p.our_pwd,
+        params.ice_ufrag,
+        params.ice_pwd,
+    );
+    if let Err(e) = stdin.write_all(start.as_bytes()) {
+        eprintln!("call_bridge: failed to write caller START: {e}");
+        return;
+    }
+    let _ = stdin.flush();
+
+    // Reader thread: the caller only relays its local candidates (it already sent the Offer; the
+    // engine emits no PUB in caller mode).
+    let callee = p.callee;
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let line = match line { Ok(l) => l, Err(_) => break };
+            if let Some(cand) = line.strip_prefix("CAND ") {
+                let opaque = crate::call_media::encode_ice_opaque(cand.trim());
+                enqueue(Cmd::SendCallIce { uuid: callee, call_id, opaque });
+            }
+        }
+    });
+
+    // Flush any remote ICE that arrived between our Offer and this Answer.
+    for op in &p.buffered_ice {
+        if let Some(cand) = crate::call_media::decode_ice_opaque(op) {
+            let _ = writeln!(stdin, "RCAND {cand}");
+        }
+    }
+    let _ = stdin.flush();
+
+    calls().lock().unwrap().insert(call_id, CallProc { child, stdin });
+}
+
+/// Feed the engine one or more remote ICE candidates decoded from incoming IceUpdate opaques. If
+/// the call is still a pending OUTGOING one (engine not started until the Answer), buffer them.
 pub fn feed_remote_ice(call_id: u64, candidate_opaques: &[Vec<u8>]) {
+    {
+        let mut pend = pending().lock().unwrap();
+        if let Some(p) = pend.get_mut(&call_id) {
+            p.buffered_ice.extend_from_slice(candidate_opaques);
+            return;
+        }
+    }
     let mut guard = calls().lock().unwrap();
     if let Some(cp) = guard.get_mut(&call_id) {
         for op in candidate_opaques {
@@ -228,8 +412,10 @@ pub fn feed_remote_ice(call_id: u64, candidate_opaques: &[Vec<u8>]) {
     }
 }
 
-/// Tear down the engine for a call (hangup/busy).
+/// Tear down the engine for a call (hangup/busy). Also drops any pending outgoing state (the peer
+/// declined/was-busy before answering, so the engine was never started).
 pub fn stop(call_id: u64) {
+    pending().lock().unwrap().remove(&call_id);
     let cp = calls().lock().unwrap().remove(&call_id);
     if let Some(CallProc { mut child, mut stdin }) = cp {
         let _ = writeln!(stdin, "STOP");

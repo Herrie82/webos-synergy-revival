@@ -125,6 +125,7 @@ pub const CALL_STATE_INCOMING: u32 = 0;
 pub const CALL_STATE_ENDED: u32 = 1; // remote hung up / call ended
 pub const CALL_STATE_DECLINED: u32 = 2;
 pub const CALL_STATE_BUSY: u32 = 3;
+pub const CALL_STATE_ACTIVE: u32 = 4; // peer answered OUR outgoing call -> connected
 
 // Forward an incoming Signal CallMessage to the stock Phone app (ring / clear). Signaling only:
 // there is no media yet, so this is presence of a call, not a connected call.

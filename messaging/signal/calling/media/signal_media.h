@@ -39,8 +39,13 @@ int signal_media_init(int *argc, char ***argv);
  *   remote_pub     - caller's 32-byte Curve25519 public_key from the offer's ConnectionParametersV4
  *   caller_id/len  - caller's Signal identity public key (33-byte 0x05-prefixed) + its length
  *   callee_id/len  - our    Signal identity public key (33-byte 0x05-prefixed) + its length
- *   our_ufrag/pwd  - the ICE ufrag/pwd we advertise in our Answer (bridge generates + sends them)
- *   remote_ufrag/pwd - the caller's ICE ufrag/pwd from the offer's ConnectionParametersV4
+ *   our_ufrag/pwd  - the ICE ufrag/pwd we advertise (bridge generates + sends them in Answer/Offer)
+ *   remote_ufrag/pwd - the peer's ICE ufrag/pwd from their ConnectionParametersV4
+ *   is_caller      - 0 = answerer (incoming): RX=offer_key, TX=answer_key.
+ *                    1 = caller  (outgoing): RX=answer_key, TX=offer_key (mirror). Both peers derive
+ *                    the identical offer/answer keys from the DH; only which is RX vs TX flips. For a
+ *                    caller, remote_pub / remote_ufrag / remote_pwd come from the peer's ANSWER, and
+ *                    caller_id = OUR identity key, callee_id = the peer's.
  *   cand_cb/user   - receives our local candidates to relay back (may be NULL)
  *   audiod_cb/aud_user - audiod routing hook (may be NULL)
  */
@@ -50,6 +55,7 @@ int signal_media_start(const unsigned char local_priv[32],
                        const unsigned char *callee_id, size_t callee_id_len,
                        const char *our_ufrag, const char *our_pwd,
                        const char *remote_ufrag, const char *remote_pwd,
+                       int is_caller,
                        signal_media_candidate_cb cand_cb, void *user,
                        signal_media_audiod_cb audiod_cb, void *aud_user);
 

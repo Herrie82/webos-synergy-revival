@@ -55,6 +55,24 @@ pub unsafe extern "C" fn presage_rust_whoami(
     send_cmd(account, rt, tx, cmd);
 }
 
+/// Place an OUTGOING Signal call to `c_callee` (the dialer's address, i.e. the Signal UUID). The
+/// command loop resolves the recipient + identity keys, has the call bridge generate our keypair,
+/// and sends the RingRTC Offer. call.c invokes this from its LS2 `dial` handler.
+#[no_mangle]
+pub unsafe extern "C" fn presage_rust_place_call(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    rt: *mut tokio::runtime::Runtime,
+    tx: *mut tokio::sync::mpsc::Sender<crate::structs::Cmd>,
+    c_callee: *const std::os::raw::c_char,
+) {
+    let callee = match std::ffi::CStr::from_ptr(c_callee).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return,
+    };
+    let cmd = crate::structs::Cmd::PlaceCall { callee };
+    send_cmd(account, rt, tx, cmd);
+}
+
 // TODO: wire this up completely
 #[no_mangle]
 pub unsafe extern "C" fn presage_rust_list_groups(

@@ -34,6 +34,11 @@ pub enum Cmd {
         call_id: u64,
         opaque: Vec<u8>,
     },
+    // Place an OUTGOING call to `callee` (a Signal UUID or e164). The command loop resolves the
+    // recipient + identity keys, has call_bridge generate our keypair, and sends the Offer.
+    PlaceCall {
+        callee: String,
+    },
 }
 
 // Cmd already crosses threads today: it is pushed onto a tokio mpsc from the C-invoked send_cmd

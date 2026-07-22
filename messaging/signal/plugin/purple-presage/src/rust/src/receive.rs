@@ -427,11 +427,15 @@ async fn process_received_message<C: presage::store::Store>(
                 .offer
                 .as_ref()
                 .and_then(|o| o.id)
+                .or_else(|| call_message.answer.as_ref().and_then(|a| a.id))
                 .or_else(|| call_message.hangup.as_ref().and_then(|h| h.id))
                 .or_else(|| call_message.busy.as_ref().and_then(|b| b.id))
                 .unwrap_or(0);
             let (state, chat) = if call_message.offer.is_some() {
                 (crate::bridge::CALL_STATE_INCOMING, None)
+            } else if call_message.answer.is_some() {
+                // Peer answered OUR outgoing call -> tell the dialer the line is now active.
+                (crate::bridge::CALL_STATE_ACTIVE, None)
             } else if call_message.busy.is_some() {
                 (crate::bridge::CALL_STATE_BUSY, None)
             } else if call_message.hangup.is_some() {
@@ -487,6 +491,12 @@ async fn process_received_message<C: presage::store::Store>(
                             _ => Vec::new(),
                         };
                         crate::call_bridge::start_incoming(uuid, call_id, op, &caller_id, &callee_id);
+                    }
+                }
+                // The peer answered one of OUR outgoing calls -> start media in caller role.
+                if let Some(answer) = call_message.answer.as_ref() {
+                    if let Some(op) = answer.opaque.as_ref() {
+                        crate::call_bridge::on_answer(call_id, op);
                     }
                 }
                 if !call_message.ice_update.is_empty() {
