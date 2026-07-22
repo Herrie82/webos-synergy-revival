@@ -1,35 +1,25 @@
 --- a/photos-src/base/Utils.js
 +++ b/photos-src/base/Utils.js
-@@ -415,6 +415,28 @@
+@@ -415,6 +415,17 @@
  
  							break;
  
-+
-+							// Synergy-revival cloud photo sources. Every one has the SAME capability
-+							// shape and keeps listAlbums/listPhotos in its own already-bus-registered
-+							// service, so they share one handler instead of a copy-pasted case each.
-+							// serviceName derives from the templateId (com.palm.X -> com.palm.service.X);
-+							// to add a provider, add its templateId to the fall-through list below.
-+							case "com.palm.dropbox":
-+							case "com.palm.boxnet":
-+							case "com.palm.onedrive":
-+							case "com.palm.pcloud":
-+							case "com.palm.flickr":
-+							case "com.palm.kdrive":
-+							case "com.palm.yandexdisk":
+ 							default:
+-								accountsCapability[account.templateId]=new Capability();
++								// Synergy-revival: ANY PHOTO.UPLOAD account not matched by an explicit case
++								// above is a cloud connector whose listAlbums/listPhotos live in a bus-registered
++								// service com.palm.service.<templateId suffix>. Derive serviceName DYNAMICALLY so
++								// a NEW connector needs NO patch here - just ship its com.palm.service.<x>.
++								accountsCapability[account.templateId]=new Capability();
 +								accountsCapability[account.templateId].getComments      =false;
 +								accountsCapability[account.templateId].updateComments   =false;
 +								accountsCapability[account.templateId].getUserInfo      =false;
 +								accountsCapability[account.templateId].videoDownload    =false;
++								accountsCapability[account.templateId].deletePhoto     =true;
 +								accountsCapability[account.templateId].serviceName      =
 +									account.templateId.replace(/^com\.palm\./, "com.palm.service.");
-+								accountsCapability[account.templateId].deletePhoto     =true;   // synergy: cloud file delete
-+
-+							break;
- 							default:
- 								accountsCapability[account.templateId]=new Capability();
  							break;
-@@ -1246,57 +1268,55 @@
+@@ -1246,57 +1257,55 @@
   */
  function removePhoto (photo,dbgTime)
  {

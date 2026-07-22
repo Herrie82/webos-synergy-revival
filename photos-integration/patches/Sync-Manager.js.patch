@@ -11,7 +11,7 @@
  	var destUrl=albumItem.path+"/"+urlObj.fileName;
  	//node_path.exists(destUrl, function(exists) {
  	//	if(exists){
-@@ -838,78 +842,61 @@
+@@ -838,78 +842,51 @@
  	downloadTo=downloadTo.replace(/%/g,"_");
  	
  	var that=this;
@@ -25,12 +25,11 @@
 -	var httpClient = null;
 +	// Synergy-revival: the device node is OpenSSL 0.9.8 and node_http.createClient(80,..)
 +	// is plain HTTP - it cannot fetch modern-TLS cloud URLs (e.g. Dropbox temporary links).
-+	// Shell out to the bundled modern curl (7.88.1/OpenSSL 1.1.1w, same binary+CA store the
-+	// Dropbox file connector uses) with the FULL url from photo.src_big. Everything after the
++	// Shell out to the SYSTEM curl /usr/bin/curl (a wrapper that sets its own
++	// LD_LIBRARY_PATH + CURL_CA_BUNDLE; curl 7.88.1/OpenSSL 1.1.1w) with photo.src_big. After the
 +	// bytes land locally (_addPhotoToDb, thumbnails, rendering) is unchanged and TLS-free.
-+	var DBX_CURL   = "/var/dropbox-tls/curl";
-+	var DBX_CAINFO = "/etc/ssl/certs/ca-certificates.crt";
-+	var DBX_LIBDIR = "/var/dropbox-tls";   // bundled libssl/libcrypto/libcurl live here
++	var SYS_CURL   = "/usr/bin/curl";
++	var SYS_CAINFO = "/etc/ssl/certs/ca-certificates.crt";
  	var startDownload = function(){
  		try {
 -			httpClient = node_http.createClient(80, domain);
@@ -44,19 +43,10 @@
 -				}
 +			var node_cp = require('child_process');
 +			var srcUrl = photo.src_big; //full https URL (temp link); split domain/path assumed port 80
-+			// spawn env REPLACES the environment - copy process.env and prepend the bundle
-+			// dir to LD_LIBRARY_PATH so the modern curl finds its own libssl.so.1.1.
-+			var childEnv = {};
-+			var penv = (typeof process !== "undefined" && process.env) ? process.env : {};
-+			// NB: process.env is a special wrapper here - penv.hasOwnProperty is not callable,
-+			// so copy with a plain for-in (no guard) / Object.prototype.hasOwnProperty.
-+			for (var ek in penv) { childEnv[ek] = penv[ek]; }
-+			childEnv.LD_LIBRARY_PATH = DBX_LIBDIR + (childEnv.LD_LIBRARY_PATH ? ":" + childEnv.LD_LIBRARY_PATH : "");
 +			// --create-dirs: make the album directory hierarchy if missing (node's
 +			// createWriteStream would not, and curl exit 23 = cannot open output file).
-+			var child = node_cp.spawn(DBX_CURL,
-+				["-sS","-L","--fail","--create-dirs","--max-time","120","--cacert",DBX_CAINFO,"-o",downloadTo,srcUrl],
-+				{ env: childEnv });
++			var child = node_cp.spawn(SYS_CURL,
++				["-sS","-L","--fail","--create-dirs","--max-time","120","--cacert",SYS_CAINFO,"-o",downloadTo,srcUrl]);
 +			var stderr = "";
 +			child.stderr.on('data', function(d){ stderr += d; });
 +			child.on('error', function(err){

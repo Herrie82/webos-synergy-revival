@@ -41,22 +41,15 @@ revived libraries fall through to the default and render the generic icon.
 
 ## The fix (`patches/LibraryNavigationPanel.css.patch`)
 
-Append the missing service classes (plus their 20x20 variants). Rather than bundle a second set of
-badges into the Photos app, each rule points **straight at the account-template artwork already on
-disk** under `/usr/palm/public/accounts/<template>/images/` - a single source of truth, so an icon
-only ever needs updating in one place. `-webkit-background-size: contain` fits the 48px account tile
-into the 40px (and 20px) library-icon slots.
+Append the missing service classes (plus their 20x20 variants). The account-template icons are a mix
+of full-bleed colored tiles and transparent glyphs, so reusing them verbatim renders at unequal
+sizes. Instead we ship a **normalized** set derived from the account artwork: each icon is trimmed to
+its solid content and scaled so every logo's longest side is equal (`assets/syn-<type>.png`). The CSS
+points each `.library-navigation-icon-<type>` at `../images/syn-<type>.png` with
+`-webkit-background-size: contain`, so all providers render at the same footprint.
 
-| Template | `type` | CSS class | Reused account icon |
-|---|---|---|---|
-| `com.palm.boxnet` | `boxnet` | `.library-navigation-icon-boxnet` | `com.palm.boxnet/images/box_net_48.png` |
-| `com.palm.dropbox` | `dropbox` | `.library-navigation-icon-dropbox` | `com.palm.dropbox/images/dropbox-48x48.png` |
-| `com.palm.kdrive` | `kdrive` | `.library-navigation-icon-kdrive` | `com.palm.kdrive/images/kdrive-48x48.png` |
-| `com.palm.yandexdisk` | `yandexdisk` | `.library-navigation-icon-yandexdisk` | `com.palm.yandexdisk/images/yandexdisk-48x48.png` |
-| `com.palm.onedrive` | `onedrive` | `.library-navigation-icon-onedrive` | `com.palm.onedrive/images/onedrive-48x48.png` |
-| `com.palm.mega` | `mega` | `.library-navigation-icon-mega` | `com.palm.mega/images/mega-48x48.png` |
-| `com.palm.koofr` | `koofr` | `.library-navigation-icon-koofr` | `com.palm.koofr/images/koofr-48x48.png` |
-| `com.palm.hidrive` | `hidrive` | `.library-navigation-icon-hidrive` | `com.palm.hidrive/images/hidrive-48x48.png` |
+Covered types: `boxnet`, `dropbox`, `kdrive`, `onedrive`, `yandexdisk`, `mega`, `koofr`, `hidrive`
+(class `.library-navigation-icon-<type>` + `.library-navigation-icon-20x20-<type>`).
 
 No JS change is needed - the class is already applied per account; only the CSS rule was missing.
 
@@ -65,6 +58,6 @@ No JS change is needed - the class is already applied per account; only the CSS 
 ```sh
 D=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
 patch -p1 -d "$D" < patches/LibraryNavigationPanel.css.patch
-# no image copies needed - the rules reference the account-template icons in place
+cp assets/syn-*.png "$D/images/"        # the normalized library icons the CSS references
 # relaunch the Photos card (cold launch reloads its CSS)
 ```
