@@ -57,8 +57,25 @@ enyo.kind({
         ]},
         { className: "accounts-footer-shadow" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
-            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
+            { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" },
+            // Only shown when re-authenticating an EXISTING account (see handleLaunch). Facebook
+            // accounts hit the re-auth/password-re-entry flow when the session expires, and that
+            // flow bypasses the framework's account-detail view - so without this the account can't
+            // be removed at all. Lets the user delete instead of re-entering the password.
+            { kind: "Button", name: "removeButton", caption: "Remove Account", showing: false,
+              className: "accounts-toolbar-btn", onclick: "confirmRemove" }
         ]},
+        { kind: "Dialog", name: "confirmDialog", modal: true, scrim: true, components: [
+            { className: "accounts-body-text", style: "padding: 16px; line-height: 1.4;", allowHtml: true,
+              content: "Remove this Facebook account? Its messages will be deleted from this device." },
+            { kind: "HFlexBox", style: "padding: 8px 12px 12px;", components: [
+                { kind: "Button", flex: 1, caption: "Cancel", onclick: "closeConfirm" },
+                { kind: "Button", flex: 1, name: "confirmRemoveBtn", caption: "Remove",
+                  className: "enyo-button-negative", onclick: "doRemove" }
+            ]}
+        ]},
+        { kind: "PalmService", name: "acctService", service: "palm://com.palm.service.accounts/",
+          onSuccess: "removeDone", onFailure: "removeDone" },
         { kind: "CrossAppResult" }
     ],
 
@@ -80,15 +97,43 @@ enyo.kind({
                 }
             }
         }
-        // Re-auth of an existing account: lock the username, prompt for the password only.
+        // Re-auth of an existing account: lock the username, prompt for the password only, and
+        // offer "Remove Account" (this re-auth flow otherwise has no path to delete the account).
+        this.accountId = (params.account && (params.account._id || params.account.id)) || params.accountId || null;
         if (params.account && params.account.username) {
             this.$.username.setValue(params.account.username);
             this.$.username.setDisabled(true);
             if (params.account.alias && params.account.alias !== params.account.username) {
                 this.$.displayName.setValue(params.account.alias);
             }
+            if (this.accountId) {
+                this.$.removeButton.show();
+            }
         }
         this.validateInput();
+    },
+
+    confirmRemove: function() {
+        this.$.confirmRemoveBtn.setDisabled(false);
+        this.$.confirmDialog.openAtCenter();
+    },
+
+    closeConfirm: function() {
+        this.$.confirmDialog.close();
+    },
+
+    doRemove: function() {
+        this.$.confirmRemoveBtn.setDisabled(true);
+        if (!this.accountId) { this.closeConfirm(); return; }
+        this.$.acctService.call({ accountId: this.accountId }, { method: "deleteAccount" });
+    },
+
+    // deleteAccount returns an odd shape (returnValue:false + "Account has been deleted" even on
+    // success), so don't branch on it - the account is gone either way. Close the confirm + the
+    // custom UI (sendResult false cancels the edit; the framework returns to the now-empty slot).
+    removeDone: function() {
+        this.$.confirmDialog.close();
+        this.$.crossAppResult.sendResult({ returnValue: false });
     },
 
     getAlias: function(email) {
