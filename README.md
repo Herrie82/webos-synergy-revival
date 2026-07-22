@@ -64,7 +64,7 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 | **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
 | **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | 🟡 | ❔ | ❔ | ❔ | 🟡 | ❌ |
 | **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
-| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | ❌ | ❌ |
+| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | 🟡 | ❌ |
 | **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
 | **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | `c_user`/`xs`/`datr` cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
 
@@ -73,11 +73,16 @@ Notes:
   libpurple 2.14 + ssl-openssl (Teams-port) backend; most have not yet been ticked off as
   end-to-end verified on device, but Teams is the reference deployment.
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
-  stock Phone app — **one-way audio working on device** (mic capture in progress). No video.
+  stock Phone app — **calls connect with audio on device**; outbound mic capture hits the same
+  **device-mic-specific** issue as WhatsApp (not a connector bug). No video.
 - **Signal** calling is second: incoming calls ring the Phone app (signaling staged on device)
   and the SRTP-GCM + Opus **media loopback passes on device**; a real two-way call is unverified.
   Signal IM itself is fully built but **on-device test still pending** (plugin is archived/2022,
   pinned to signal-cli 0.8.0).
+- **WhatsApp**: IM works, and **voice calls work on device** via the `wacallm` media bridge —
+  incoming/outgoing calls connect and audio flows. Outbound **mic capture is broken**, but that
+  appears to be a **device-mic-specific** issue (the same symptom other calling connectors hit),
+  not a WhatsApp-connector bug. No video.
 - **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
   DAVE E2EE stack) that has **never completed a live voice handshake**.
 - **Facebook**: the plain `purple-facebook` (email+password) is **retired** — it can't reach
@@ -157,6 +162,9 @@ committed here) being on-device:
 2. **A current CA store** at `/etc/ssl/certs/ca-certificates.crt`. The stock rootfs ships a 2011
    stub with no modern roots (e.g. ISRG Root X1), so a flashed/reset device can't verify a modern
    cloud cert until this is refreshed.
+3. **The Atlas browser** (`org.webosports.app.atlas`, a WPE browser with modern TLS). The stock
+   webview can't complete a modern TLS handshake, so every OAuth **login page** is hosted in
+   Atlas — without it, OAuth-based connectors can't sign in.
 
 With those in place: deploy a connector into `/usr/palm/…`, drop its account template + LS2 role
 files, apply the `photos-integration/`/`quickoffice-integration/` patches as needed, restart the
