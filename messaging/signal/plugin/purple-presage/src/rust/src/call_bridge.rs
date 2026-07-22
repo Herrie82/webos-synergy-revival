@@ -145,6 +145,12 @@ pub fn start_incoming(
         .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
         .env("GST_DEBUG", "2")
+        // Force gst's alsasink/alsasrc to use the SYSTEM libasound (which knows /usr/lib/alsa-lib's
+        // pulse plugin + /etc/asound.conf's voip/voipsource PCMs). Without this, gst loads the Atlas
+        // wpe-252 libasound, which can't find its pulse module -> "Cannot open shared library" ->
+        // alsasink "No such device" -> pipeline fails to set PLAYING -> the call drops. This is the
+        // same system-libasound route the Telegram/wacallm audio path uses. Verified on device.
+        .env("LD_PRELOAD", "/usr/lib/libasound.so.2")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(engine_log)
