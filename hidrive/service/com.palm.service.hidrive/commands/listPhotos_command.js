@@ -11,8 +11,10 @@ ListPhotosCommandAssistant.prototype = {
 	// NO allowedAppIds - see listAlbums_command.js.
 	run: function (future) {
 		var self = this, args = this.controller.args || {};
+		// listAlbums encodes the album path into a slash-free aid; decode it back to the path.
 		var aid = args.aid;
 		if (aid == null || aid === "") { future.result = { returnValue: true, photos: [] }; return; }
+		try { aid = decodeURIComponent(aid); } catch (ed) { /* already a plain path */ }
 
 		var credF = AccountCreds.resolve(args);
 		credF.then(this, function () {

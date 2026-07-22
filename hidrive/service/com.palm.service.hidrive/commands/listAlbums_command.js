@@ -22,8 +22,12 @@ ListAlbumsCommandAssistant.prototype = {
 				var albums;
 				try { albums = (af.result && af.result.albums) || []; } catch (e2) { albums = []; }
 				if (renewed && args.accountId) { AccountCreds.save(args.accountId, renewed); }
+				// aid MUST be slash-free: the Photos aggregator builds a local album directory from
+				// it (<aid>-<name>) with a NON-recursive mkdir, so a path aid like "root/users/x"
+				// would try to create nested dirs and fail ENOENT. Encode the path (slashes -> %2F);
+				// listPhotos decodes it back. (Mega avoids this naturally - its aid is a node handle.)
 				var out = albums.map(function (a) {
-					return { aid: a.aid, name: a.name, size: { images: a.images || 0 } };
+					return { aid: encodeURIComponent(a.aid), name: a.name, size: { images: a.images || 0 } };
 				});
 				if (!out.length) {
 					out = [{ aid: "", name: (Config.PHOTO_ALBUM_NAME || "Camera Uploads"), size: { images: 0 } }];
