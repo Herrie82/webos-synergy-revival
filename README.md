@@ -22,31 +22,32 @@ Capabilities: **Doc** = DOCUMENTS (QuickOffice file browse/open/save + files app
 |---|---|:--:|:--:|---|
 | **Dropbox** | OAuth2 + PKCE (public, no secret) | ✅ | ✅ | ✅ **verified end-to-end on device** — reference implementation |
 | **kDrive** (Infomaniak) | personal API token (Bearer) | ✅ | ✅ | ✅ **deployed + verified on device** — sign-in, browse, QuickOffice, upload/save-back, photo source all exercised |
-| **Box** | OAuth2 + PKCE (secret optional) | ✅ | ✅ | 🟡 code-complete, mirrors Dropbox — untested pending a Box `client_id` |
-| **OneDrive** | OAuth2 + PKCE (no secret, MS Graph) | ✅ | ✅ | 🟡 code-complete — **verified vs live Graph off-device**; on-device customUI sign-in unexercised |
-| **Google Drive** | OAuth2 + PKCE **+ client_secret** | ✅ | ❌ | 🟡 code-complete (personal/≤100-user) — untested pending a Google `client_id`+secret; Google Photos not reachable headlessly. [recon](recon/google-drive.md) |
-| **pCloud** | OAuth2 + secret (no PKCE); US/EU host | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — untested on device; [recon](recon/pcloud.md) |
-| **Yandex Disk** | OAuth2 + PKCE (+ secret), `Authorization: OAuth` | ✅ | ✅ | 🟡 code-complete, **app registered** — **verified vs live API off-device**; on-device sign-in unexercised; [recon](recon/yandex.md) |
+| **Box** | OAuth2 + PKCE (secret optional) | ✅ | ✅ | ✅ **verified on device** — sign-in, browse, upload/download, QuickOffice, photo source |
+| **OneDrive** | OAuth2 + PKCE (no secret, MS Graph) | ✅ | ✅ | ✅ **verified on device** — sign-in, browse, upload/download, Camera Roll photos |
+| **Google Drive** | OAuth2 + PKCE **+ client_secret** | ✅ | ❌ | ✅ **verified on device** (personal/≤100-user) — sign-in, browse, upload/download; Google Photos not reachable headlessly. [recon](recon/google-drive.md) |
+| **pCloud** | OAuth2 + secret (no PKCE); US/EU host | ✅ | ✅ | ✅ **verified on device**; [recon](recon/pcloud.md) |
+| **Yandex Disk** | OAuth2 + PKCE (+ secret), `Authorization: OAuth` | ✅ | ✅ | ✅ **verified on device**; [recon](recon/yandex.md) |
 | **MEGA** | email + password (no OAuth) + **E2E crypto** | ✅ | ✅ | ✅ **verified on device** — email+password sign-in, browse, download and upload work; pure-JS AES/RSA/PBKDF2 crypto with device-specific fixes (key-gen, PBKDF2, AES-CTR, meta-MAC); [details](mega/README.md) |
-| **Koofr** | OAuth2 (secret + PKCE, scope `public`) | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — wiring validated off-device (mock server); on-device pending; [details](koofr/README.md) |
-| **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — off-device mock flow (incl. refresh) validated; on-device pending; [details](hidrive/README.md) |
+| **Koofr** | OAuth2 (secret + PKCE, scope `public`) | ✅ | ✅ | ✅ **verified on device**; [details](koofr/README.md) |
+| **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | ✅ **verified on device**; [details](hidrive/README.md) |
 | **S3-compatible** (AWS S3 / IDrive e2 / B2 / Wasabi / MinIO / Storj) | **AWS SigV4** (user-supplied keys; nothing to register) | ✅ | ✅ | 🟡 code-complete — SigV4 vs AWS official test vectors + full mock-server flow validated; on-device account pending; [details](s3/README.md) |
 | **Flickr** | **OAuth 1.0a** (HMAC-SHA1, signed in node) | ❌ | ✅ | 🟡 code-complete (signer verified vs OAuth 1.0a test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
 | Facebook / LinkedIn | — | ❌ | ❌ | ❌ dead as photo sources (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ | ❌ | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
 | Snapfish | — | ❌ | ❌ | ⚠️ marginal (private OAuth gateway); recon only |
 
-**Dropbox**, **kDrive** and **MEGA** have been **run on real hardware**: an account is created
-and survives reboots, files browse/upload/download byte-exact, QuickOffice opens and saves them
-back, and the cloud folder appears as an album in the Photos app. The remaining connectors reuse
-the same verified plumbing and are blocked only on a per-provider credential or a first on-device
-sign-in.
+Most connectors have been **run on real hardware** — Dropbox, kDrive, MEGA, Box, OneDrive,
+Google Drive, pCloud, Yandex Disk, Koofr and HiDrive: an account is created and survives reboots,
+files browse/upload/download byte-exact, QuickOffice opens and saves them back, and (where
+supported) the cloud folder appears as an album in the Photos app. Only **S3** (needs an on-device
+account) and **Flickr** (needs an API key+secret) remain unexercised on device; both reuse the
+same verified plumbing.
 
 ### QuickOffice + Photos integration (shared, not connectors)
 
 | Piece | What it does | State |
 |---|---|---|
-| **QuickOffice reroute** | Reroutes QuickOffice's dead MX proxy onto any DOCUMENTS account (list + open + **save-back**); account-derived, zero code per new connector; fits both the Office and PDF apps | ✅ **Box + Dropbox verified interactively on device**; kDrive/OneDrive/Drive/pCloud/Yandex share the identical path |
+| **QuickOffice reroute** | Reroutes QuickOffice's dead MX proxy onto any DOCUMENTS account (list + open + **save-back**); account-derived, zero code per new connector; fits both the Office and PDF apps | ✅ **verified on device** across Dropbox/Box/OneDrive/Drive/pCloud/Yandex/kDrive/Koofr/HiDrive (identical path per connector) |
 | **Photos integration** | Patches to stock `com.palm.service.photos` so any PHOTO.UPLOAD account becomes a Photos source (templateId→service routing + per-service Library icons) | ✅ dynamic source recognition + system curl; routes Dropbox/Box/OneDrive/pCloud/Flickr/kDrive/Yandex/MEGA/Koofr/HiDrive |
 | **Doc viewer** | Atlas-hosted viewer PoC for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep, view-only) | 🧪 PoC on device — text/image renderers work end-to-end; PDF.js/mammoth/SheetJS **not committed** (drop in per `docviewer/.../lib/README.md`) |
 
