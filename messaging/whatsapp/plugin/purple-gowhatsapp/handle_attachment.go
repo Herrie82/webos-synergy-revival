@@ -22,15 +22,36 @@ import (
 func extension_from_mimetype(mimeType *string) string {
 	extension := ".data"
 	if mimeType != nil {
-		// use the most poplular default for some common mimetypes
-		if *mimeType == "image/jpeg" {
+		// Strip any parameters, e.g. voice notes arrive as "audio/ogg; codecs=opus".
+		base := strings.TrimSpace(strings.SplitN(*mimeType, ";", 2)[0])
+		// Stable defaults for the common WhatsApp media types. Explicit cases matter for audio:
+		// voice notes are "audio/ogg; codecs=opus" and without this fell through to
+		// mime.ExtensionsByType (which has no audio/ogg entry in the device mime db) and got
+		// ".data" - an extension no app can open. ".ogg" is the correct container (Opus-in-Ogg),
+		// and Atlas registers .ogg + bundles the opus/ogg codecs to play it.
+		switch base {
+		case "image/jpeg":
 			return ".jpg"
-		}
-		if *mimeType == "image/png" {
+		case "image/png":
 			return ".png"
-		}
-		if *mimeType == "video/mp4" {
+		case "image/gif":
+			return ".gif"
+		case "image/webp":
+			return ".webp"
+		case "video/mp4":
 			return ".mp4"
+		case "video/3gpp":
+			return ".3gp"
+		case "audio/ogg", "application/ogg":
+			return ".ogg"
+		case "audio/mpeg", "audio/mp3":
+			return ".mp3"
+		case "audio/mp4", "audio/aac", "audio/x-m4a":
+			return ".m4a"
+		case "audio/amr":
+			return ".amr"
+		case "audio/wav", "audio/x-wav":
+			return ".wav"
 		}
 		// anything else is looked up
 		extensions, _ := mime.ExtensionsByType(*mimeType)
