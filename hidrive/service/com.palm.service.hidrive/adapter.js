@@ -17,6 +17,9 @@ var Adapter = {
 	_homeByToken: {},
 
 	_enc: function (p) { return encodeURIComponent(p); },
+	// HiDrive returns member name/path URL-ENCODED (spaces as %20 etc). Decode on the way in so
+	// display names are clean and _enc re-encodes exactly once when the path is used as a locator.
+	_dec: function (p) { try { return decodeURIComponent(String(p == null ? "" : p)); } catch (e) { return p; } },
 	_leaf: function (p) {
 		var s = String(p == null ? "" : p).replace(/\/+$/, "");
 		var i = s.lastIndexOf("/"); return (i >= 0) ? s.substring(i + 1) : s;
@@ -125,8 +128,12 @@ var Adapter = {
 		f.then(this, function () {
 			var pathVal;
 			try { pathVal = pf.result; } catch (e0) { f.setException(e0); return; }
+			// NB: HiDrive `fields` describes the DIRECTORY itself; child rows come from the
+			// `members.<field>` namespace (a plain `fields=name,type,..` list returns only the
+			// folder's own metadata with no members[] at all). Ask for members + their fields.
 			var url = Config.API_BASE + "/dir?path=" + self._enc(pathVal) +
-				"&members=all&fields=name,type,size,mtime,path,id&limit=0," + (Config.LIST_LIMIT || 5000);
+				"&members=all&fields=members.name,members.type,members.size,members.mtime,members.path,members.id" +
+				"&limit=0," + (Config.LIST_LIMIT || 5000);
 			var call = self._authCall(creds, { method: "GET", url: url }, cb);
 			call.then(self, function () {
 				try {
@@ -134,10 +141,11 @@ var Adapter = {
 					var members = res.members || [];
 					f.result = { entries: members.map(function (m) {
 						var isFolder = (m.type === "dir");
-						return { id: m.path, type: (isFolder ? "folder" : "file"),
-							name: m.name, size: m.size || 0,
-							modified: m.mtime ? (m.mtime * 1000) : 0, path: m.path,
-							mimeType: self._mime(m.name, isFolder) };
+						var name = self._dec(m.name), path = self._dec(m.path);
+						return { id: path, type: (isFolder ? "folder" : "file"),
+							name: name, size: m.size || 0,
+							modified: m.mtime ? (m.mtime * 1000) : 0, path: path,
+							mimeType: self._mime(name, isFolder) };
 					}) };
 				} catch (e) { f.setException(e); }
 			});
