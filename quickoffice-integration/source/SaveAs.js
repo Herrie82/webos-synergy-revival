@@ -654,7 +654,14 @@ enyo.kind(
     getNameForUri: function(uri) {
         for(var x in this.files) {
             for(var y in this.files[x]) {
-                if(this.files[x][y] && uri===this.files[x][y].uri) {
+                // Require a fileStem on the match. The ACCOUNT entry can transiently carry a folder
+                // uri: the modern reroute reports "" for the mount root, so QuickOffice's "first
+                // root query" guard (!account.uri && inResult.uri) doesn't fire at the root (""
+                // is falsy) and instead fires when entering the first subfolder, stamping the
+                // account's uri onto that subfolder. That account entry has no fileStem (accounts
+                // use alias), so without this guard it wins the lookup and the title shows
+                // "undefined". Skipping it lets the real folder entry (or the leaf fallback) win.
+                if(this.files[x][y] && uri===this.files[x][y].uri && this.files[x][y].fileStem) {
                     return this.files[x][y].fileStem;
                 }
             }
