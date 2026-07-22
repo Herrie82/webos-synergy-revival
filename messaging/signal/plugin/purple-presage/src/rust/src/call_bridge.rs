@@ -24,7 +24,7 @@
 //! ICE connectivity will work, but two-way audio needs those ids confirmed against a real call.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -240,6 +240,17 @@ fn pending() -> &'static Mutex<HashMap<u64, Pending>> {
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// call_ids we placed (OUTGOING). Kept until the call is stopped so the receive loop can tell an
+/// outgoing call's hangup apart from a genuinely missed INCOMING call (no "Missed voice call" line).
+static OUTGOING: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+fn outgoing() -> &'static Mutex<HashSet<u64>> {
+    OUTGOING.get_or_init(|| Mutex::new(HashSet::new()))
+}
+/// True if this call_id is one WE placed (so its hangup is not a missed incoming call).
+pub fn is_outgoing_call(call_id: u64) -> bool {
+    outgoing().lock().unwrap().contains(&call_id)
+}
+
 /// The env every engine invocation needs (wpe LD_LIBRARY_PATH is inherited; we pin gst + libasound).
 fn engine_command(mode: &str) -> Command {
     let mut c = Command::new(SIGNAL_MEDIA_BIN);
@@ -309,6 +320,7 @@ pub fn place_call(callee: Uuid, caller_id: Vec<u8>, callee_id: Vec<u8>) -> Optio
         call_id,
         Pending { callee, priv32, our_ufrag, our_pwd, caller_id, callee_id, buffered_ice: Vec::new() },
     );
+    outgoing().lock().unwrap().insert(call_id);
     Some((call_id, opaque))
 }
 
@@ -416,6 +428,7 @@ pub fn feed_remote_ice(call_id: u64, candidate_opaques: &[Vec<u8>]) {
 /// declined/was-busy before answering, so the engine was never started).
 pub fn stop(call_id: u64) {
     pending().lock().unwrap().remove(&call_id);
+    outgoing().lock().unwrap().remove(&call_id);
     let cp = calls().lock().unwrap().remove(&call_id);
     if let Some(CallProc { mut child, mut stdin }) = cp {
         let _ = writeln!(stdin, "STOP");

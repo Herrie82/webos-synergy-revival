@@ -439,7 +439,14 @@ async fn process_received_message<C: presage::store::Store>(
             } else if call_message.busy.is_some() {
                 (crate::bridge::CALL_STATE_BUSY, None)
             } else if call_message.hangup.is_some() {
-                (crate::bridge::CALL_STATE_ENDED, Some("Missed voice call".to_string()))
+                // Only a genuinely MISSED incoming call gets a "Missed voice call" history line. A
+                // hangup for a call WE placed is just the end of an outgoing call, not a missed one.
+                let missed = if crate::call_bridge::is_outgoing_call(call_id) {
+                    None
+                } else {
+                    Some("Missed voice call".to_string())
+                };
+                (crate::bridge::CALL_STATE_ENDED, missed)
             } else {
                 (u32::MAX, None)
             };

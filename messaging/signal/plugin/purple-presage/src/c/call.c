@@ -41,6 +41,7 @@ static void sigcLog(const char *fmt, ...)
 #define SIG_CALL_DECLINED 2u
 #define SIG_CALL_BUSY     3u
 #define SIG_CALL_ACTIVE   4u   /* peer answered OUR outgoing call -> connected */
+#define SIG_CALL_DIALING  5u   /* we placed an outgoing call (Offer sent) -> ringing peer */
 
 static LSPalmService *g_service = NULL;   /* pub+priv registration                     */
 static LSHandle      *g_pub     = NULL;   /* public connection (untrusted apps)        */
@@ -186,16 +187,11 @@ static bool cb_dial(LSHandle *sh, LSMessage *msg, void *ctx)
     }
     presage_rust_place_call(g_account, rust_runtime, presage->tx_ptr, addr);
 
-    /* Show the outgoing call card locally (dialing). call_id becomes known when we send the Offer;
-     * the dialer only needs the line/origin to render, and hangup clears by line state. */
-    g_outgoing = true;
-    set_str(&g_state, "dialing"); set_str(&g_cause, NULL);
-    set_str(&g_addr, addr); set_str(&g_name, (name && *name) ? name : addr);
-    { gchar *p = build_payload();
-      if (g_pub) { LSError e; LSErrorInit(&e); LSSubscriptionReply(g_pub, SUBKEY, p, &e); if (LSErrorIsSet(&e)) LSErrorFree(&e); }
-      if (g_prv) { LSError e; LSErrorInit(&e); LSSubscriptionReply(g_prv, SUBKEY, p, &e); if (LSErrorIsSet(&e)) LSErrorFree(&e); }
-      g_free(p); }
-
+    /* Do NOT push call state here. Like the Telegram dialer, we let the REAL call events drive the
+     * card asynchronously: presage pushes "dialing" (SIG_CALL_DIALING) once the Offer is sent with
+     * the real call_id, then "active" on Answer and "disconnected" on hangup - all one call_id, so
+     * the dialer logs ONE call. (Pushing "dialing" here with call_id 0 and then getting the Answer's
+     * real id made the dialer treat it as two calls -> a duplicate call-log entry.) */
     LSMessageReply(sh, msg, "{\"returnValue\":true}", &err);
     if (LSErrorIsSet(&err)) LSErrorFree(&err);
     g_free(addr); g_free(name);
@@ -303,9 +299,17 @@ static gboolean call_state_apply(gpointer data)
             set_str(&g_state, "incoming"); set_str(&g_cause, NULL);
             set_str(&g_addr, e->who); set_str(&g_name, e->name); g_call_id = e->call_id;
             break;
+        case SIG_CALL_DIALING:
+            /* We placed an outgoing call (Offer sent). Show the outgoing "dialing" card with the
+             * real call_id so the whole call (dialing -> active -> disconnected) is one entry. */
+            g_outgoing = true;
+            set_str(&g_state, "dialing"); set_str(&g_cause, NULL);
+            set_str(&g_addr, e->who); set_str(&g_name, e->name); g_call_id = e->call_id;
+            break;
         case SIG_CALL_ACTIVE:
             /* Peer answered our outgoing call. Keep addr/name/origin; flip the line to active so the
              * dialer shows a connected call. call_id may arrive here for the first time. */
+            g_outgoing = true;
             set_str(&g_state, "active"); set_str(&g_cause, NULL);
             if (e->call_id) g_call_id = e->call_id;
             break;

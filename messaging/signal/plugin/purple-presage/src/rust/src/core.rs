@@ -216,6 +216,17 @@ async fn run<C: presage::store::Store + 'static>(
                     ..Default::default()
                 };
                 send_call_message(&mut manager, account, uuid, cm, "Offer").await;
+                // Now drive the dialer with the REAL call_id (matching the Answer/Hangup that follow),
+                // so the outgoing card is one call - not the two the dialer logged when cb_dial pushed
+                // its own state with call_id 0 and the Answer then arrived with a different id.
+                let name = crate::bridge::blist_get_alias(account, uuid.to_string());
+                crate::bridge::handle_call_state(
+                    account,
+                    Some(uuid.to_string()),
+                    Some(name),
+                    crate::bridge::CALL_STATE_DIALING,
+                    call_id,
+                );
             }
             Ok(true)
         }
