@@ -114,7 +114,14 @@ static gboolean gometa_dispatch(gpointer data) {
                 break;
             case gometa_message_type_error:
                 if (m->fatal) {
-                    purple_connection_error_reason(pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
+                    // A fatal error means "stop, this won't succeed on its own" (e.g. login/2FA
+                    // failed, session expired). Report it with a reason libpurple considers FATAL
+                    // (AUTHENTICATION_FAILED) so the account is taken offline and does NOT
+                    // auto-reconnect. NETWORK_ERROR is treated as transient -> libpurple retries
+                    // every minute, which for a failed Facebook 2FA login just hammers the login
+                    // endpoint forever (and can get the account flagged). The user re-enables the
+                    // account to try again once they can complete 2FA.
+                    purple_connection_error_reason(pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,
                         m->text ? m->text : "Unknown error");
                 } else {
                     purple_debug_error(GOMETA_PLUGIN_ID, "%s\n", m->text ? m->text : "error");
