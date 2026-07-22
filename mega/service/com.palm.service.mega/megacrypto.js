@@ -415,24 +415,34 @@ var MegaCrypto = (function () {
 		return sha512(oKey.concat(sha512(iKey.concat(msgBytes))));
 	}
 	// PBKDF2-HMAC-SHA512. v2 Mega accounts use 100000 iterations - pure-JS SHA-512 would take
-	// many minutes on the device, so this drives NATIVE HMAC-SHA512 (one-time, at sign-in). The
-	// hot path stays entirely in Buffers: the password Buffer is built once, and each iteration's
-	// digest Buffer is fed straight back into the next update with NO array<->Buffer conversion
-	// (those conversions dominated an earlier version). Falls back to pure-JS if no node crypto.
+	// many minutes on the device, so this drives NATIVE HMAC-SHA512 (one-time, at sign-in).
+	//
+	// CRITICAL: on the device's node 0.4.12, hmac.digest() with NO encoding returns a BINARY
+	// STRING, not a Buffer (verified), and hmac.update(str) with no encoding treats the string as
+	// UTF-8. Both silently corrupted an earlier Buffer-assuming version (wrong uh -> Mega 402 at
+	// login). So this uses EXPLICIT "binary" encodings throughout - the same trick the AES path
+	// uses: update(binStr,"binary"), digest("binary") -> a 64-char binary string that is fed
+	// straight back into the next update with no conversion. `u` stays a binary string across the
+	// loop; the running result `t` is a byte array XORed via charCodeAt. Correct on both 0.4.12
+	// and modern node (where "binary"=="latin1"). Falls back to pure-JS if no node crypto.
 	function pbkdf2Native(passwordBytes, saltBytes, iterations, dkLen) {
-		var pw = toBuffer(passwordBytes);
+		var pw = toBuffer(passwordBytes);          // key as a Buffer (accepted on 0.4.12)
+		function hmacBin(msgBin) {                 // msgBin: binary string -> binary string
+			var h = _nc.createHmac("sha512", pw);
+			h.update(msgBin, "binary");
+			return h.digest("binary");
+		}
+		var saltBin = _binStr(saltBytes);
 		var out = [], block = 1;
 		while (out.length < dkLen) {
-			var bl = [(block >>> 24) & 0xff, (block >>> 16) & 0xff, (block >>> 8) & 0xff, block & 0xff];
-			var h0 = _nc.createHmac("sha512", pw); h0.update(toBuffer(saltBytes.concat(bl)));
-			var u = h0.digest();                 // Buffer (64)
-			var t = new Buffer(u.length);
-			for (var c = 0; c < u.length; c++) { t[c] = u[c]; }
+			var blBin = String.fromCharCode((block >>> 24) & 0xff, (block >>> 16) & 0xff,
+				(block >>> 8) & 0xff, block & 0xff);
+			var u = hmacBin(saltBin + blBin);      // binary string (64 chars)
+			var t = [];
+			for (var c = 0; c < u.length; c++) { t.push(u.charCodeAt(c) & 0xff); }
 			for (var it = 1; it < iterations; it++) {
-				var h = _nc.createHmac("sha512", pw);
-				h.update(u);                     // u is a Buffer - accepted on device 0.4.12
-				u = h.digest();                  // Buffer in, Buffer out - no conversion
-				for (var k = 0; k < t.length; k++) { t[k] ^= u[k]; }
+				u = hmacBin(u);                    // binary string in and out - no conversion
+				for (var k = 0; k < t.length; k++) { t[k] ^= (u.charCodeAt(k) & 0xff); }
 			}
 			for (var m = 0; m < t.length; m++) { out.push(t[m]); }
 			block++;
