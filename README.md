@@ -62,7 +62,7 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 |---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
 | **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
-| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | 🟡 | ❔ | ❔ | ❔ | 🟡 | ❌ |
+| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
 | **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
 | **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | 🟡 | ❌ |
 | **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
@@ -70,15 +70,15 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
-  libpurple 2.14 + ssl-openssl (Teams-port) backend; most have not yet been ticked off as
-  end-to-end verified on device, but Teams is the reference deployment.
+  libpurple 2.14 + ssl-openssl (Teams-port) backend. **WhatsApp** (IM + calls) and **Signal** (IM)
+  are verified end-to-end on device; Teams is the reference deployment; the rest are built but most
+  have not yet been ticked off end-to-end on device.
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture hits the same
   **device-mic-specific** issue as WhatsApp (not a connector bug). No video.
-- **Signal** calling is second: incoming calls ring the Phone app (signaling staged on device)
-  and the SRTP-GCM + Opus **media loopback passes on device**; a real two-way call is unverified.
-  Signal IM itself is fully built but **on-device test still pending** (plugin is archived/2022,
-  pinned to signal-cli 0.8.0).
+- **Signal**: IM **works on device** (send/receive). Calling is second-most advanced: incoming
+  calls ring the Phone app (signaling staged on device) and the SRTP-GCM + Opus **media loopback
+  passes on device**; a real two-way call is still unverified.
 - **WhatsApp**: IM works, and **voice calls work on device** via the `wacallm` media bridge —
   incoming/outgoing calls connect and audio flows. Outbound **mic capture is broken**, but that
   appears to be a **device-mic-specific** issue (the same symptom other calling connectors hit),
