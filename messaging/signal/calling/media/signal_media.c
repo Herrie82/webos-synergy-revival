@@ -118,8 +118,11 @@ static void configure_srtpenc(GstElement *enc, GstBuffer *master)
  * describing the master key + cipher/auth. Single stream -> same key for every SSRC. */
 static GstCaps *on_srtpdec_request_key(GstElement *dec, guint ssrc, gpointer user)
 {
-    (void)dec; (void)ssrc;
+    (void)dec;
     SignalMedia *sm = (SignalMedia *)user;
+    /* srtpdec only asks for a key once it SEES an SRTP packet for that SSRC -> inbound media from
+     * the peer is actually arriving (ICE connected + the peer is sending). Key milestone. */
+    g_message("signal_media: srtpdec request-key for ssrc %u (inbound SRTP arriving)", ssrc);
     if (!sm->rx_master) return NULL;
     GstCaps *caps = gst_caps_new_simple("application/x-srtp",
                                         "srtp-cipher",  G_TYPE_STRING, SRTP_CIPHER_GCM256,
@@ -164,6 +167,7 @@ static gboolean on_bus(GstBus *bus, GstMessage *msg, gpointer user)
                 GstState olds, news;
                 gst_message_parse_state_changed(msg, &olds, &news, NULL);
                 if (news == GST_STATE_PLAYING && !sm->audiod_on) {
+                    g_message("signal_media: pipeline PLAYING (audio TX/RX up, audiod notified)");
                     sm->audiod_on = TRUE;
                     if (sm->audiod_cb) sm->audiod_cb(1, sm->audiod_user);  /* tell audiod: voip call up */
                 }
@@ -185,6 +189,7 @@ static void on_nice_candidate(NiceAgent *agent, NiceCandidate *cand, gpointer us
         /* libnice emits the SDP attribute form "a=candidate:...", but Signal's IceCandidate opaque
          * carries the bare "candidate:..." line (verified vs a real capture). Strip the "a=". */
         const char *bare = (strncmp(sdp, "a=", 2) == 0) ? sdp + 2 : sdp;
+        g_message("signal_media: LOCAL candidate -> %s", bare);
         sm->cand_cb(bare, sm->cand_user);   /* bridge -> Signal IceUpdate */
         g_free(sdp);
     }
@@ -199,8 +204,20 @@ static void on_nice_gathering_done(NiceAgent *agent, guint stream_id, gpointer u
 static void on_nice_state(NiceAgent *agent, guint stream_id, guint component_id,
                           guint state, gpointer user)
 {
-    (void)agent; (void)stream_id; (void)component_id; (void)user;
+    (void)user;
     g_message("signal_media: ICE component state -> %s", nice_component_state_to_string(state));
+    /* On CONNECTED/READY, log the nominated pair so we can confirm which candidates actually paired
+     * (host/srflx/relay) - the difference between "gathered candidates" and "media can flow". */
+    if (state == NICE_COMPONENT_STATE_CONNECTED || state == NICE_COMPONENT_STATE_READY) {
+        NiceCandidate *lc = NULL, *rc = NULL;
+        if (nice_agent_get_selected_pair(agent, stream_id, component_id, &lc, &rc) && lc && rc) {
+            gchar *ls = nice_agent_generate_local_candidate_sdp(agent, lc);
+            gchar *rs = nice_agent_generate_local_candidate_sdp(agent, rc);
+            g_message("signal_media: ICE SELECTED PAIR local[%s] remote[%s]",
+                      ls ? ls : "?", rs ? rs : "?");
+            g_free(ls); g_free(rs);
+        }
+    }
     /* On NICE_COMPONENT_STATE_FAILED the bridge should hang the call up; surfaced via the log. */
 }
 
@@ -213,8 +230,11 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     sm->agent = nice_agent_new(sm->ctx, NICE_COMPATIBILITY_RFC5245);
     if (!sm->agent) { g_printerr("signal_media: nice_agent_new failed\n"); return FALSE; }
 
-    /* We are the callee/answerer -> controlled. */
-    g_object_set(sm->agent, "controlling-mode", FALSE, NULL);
+    /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. Getting this
+     * wrong (both controlled) causes an ICE role conflict so the pair never nominates -> no media. */
+    g_object_set(sm->agent, "controlling-mode", sm->is_caller ? TRUE : FALSE, NULL);
+    g_message("signal_media: role=%s controlling-mode=%d",
+              sm->is_caller ? "CALLER" : "ANSWERER", sm->is_caller ? 1 : 0);
 
     /* TODO(presage): Signal offers include TURN relay candidates; to actually reach a relay we may
      * also need to feed Signal's TURN servers via nice_agent_set_relay_info() per component. The
@@ -398,6 +418,7 @@ int signal_media_add_remote_candidate(const char *sdp_candidate)
     int added = nice_agent_set_remote_candidates(g_sm.agent, g_sm.stream_id, g_sm.component, list);
     g_slist_free(list);
     nice_candidate_free(c);
+    g_message("signal_media: REMOTE candidate (added=%d) -> %s", added, sdp_candidate);
     return added > 0 ? 0 : -1;
 }
 
