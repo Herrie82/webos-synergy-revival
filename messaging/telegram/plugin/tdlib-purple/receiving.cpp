@@ -23,7 +23,11 @@ std::string makeNoticeWithSender(const td::td_api::chat &chat, const TgMessageIn
 
 std::string getMessageText(const td::td_api::formattedText &text)
 {
-    char *newText = purple_markup_escape_text(text.text_.c_str(), text.text_.size());
+    // Use g_markup_escape_text, NOT purple_markup_escape_text: the latter NCR-encodes every
+    // non-ASCII character (so an emoji becomes the literal text "&#128049;"), which then shows up
+    // verbatim in webOS message notifications / the System Bar. g_markup_escape_text escapes only
+    // & < > " ' and leaves UTF-8 (emoji, accents, CJK, ...) intact.
+    char *newText = g_markup_escape_text(text.text_.c_str(), (gssize)text.text_.size());
     std::string result(newText);
     g_free(newText);
     return result;
