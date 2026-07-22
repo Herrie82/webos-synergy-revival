@@ -181,7 +181,7 @@ var MegaApi = (function () {
 		fetchNodes: function (creds) {
 			var f = new Future();
 			var master = MC.b64ToA32(creds.mk);
-			var ff = cmd({ a: "f", c: 1 }, creds.accessToken);
+			var ff = cmd({ a: "f", c: 1, r: 1 }, creds.accessToken);
 			f.now(this, function () { return ff; });
 			f.then(this, function () {
 				var res;
