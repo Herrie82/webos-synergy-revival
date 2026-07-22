@@ -96,9 +96,14 @@ static gchar *build_payload(void)
      * CallSynergyContact.create() does enyo.require(address != undefined) which THROWS if address is
      * missing - aborting the whole callStateQuery handler before the call card is shown. So the fields
      * MUST be flat (like wacallm/TIL), not nested under "contact". origin=incoming (Signal only rings). */
+    /* transport = this mediator's own PHONE account templateId. Without it CallSynergyContact
+     * defaults the call to cellular ("MOBILE" + the UUID formatted as a phone number); with it the
+     * Phone app's (service-agnostic) _isImTransport()/callNetworkName treat it as the IM it is and
+     * show the Signal handle/UUID verbatim under "Signal". */
     gchar *p = g_strdup_printf(
         "{\"returnValue\":true,\"allowVideoCalls\":false,\"videoURI\":\"\",\"lines\":["
         "{\"state\":\"%s\",%s\"calls\":[{\"id\":\"sig\",\"origin\":\"incoming\",\"video\":false,"
+        "\"transport\":\"com.palm.signal\","
         "\"address\":\"%s\",\"displayName\":\"%s\"}]}]}",
         st, disc, addr, nm);
     g_free(st); g_free(addr); g_free(nm); g_free(disc);

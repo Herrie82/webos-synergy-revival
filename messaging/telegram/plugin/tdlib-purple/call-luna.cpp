@@ -82,8 +82,13 @@ std::string buildPayload()
         // CallSynergyContact.create() does enyo.require(address != undefined) which THROWS if
         // address is missing - aborting the whole callStateQuery handler before the call card is
         // shown. So the fields MUST be flat (like wacallm/TIL), not nested under "contact".
+        // transport = this mediator's own PHONE account templateId. Without it CallSynergyContact
+        // defaults the call to cellular ("MOBILE" + the id formatted as a phone number); with it the
+        // Phone app's (service-agnostic) _isImTransport()/callNetworkName treat it as the IM it is
+        // and show the id/@handle verbatim under the network's name.
         p += "\"calls\":[{\"id\":\"tg\",\"origin\":\"" + std::string(g_outgoing ? "outgoing" : "incoming") + "\","
              "\"video\":false,"
+             "\"transport\":\"com.palm.telegram\","
              "\"address\":\"" + jsonEscape(g_peerAddr.c_str()) + "\","
              "\"displayName\":\"" + jsonEscape(g_peerName.empty() ? g_peerAddr.c_str() : g_peerName.c_str()) + "\"}]}";
     }
