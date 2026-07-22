@@ -32,6 +32,7 @@ Capabilities: **Doc** = DOCUMENTS (QuickOffice file browse/open/save + files app
 | **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | ✅ **verified on device**; [details](cloud/hidrive/README.md) |
 | **S3-compatible** (AWS S3 / IDrive e2 / B2 / Wasabi / MinIO / Storj) | **AWS SigV4** (user-supplied keys; nothing to register) | ✅ | ✅ | 🟡 code-complete — SigV4 vs AWS official test vectors + full mock-server flow validated; on-device account pending; [details](cloud/s3/README.md) |
 | **Flickr** | **OAuth 1.0a** (HMAC-SHA1, signed in node) | ❌ | ✅ | 🟡 code-complete (signer verified vs OAuth 1.0a test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
+| **Proton Drive** | SRP + OpenPGP E2E (no OAuth) | — | — | 🔬 **researched, not built** — feasible only as a cross-compiled native Go helper (rclone/`proton-go-api`), not pure-JS; hardest provider here; [recon](recon/proton-drive.md) |
 | Facebook / LinkedIn | — | ❌ | ❌ | ❌ dead as photo sources (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ | ❌ | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
 | Snapfish | — | ❌ | ❌ | ⚠️ marginal (private OAuth gateway); recon only |
@@ -146,7 +147,7 @@ messaging/                            libpurple IM connectors — see messaging/
   imlibpurpleservice/                 shared libpurple <-> webOS bridge (used by all)
   teams/ telegram/ signal/ discord/   per-service: account/ + apps/ + plugin/ (+ calling/ where built)
   whatsapp/ googlechat/ facebook-e2ee/
-recon/                                RE notes: facebook, linkedin, snapfish, google-drive, instagram, pcloud, yandex, flickr
+recon/                                RE notes: facebook, linkedin, snapfish, google-drive, instagram, pcloud, yandex, flickr, proton-drive
 device-setup/                         on-device font install, etc.
 docs/ARCHITECTURE.md  docs/legal/     architecture + Privacy Policy / Terms (for OAuth app registration)
 ```
