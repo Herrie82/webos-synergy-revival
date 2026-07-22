@@ -24,11 +24,11 @@ var Config = {
 	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
-	CLIENT_ID:     "PLACEHOLDER_PCLOUD_CLIENT_ID",       // TODO: pCloud app "Client ID"
+	CLIENT_ID:     "EYDr48cX1c8",                        // pCloud app "Client ID"
 	// REQUIRED for pCloud (no PKCE support - the token exchange must send the secret, like
 	// the gdrive "Desktop app" client). It ships in the package; oauth2.js includes it
 	// because it is not left as the PLACEHOLDER sentinel.
-	CLIENT_SECRET: "PLACEHOLDER_PCLOUD_CLIENT_SECRET",   // TODO: pCloud app "Client secret"
+	CLIENT_SECRET: "MKRfolugUiyIh6xS7qaNIFBGuRBV",       // pCloud app "Client secret"
 	REDIRECT_URI:  "http://localhost/pcloud/oauth2callback",
 
 	// OAuth2 consent is always on my.pcloud.com (region-independent); the redirect back tells
