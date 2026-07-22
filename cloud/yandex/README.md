@@ -96,7 +96,7 @@ it really exists. Like Dropbox, `listPhotos` resolves a short-lived signed `/res
 href **per photo** for `src_big`/`src_small` (self-authenticating; the aggregator's curl fetch
 needs no auth header). Wiring: the `PHOTO.UPLOAD` capabilityProvider in the account template, the
 `listAlbums`/`listPhotos`/`upload` commands, and the `com.palm.yandexdisk` entry in
-`../photos-integration/patches/Utils.js.patch` (+ the Library icon in the CSS patch).
+`../../photos-integration/patches/Utils.js.patch` (+ the Library icon in the CSS patch).
 
 > **⚠️ Re-add the account after enabling photos.** An account's `capabilityProviders` are
 > snapshotted into its `com.palm.account` DB record at **creation time** — updating this template
@@ -117,7 +117,7 @@ needs no auth header). Wiring: the `PHOTO.UPLOAD` capabilityProvider in the acco
 - ⏳ **On-device account sign-in** — the customUI OAuth webview flow is the one path exercised
   only by the framework on hardware; the token exchange it calls is verified.
 - ⚠️ **Icons are placeholders** (copied from Dropbox) — rebrand before shipping. (The Photos
-  **Library** icon `icon_yandexdisk_{40x40,20x20}.png` under `../photos-integration/assets/` is
+  **Library** icon `icon_yandexdisk_{40x40,20x20}.png` under `../../photos-integration/assets/` is
   already Yandex-branded.)
 - ⚠️ **List paging:** only the first `limit=200` items per folder are returned (no `offset`
   paging yet) — matches the other connectors' single-page behaviour.

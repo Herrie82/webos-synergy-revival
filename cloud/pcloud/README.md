@@ -88,7 +88,7 @@ Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as the othe
 ## Status / caveats
 
 - ✅ Service (on `_cloudcore`), generic `cloud-auth` app, template. Needs the Photos-aggregator `case "com.palm.pcloud"`
-  (in `../photos-integration/`) added by the integrator to route photo calls here.
+  (in `../../photos-integration/`) added by the integrator to route photo calls here.
 - ⏳ **Account sign-in untested** — needs a real `client_id` + `client_secret`.
 - ⚠️ **Region host** is resolved from the OAuth2 redirect and stored per account; if a
   particular pCloud build ever omits `hostname`/`locationid` from the redirect, the connector

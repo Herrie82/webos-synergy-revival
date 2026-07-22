@@ -27,10 +27,10 @@ Capabilities: **Doc** = DOCUMENTS (QuickOffice file browse/open/save + files app
 | **Google Drive** | OAuth2 + PKCE **+ client_secret** | ✅ | ❌ | ✅ **verified on device** (personal/≤100-user) — sign-in, browse, upload/download; Google Photos not reachable headlessly. [recon](recon/google-drive.md) |
 | **pCloud** | OAuth2 + secret (no PKCE); US/EU host | ✅ | ✅ | ✅ **verified on device**; [recon](recon/pcloud.md) |
 | **Yandex Disk** | OAuth2 + PKCE (+ secret), `Authorization: OAuth` | ✅ | ✅ | ✅ **verified on device**; [recon](recon/yandex.md) |
-| **MEGA** | email + password (no OAuth) + **E2E crypto** | ✅ | ✅ | ✅ **verified on device** — email+password sign-in, browse, download and upload work; pure-JS AES/RSA/PBKDF2 crypto with device-specific fixes (key-gen, PBKDF2, AES-CTR, meta-MAC); [details](mega/README.md) |
-| **Koofr** | OAuth2 (secret + PKCE, scope `public`) | ✅ | ✅ | ✅ **verified on device**; [details](koofr/README.md) |
-| **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | ✅ **verified on device**; [details](hidrive/README.md) |
-| **S3-compatible** (AWS S3 / IDrive e2 / B2 / Wasabi / MinIO / Storj) | **AWS SigV4** (user-supplied keys; nothing to register) | ✅ | ✅ | 🟡 code-complete — SigV4 vs AWS official test vectors + full mock-server flow validated; on-device account pending; [details](s3/README.md) |
+| **MEGA** | email + password (no OAuth) + **E2E crypto** | ✅ | ✅ | ✅ **verified on device** — email+password sign-in, browse, download and upload work; pure-JS AES/RSA/PBKDF2 crypto with device-specific fixes (key-gen, PBKDF2, AES-CTR, meta-MAC); [details](cloud/mega/README.md) |
+| **Koofr** | OAuth2 (secret + PKCE, scope `public`) | ✅ | ✅ | ✅ **verified on device**; [details](cloud/koofr/README.md) |
+| **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | ✅ **verified on device**; [details](cloud/hidrive/README.md) |
+| **S3-compatible** (AWS S3 / IDrive e2 / B2 / Wasabi / MinIO / Storj) | **AWS SigV4** (user-supplied keys; nothing to register) | ✅ | ✅ | 🟡 code-complete — SigV4 vs AWS official test vectors + full mock-server flow validated; on-device account pending; [details](cloud/s3/README.md) |
 | **Flickr** | **OAuth 1.0a** (HMAC-SHA1, signed in node) | ❌ | ✅ | 🟡 code-complete (signer verified vs OAuth 1.0a test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
 | Facebook / LinkedIn | — | ❌ | ❌ | ❌ dead as photo sources (private APIs, perms revoked); recon only |
 | Instagram | — | ❌ | ❌ | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
@@ -111,10 +111,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture.
 
 ## Shared `_cloudcore` runtime
 
-Newer cloud connectors share one byte-identical runtime, `cloudcore/service/_cloudcore/`
+Newer cloud connectors share one byte-identical runtime, `cloud/cloudcore/service/_cloudcore/`
 (generic `cloudservice.js` assistant + `oauth2.js` + `httpcurl.js` + generic commands), plus one
-generic OAuth webview app `cloudcore/auth/com.palm.app.cloud-auth/`. A connector on this runtime
-is **just two files** — its `config.js` (endpoints/credentials) and `adapter.js` (provider REST).
+generic OAuth webview app `cloud/cloudcore/auth/com.palm.app.cloud-auth/`. A connector on this
+runtime is **just two files** — its `config.js` (endpoints/credentials) and `adapter.js`
+(provider REST).
 
 - **On `_cloudcore`:** OneDrive, pCloud, Yandex-*(own service predates it)*, MEGA, Koofr,
   HiDrive, S3, kDrive. (OneDrive/pCloud/HiDrive use the shared `cloud-auth` webview; MEGA/Koofr/
@@ -124,15 +125,16 @@ is **just two files** — its `config.js` (endpoints/credentials) and `adapter.j
 ## Layout
 
 ```
-cloudcore/
-  service/_cloudcore/                 shared connector runtime (cloudservice/oauth2/httpcurl + commands)
-  auth/com.palm.app.cloud-auth/       one generic OAuth webview app (drives Atlas login)
-dropbox/  box/  onedrive/  gdrive/     per-connector: service/ + apps/ (auth + files) + account/ template
-pcloud/  yandex/  mega/  koofr/
-hidrive/  s3/  kdrive/  flickr/
-  <connector>/service/com.palm.service.<svc>/   config.js + adapter.js (on cloudcore) or full service
-  <connector>/apps/…-auth/  …-files/            customUI sign-in + Enyo file-picker/manager
-  <connector>/account/com.palm.<svc>.json       Synergy account template (DOCUMENTS / PHOTO.UPLOAD)
+cloud/                                all cloud / file connectors + their shared runtime
+  cloudcore/
+    service/_cloudcore/               shared connector runtime (cloudservice/oauth2/httpcurl + commands)
+    auth/com.palm.app.cloud-auth/     one generic OAuth webview app (drives Atlas login)
+  dropbox/  box/  onedrive/  gdrive/   per-connector: service/ + apps/ (auth + files) + account/ template
+  pcloud/  yandex/  mega/  koofr/
+  hidrive/  s3/  kdrive/  flickr/
+    <connector>/service/com.palm.service.<svc>/  config.js + adapter.js (on cloudcore) or full service
+    <connector>/apps/…-auth/  …-files/           customUI sign-in + Enyo file-picker/manager
+    <connector>/account/com.palm.<svc>.json      Synergy account template (DOCUMENTS / PHOTO.UPLOAD)
 photos-integration/                   patches to stock com.palm.service.photos (+ recipe to add a source)
 quickoffice-integration/              reroute QuickOffice's remote-file layer onto our services
 docviewer/                            Atlas-hosted view-only viewer PoC (PDF/docx/xlsx + text/images)

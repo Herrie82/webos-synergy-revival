@@ -2,7 +2,7 @@
 
 A **Google Drive** (Drive API v3) DOCUMENTS connector, built to the same architecture as
 Dropbox/Box/OneDrive. **DOCUMENTS-only** — Google Photos isn't reachable headlessly, so there
-is no PHOTO.UPLOAD provider (see [`../recon/google-drive.md`](../recon/google-drive.md)).
+is no PHOTO.UPLOAD provider (see [`../../recon/google-drive.md`](../../recon/google-drive.md)).
 
 > ⚠️ **This is a personal / ≤100-user, unverified build by necessity.** Browsing arbitrary
 > Drive folders needs the *restricted* `drive` scope; an unverified app shows a "this app hasn't

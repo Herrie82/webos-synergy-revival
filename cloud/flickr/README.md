@@ -20,7 +20,7 @@ no files app.
 | `getAuthorizeUrl` | auth app | OAuth 1.0a **leg 1** — fetch a request token, return the consent URL + `requestToken`/`requestTokenSecret` (carried across the login, see below). |
 | `exchangeCode` | account validator | OAuth 1.0a **leg 3** — redeem `oauth_verifier` + request token/secret → long-lived access token; return `credentials.common` + `username`. |
 | `checkCredentials` | accounts | `onCredentialsChanged` validator (`flickr.test.login`). |
-| `listAlbums` / `listPhotos` | **Photos aggregator** | Photo-provider contract — see [`../photos-integration`](../photos-integration). |
+| `listAlbums` / `listPhotos` | **Photos aggregator** | Photo-provider contract — see [`../../photos-integration`](../../photos-integration). |
 | `downloadFile` | photos app | Fetch a static photo URL to a local path (the aggregator normally downloads itself; this is for completeness). |
 
 ## OAuth 1.0a — why, and how it's split between node and curl

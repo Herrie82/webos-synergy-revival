@@ -85,7 +85,7 @@ as the other connectors.
   with **only the accountId** reads that stored token back and returns the real drive root — so the
   service-side `AccountCreds.resolve` → readCredentials → Bearer path is proven, not just hand-passed
   tokens.
-- ✅ **Appears + lists in QuickOffice** (account-derived reroute — see `../quickoffice-integration/`).
+- ✅ **Appears + lists in QuickOffice** (account-derived reroute — see `../../quickoffice-integration/`).
   Box + Dropbox still list; kDrive shows up with **no QuickOffice code change**.
 - ✅ **Upload / save-back verified on device**: `uploadFile` into the account root creates the file
   (`returnValue:true`) — this drove the fixes above (`total_size` required; drive-root not writable
@@ -94,7 +94,7 @@ as the other connectors.
 - ✅ **Photo source (`PHOTO.UPLOAD`)**: `listAlbums`/`listPhotos` surface one folder
   (`Config.PHOTO_ALBUM_NAME`, default "Pictures", under the private root) as an album; `src_big` =
   `…/download?access_token=` and `src_small` = `…/thumbnail?access_token=` (headerless auth, so the
-  stock Photos aggregator's curl fetch works — see `../photos-integration/`). Verified on device:
+  stock Photos aggregator's curl fetch works — see `../../photos-integration/`). Verified on device:
   album + photo entries + working URLs. The account carries DOCUMENTS **and** PHOTO.UPLOAD.
 - ✅ **Photo UPLOAD (device→cloud, "Add Photos")**: the generic `_cloudcore/commands/uploadPhoto_command.js`
   implements the aggregator's `<service>/upload {accountId, albumId, path}` contract (the

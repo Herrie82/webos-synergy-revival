@@ -21,7 +21,7 @@ browse/upload/download, and a Photos-app cloud source. Verified end-to-end on de
 | `checkCredentials` | accounts | `onCredentialsChanged` validator. |
 | `listFolder` | files app / photos app | Browse a folder (normalized entries). |
 | `uploadFile` / `downloadFile` | files app | File I/O (curl streams to/from disk, bypasses node maxBuffer). |
-| `listAlbums` / `listPhotos` | **Photos aggregator** | Photo-provider contract — see [`../photos-integration`](../photos-integration). |
+| `listAlbums` / `listPhotos` | **Photos aggregator** | Photo-provider contract — see [`../../photos-integration`](../../photos-integration). |
 
 ### Access control (`acl.js`)
 

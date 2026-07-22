@@ -104,7 +104,7 @@ at `/usr/bin/curl` (from the OpenSSL-11 update) and a current CA store at
 2. Deploy `apps/com.palm.app.mega-auth/` → `/usr/palm/applications/com.palm.app.mega-auth/`.
 3. Deploy `account/com.palm.mega.json` (+ `images/`) into the accounts templates dir
    (`/usr/palm/public/accounts/com.palm.mega/`), matching how the other templates are installed.
-4. Apply the `../photos-integration/` patches (once, shared by all photo providers) and restart
+4. Apply the `../../photos-integration/` patches (once, shared by all photo providers) and restart
    the accounts + photos services.
 5. **Settings → Accounts → MEGA**, enter your MEGA email + password.
 

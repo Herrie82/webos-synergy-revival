@@ -63,7 +63,7 @@ Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as Dropbox.
 ## Status / caveats
 
 - ✅ Service (on `_cloudcore`), generic `cloud-auth` app, template, Photos-aggregator `case "com.palm.onedrive"` (in
-  [`../photos-integration/patches/Utils.js.patch`](../photos-integration/patches/Utils.js.patch)).
+  [`../../photos-integration/patches/Utils.js.patch`](../../photos-integration/patches/Utils.js.patch)).
 - ✅ **Live-API verified** (off-device, system curl): Auth-Code+PKCE (no secret), rotating
   **refresh**, `/me` identity, drive-root list, upload, download (byte-identical round trip),
   and the Camera Roll special folder — all against a real personal OneDrive.

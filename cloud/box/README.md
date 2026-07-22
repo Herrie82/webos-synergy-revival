@@ -47,7 +47,7 @@ current-CA prerequisites as Dropbox.
 ## Status / remaining
 
 - ✅ Service, both apps, template, Photos-aggregator `case "com.palm.boxnet"` (in
-  [`../photos-integration/patches/Utils.js.patch`](../photos-integration/patches/Utils.js.patch)).
+  [`../../photos-integration/patches/Utils.js.patch`](../../photos-integration/patches/Utils.js.patch)).
 - ⏳ **Account sign-in untested** — needs a real `client_id`.
 - ⏳ **QuickOffice Box reroute** — mirror the Dropbox `mxId "drop"` branch with an `mxId "box"`
   branch (Box was an original QuickOffice provider, so the mapping already exists); this is an
