@@ -15,8 +15,8 @@ var Config = {
 	// shelled out to the modern curl bundled at /var/dropbox-tls (curl 7.88.1 +
 	// OpenSSL 1.1.1w). Its 3 libs load via LD_LIBRARY_PATH. This is the SAME bundle the
 	// Dropbox connector deploys (the deployment-bundle prerequisite), reused verbatim.
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	// CA bundle = the SYSTEM store, refreshed to a current bundle by the deployment-bundle
 	// prerequisite (the stock rootfs ships a 2011 stub that fails modern verify).
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",

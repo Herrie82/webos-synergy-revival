@@ -20,8 +20,8 @@
 var Config = {
 	// Modern-TLS HTTP: device node is OpenSSL 0.9.8k, so ALL pCloud HTTPS shells out to the
 	// bundled modern curl (same binary + system CA store the Dropbox/Box connectors use).
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
 	CLIENT_ID:     "PLACEHOLDER_PCLOUD_CLIENT_ID",       // TODO: pCloud app "Client ID"

@@ -15,8 +15,8 @@ var Config = {
 	// g.api.mega.co.nz, so ALL Mega HTTPS is shelled out to the bundled modern curl (the
 	// same binary + CA store the Dropbox/OneDrive connectors use). curl 7.88.1 +
 	// OpenSSL 1.1.1w (TLS 1.3), deployed at /var/dropbox-tls.
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
 	// The Mega "cs" (client->server) command endpoint. Requests are POSTed as a JSON array

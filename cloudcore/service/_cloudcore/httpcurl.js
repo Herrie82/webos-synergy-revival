@@ -5,9 +5,14 @@
  * WHY: the device node runtime is OpenSSL 0.9.8k (no TLS 1.2/1.3), so its built-in
  * HTTP stack (Foundations.Comms.AjaxCall) CANNOT complete a TLS handshake with
  * api.dropboxapi.com. This mirrors the Teams port's rule - "no modern HTTPS in the
- * webOS JS layer" - by shelling every Dropbox request out to the modern curl
- * (curl 7.88.1 + OpenSSL 1.1.1, TLS 1.3) from the deployment-bundle. The JS layer
- * is pure orchestration; all TLS lives in curl.
+ * webOS JS layer" - by shelling every request out to a modern curl. The JS layer is
+ * pure orchestration; all TLS lives in curl.
+ *
+ * CURL SOURCE: Config.CURL. Now that the OpenSSL-11 update ships a modern SYSTEM curl
+ * (/usr/bin/curl = curl 7.88.1 + OpenSSL 1.1.1w, verified doing TLS 1.2/1.3 to the cloud
+ * APIs on-device), the connectors point Config.CURL at "/usr/bin/curl" with no
+ * CURL_LD_LIBRARY_PATH - the old /var/dropbox-tls bundle is no longer required. (This code
+ * is unchanged: it just runs whatever Config.CURL names, defaulting to /usr/bin/curl.)
  *
  * SECURITY: there is NO client_secret (public client + PKCE - see oauth2.js). Form
  * fields passed via --data-urlencode are the app key (public), the one-time auth

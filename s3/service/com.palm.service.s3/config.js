@@ -15,8 +15,8 @@ var Config = {
 	// Modern-TLS HTTP: device node is OpenSSL 0.9.8k, so ALL S3 HTTPS shells out to the bundled
 	// modern curl (same binary + CA store the other connectors use). SigV4 hashing itself runs
 	// in-process via native node crypto (HMAC/SHA-256), which 0.9.8k does support.
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
 	// S3 folders are emulated with key prefixes + the "/" delimiter; the bucket root is the empty

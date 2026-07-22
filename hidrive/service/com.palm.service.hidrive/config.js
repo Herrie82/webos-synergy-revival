@@ -13,15 +13,18 @@
 var Config = {
 	// Modern-TLS HTTP: device node is OpenSSL 0.9.8k and cannot handshake with HiDrive, so ALL
 	// HiDrive HTTPS shells out to the bundled modern curl (same binary + CA store as the others).
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
 	CLIENT_ID:     "PLACEHOLDER_HIDRIVE_CLIENT_ID",       // TODO: HiDrive "native" app Client ID
 	// REQUIRED for HiDrive (no PKCE - the token exchange must send the secret). It ships in the
 	// package; oauth2.js sends it because it is not left as the PLACEHOLDER sentinel.
 	CLIENT_SECRET: "PLACEHOLDER_HIDRIVE_CLIENT_SECRET",   // TODO: HiDrive app Client secret
-	REDIRECT_URI:  "http://localhost/hidrive/oauth2callback",
+	// HiDrive "native" apps require a localhost redirect WITH a port (http://localhost:<port>).
+	// The cloud-auth webview captures it by URL-prefix match, so nothing listens on the port -
+	// this value MUST match the redirect URI registered for the app verbatim.
+	REDIRECT_URI:  "http://localhost:8888/hidrive/oauth2callback",
 
 	// HiDrive identity platform (my.hidrive.com) - distinct from the API host below.
 	AUTHORIZE_URL: "https://my.hidrive.com/client/authorize",

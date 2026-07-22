@@ -20,8 +20,8 @@ var Config = {
 	// cloud-api.yandex.net / oauth.yandex.com, so ALL Yandex HTTPS is shelled out to the
 	// bundled modern curl (same binary + system CA store the Dropbox/OneDrive connectors
 	// use). curl 7.88.1 + OpenSSL 1.1.1w (TLS 1.3), deployed at /var/dropbox-tls.
-	CURL:                 "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                 "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	CURL_CAINFO:          "/etc/ssl/certs/ca-certificates.crt",
 
 	CLIENT_ID:     "86411bcf2cea432db3201bfdec5ddf42",   // Yandex OAuth app ID

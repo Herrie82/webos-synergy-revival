@@ -13,8 +13,8 @@ var Config = {
 	// Private modern-TLS curl bundle deployed at /var/dropbox-tls (curl 7.88.1 +
 	// OpenSSL 1.1.1w; runs on the stock loader, needs only GLIBC_2.4). Its 3 libs
 	// (libcurl.so.4, libssl.so.1.1, libcrypto.so.1.1) load via LD_LIBRARY_PATH.
-	CURL:                "/var/dropbox-tls/curl",
-	CURL_LD_LIBRARY_PATH: "/var/dropbox-tls",
+	CURL:                "/usr/bin/curl",
+	CURL_LD_LIBRARY_PATH: "",
 	// CA bundle = the SYSTEM store. The stock rootfs ships a 2011 stub, so the
 	// deployment-bundle (this connector's prerequisite) installs a current
 	// ca-certificates.crt here - see deployment-bundle/install.sh "CA bundle" step.
