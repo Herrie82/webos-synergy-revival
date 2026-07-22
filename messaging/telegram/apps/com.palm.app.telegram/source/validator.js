@@ -75,9 +75,9 @@ enyo.kind({
         { className: "accounts-footer-shadow" },
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" },
-            { kind: "Button", name: "removeButton", caption: "Remove Account", showing: false, className: "accounts-toolbar-btn", onclick: "confirmRemove" }
+            { kind: "Button", name: "removeButton", caption: "Remove Account", showing: false, className: "enyo-button-negative", onclick: "confirmRemove" }
         ]},
-        { kind: "Dialog", name: "confirmDialog", modal: true, scrim: true, components: [
+        { kind: "Popup", name: "confirmDialog", modal: true, scrim: true, style: "width: 340px; max-width: 92%;", components: [
             { className: "accounts-body-text", style: "padding: 16px; line-height: 1.4;",
               content: "Remove this account? Its messages will be deleted from this device." },
             { kind: "HFlexBox", style: "padding: 8px 12px 12px;", components: [
@@ -174,14 +174,12 @@ enyo.kind({
     },
 
     confirmRemove: function() {
-        this.$.confirmRemoveBtn.setDisabled(false);
         this.$.confirmDialog.openAtCenter();
     },
     closeConfirm: function() {
         this.$.confirmDialog.close();
     },
     doRemove: function() {
-        this.$.confirmRemoveBtn.setDisabled(true);
         if (!this.accountId) { this.closeConfirm(); return; }
         this.$.acctService.call({ accountId: this.accountId }, { method: "deleteAccount" });
     },
