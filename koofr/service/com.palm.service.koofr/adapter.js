@@ -205,6 +205,49 @@ var Adapter = {
 	},
 
 	// --- PHOTO.UPLOAD helpers ------------------------------------------------------------
+	// Is a listFolder entry an image file? (entries carry a computed mimeType.)
+	_isImg: function (e) {
+		if (!e || e.type !== "file") { return false; }
+		var m = e.mimeType || this._mime(e.name, false, null);
+		return !!(m && m.indexOf("image/") === 0);
+	},
+	// Enumerate BROWSABLE photo albums: the mount root's direct images plus every immediate
+	// sub-folder that holds at least one image (one level deep). aid = the absolute path.
+	// This replaces the old "only Camera Uploads" view (which 404'd when that folder didn't
+	// exist and broke the whole account sync) so the user's real folders - e.g. Koofr's default
+	// "My pictures" - actually show up in Photos & Videos.
+	photoAlbums: function (creds, cb) {
+		var self = this, f = new Future();
+		var lf = self.listFolder(creds, Config.ROOT_FOLDER, cb);
+		f.now(this, function () { return lf; });
+		f.then(this, function () {
+			var entries;
+			try { entries = (lf.result && lf.result.entries) || []; } catch (e) { entries = []; }
+			var albums = [], rootImgs = 0, folders = [];
+			entries.forEach(function (e) {
+				if (self._isImg(e)) { rootImgs++; }
+				else if (e.type === "folder") { folders.push(e); }
+			});
+			if (rootImgs) { albums.push({ aid: "/", name: "Koofr", images: rootImgs }); }
+			var i = 0;
+			function nextFolder() {
+				if (i >= folders.length) { f.result = { albums: albums }; return; }
+				var fld = folders[i++];
+				var sf = self.listFolder(creds, fld.id, cb);
+				sf.then(self, function () {
+					var se;
+					try { se = (sf.result && sf.result.entries) || []; } catch (e3) { se = []; }
+					var c = 0;
+					se.forEach(function (x) { if (self._isImg(x)) { c++; } });
+					if (c) { albums.push({ aid: fld.id, name: fld.name, images: c }); }
+					nextFolder();
+				});
+			}
+			nextFolder();
+		});
+		return f;
+	},
+
 	resolvePhotoAlbum: function (creds, cb) {
 		var self = this, f = new Future();
 		var name = Config.PHOTO_ALBUM_NAME || "Camera Uploads";

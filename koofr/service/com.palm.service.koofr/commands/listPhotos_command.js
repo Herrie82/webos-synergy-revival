@@ -13,7 +13,11 @@ ListPhotosCommandAssistant.prototype = {
 	run: function (future) {
 		var self = this, args = this.controller.args || {};
 		if (args.aid == null || args.aid === "") { future.result = { returnValue: true, photos: [] }; return; }
-		var albumPath = "/" + String(args.aid).replace(/^\/+|\/+$/g, "");
+		// aid is the album's absolute path, URL-encoded by listAlbums (slash-free). Decode it back.
+		var albumPath;
+		try { albumPath = decodeURIComponent(String(args.aid)); }
+		catch (eDec) { albumPath = "/" + String(args.aid).replace(/^\/+|\/+$/g, ""); }
+		if (albumPath.charAt(0) !== "/") { albumPath = "/" + albumPath; }
 
 		var credF = AccountCreds.resolve(args);
 		credF.then(this, function () {
@@ -22,9 +26,11 @@ ListPhotosCommandAssistant.prototype = {
 			var renewed = null;
 			var lf = Adapter.listFolder(creds, albumPath, function (nc) { renewed = nc; });
 			lf.then(self, function () {
+				// Don't fail the whole account sync if this album folder can't be listed (e.g. the
+				// "Camera Uploads" placeholder folder doesn't exist yet) - just return no photos.
 				var entries;
 				try { entries = (lf.result && lf.result.entries) || []; }
-				catch (e2) { future.setException(e2); return; }
+				catch (e2) { future.result = { returnValue: true, photos: [] }; return; }
 				var images = entries.filter(PhotoLib.isImage);
 				var photos = [], i = 0;
 				function finish() {
