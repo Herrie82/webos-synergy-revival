@@ -74,15 +74,14 @@ Notes:
   are verified end-to-end on device; Teams is the reference deployment; the rest are built but most
   have not yet been ticked off end-to-end on device.
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
-  stock Phone app — **calls connect with audio on device**; outbound mic capture hits the same
-  **device-mic-specific** issue as WhatsApp (not a connector bug). No video.
+  stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
+  brought up. No video.
 - **Signal**: IM **works on device** (send/receive). Calling is second-most advanced: incoming
   calls ring the Phone app (signaling staged on device) and the SRTP-GCM + Opus **media loopback
   passes on device**; a real two-way call is still unverified.
 - **WhatsApp**: IM works, and **voice calls work on device** via the `wacallm` media bridge —
-  incoming/outgoing calls connect and audio flows. Outbound **mic capture is broken**, but that
-  appears to be a **device-mic-specific** issue (the same symptom other calling connectors hit),
-  not a WhatsApp-connector bug. No video.
+  incoming/outgoing calls connect, and both directions carry audio (mic capture works). What
+  remains is **audio-quality tuning**. No video.
 - **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
   DAVE E2EE stack) that has **never completed a live voice handshake**.
 - **Facebook**: the plain `purple-facebook` (email+password) is **retired** — it can't reach
