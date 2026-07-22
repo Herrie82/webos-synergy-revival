@@ -28,20 +28,26 @@ var Adapter = {
 
 	_now: function () { return (new Date()).getTime(); },
 
+	// Read `words` 32-bit words of randomness. MUST use /dev/urandom (non-blocking) via plain
+	// byte access: on the device node 0.4.12 crypto.randomBytes BLOCKS on /dev/random entropy
+	// (hanging upload), and Buffer.readUInt32BE doesn't exist. So read raw bytes and pack manually.
 	_rand: function (words) {
-		var out = [], i;
-		if (MC._nc && MC._nc.randomBytes) {
-			var b = MC._nc.randomBytes(words * 4);
-			for (i = 0; i < words; i++) { out.push(b.readUInt32BE(i * 4) >>> 0); }
-			return out;
-		}
+		var out = [], i, j, n = words * 4, bytes = null;
 		if (MC._fs) {
-			var fd = MC._fs.openSync("/dev/urandom", "r"), buf = new Buffer(words * 4);
-			MC._fs.readSync(fd, buf, 0, words * 4, 0); MC._fs.closeSync(fd);
-			for (i = 0; i < words; i++) { out.push(buf.readUInt32BE(i * 4) >>> 0); }
-			return out;
+			try {
+				var fd = MC._fs.openSync("/dev/urandom", "r"), buf = new Buffer(n);
+				MC._fs.readSync(fd, buf, 0, n, null); MC._fs.closeSync(fd);
+				bytes = buf;
+			} catch (e) { bytes = null; }
 		}
-		throw { returnValue: false, errorCode: "NO_RANDOM" };
+		if (!bytes && MC._nc && MC._nc.randomBytes) { try { bytes = MC._nc.randomBytes(n); } catch (e2) { bytes = null; } }
+		if (!bytes) { throw { returnValue: false, errorCode: "NO_RANDOM" }; }
+		for (i = 0; i < words; i++) {
+			j = i * 4;
+			out.push((((bytes[j] & 0xff) << 24) | ((bytes[j + 1] & 0xff) << 16) |
+				((bytes[j + 2] & 0xff) << 8) | (bytes[j + 3] & 0xff)) >>> 0);
+		}
+		return out;
 	},
 
 	_invalidate: function () { this._tree = null; },

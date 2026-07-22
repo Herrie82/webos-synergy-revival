@@ -566,11 +566,10 @@ var MegaCrypto = (function () {
 			var keyArg = useBuf ? toBuffer(aesKeyBytes) : _binStr(aesKeyBytes);
 			var ivArg  = useBuf ? toBuffer(_zeros(16))  : _binStr(_zeros(16));
 			var nb = a32ToBytes([nonce[0], nonce[1]]);   // 8-byte nonce
-			// ECB ignores the IV, but node builds disagree on its form: modern node wants an
-			// EMPTY iv, the device's 0.4.12 wants a 16-byte one. Detect which this build accepts.
-			var emptyIv = useBuf ? toBuffer([]) : "";
+			// ECB ignores the IV, but node builds disagree on its form: modern node wants a NULL
+			// iv, the device's 0.4.12 wants a 16-byte one. Detect which this build accepts.
 			var ecbIv;
-			try { _nc.createCipheriv("aes-128-ecb", keyArg, emptyIv); ecbIv = emptyIv; }
+			try { _nc.createCipheriv("aes-128-ecb", keyArg, null); ecbIv = null; }
 			catch (eiv) { ecbIv = ivArg; }
 			var fin = _fs.openSync(inPath, "r");
 			var fout = _fs.openSync(outPath, "w");
@@ -616,8 +615,13 @@ var MegaCrypto = (function () {
 	function metaMacFile(inPath, aesKeyA32, nonce, cb) {
 		if (!_nc || !_fs) { cb({ errorCode: "NO_NODE_CRYPTO" }); return; }
 		try {
-			var keyBuf = toBuffer(a32ToBytes(aesKeyA32.slice(0, 4)));
-			var ivChunk = toBuffer(a32ToBytes([nonce[0], nonce[1], nonce[0], nonce[1]]));
+			// aes-128-cbc IS available on the device, but (like ecb/ctr) it rejects Buffer args -
+			// use the string form there. keyArg = 16-byte file key; ivArg = the [n0,n1,n0,n1] seed.
+			var useBuf = _detectCipherBuf();
+			var keyBytes = a32ToBytes(aesKeyA32.slice(0, 4));
+			var ivBytes = a32ToBytes([nonce[0], nonce[1], nonce[0], nonce[1]]);
+			var keyArg = useBuf ? toBuffer(keyBytes) : _binStr(keyBytes);
+			var ivArg = useBuf ? toBuffer(ivBytes) : _binStr(ivBytes);
 			var stat = _fs.statSync(inPath), size = stat.size;
 			var fin = _fs.openSync(inPath, "r");
 			var fileMac = [0, 0, 0, 0];
@@ -640,11 +644,17 @@ var MegaCrypto = (function () {
 				} else if (got !== clen) {
 					padded = data.slice(0, got);
 				}
-				var mac = _nc.createCipheriv("aes-128-cbc", keyBuf, ivChunk);
-				mac.setAutoPadding(false);
-				var enc = Buffer.concat([mac.update(padded), mac.final()]);
-				// chunkMac = last 16 bytes of the CBC output
-				var chunkMac = bytesToA32([].slice.call(enc.slice(enc.length - 16)));
+				var mac = _nc.createCipheriv("aes-128-cbc", keyArg, ivArg);
+				if (mac.setAutoPadding) { mac.setAutoPadding(false); }
+				// chunkMac = last 16 bytes of the CBC output (no padding -> update returns all blocks)
+				var chunkMac;
+				if (useBuf) {
+					var enc = mac.update(padded);
+					chunkMac = bytesToA32([].slice.call(enc.slice(enc.length - 16)));
+				} else {
+					var encS = mac.update(padded.toString("binary"), "binary", "binary");
+					chunkMac = bytesToA32(_binToBytes(encS.substr(encS.length - 16)));
+				}
 				fileMac = ecbEncryptA32(aesKeyA32, [
 					(fileMac[0] ^ chunkMac[0]) >>> 0, (fileMac[1] ^ chunkMac[1]) >>> 0,
 					(fileMac[2] ^ chunkMac[2]) >>> 0, (fileMac[3] ^ chunkMac[3]) >>> 0
