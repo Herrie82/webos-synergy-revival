@@ -551,24 +551,50 @@ var MegaCrypto = (function () {
 		return toBuffer(iv);
 	}
 
-	// ---- bulk file crypto (native node AES-128-CTR, streamed sync in bounded chunks) -----
-	// CTR is symmetric, so this both ENCRYPTS and DECRYPTS. iv = nonce(8 bytes) || 0(8 bytes),
-	// counter increments as the standard 128-bit big-endian block counter. Reads in 256 KB
-	// slices via fs sync so memory stays bounded regardless of file size. cb(err).
+	// ---- bulk file crypto (AES-128-CTR, streamed sync in bounded chunks) -----------------
+	// CTR is symmetric, so this both ENCRYPTS and DECRYPTS. The device node (0.4.12) has NO
+	// "aes-128-ctr" cipher ("Unknown cipher"), but native aes-128-ecb IS available - so we build
+	// the CTR keystream ourselves: keystream block i = AES-ECB(counter_i) with
+	// counter_i = nonce(8 bytes) || uint64_be(i), and plaintext = ciphertext XOR keystream. All
+	// AES runs natively (fast); only the counter assembly + XOR are JS. Uses the string arg form
+	// the 0.4.12 binding requires (it rejects Buffers) via _detectCipherBuf. Reads in 64 KB
+	// slices (multiple of 16) so memory stays bounded. cb(err).
 	function ctrFile(inPath, outPath, aesKeyBytes, nonce, cb) {
-		if (!_nc || !_fs) { cb({ errorCode: "NO_NODE_CRYPTO" }); return; }
+		if (!_nc || !_fs || !_nc.createCipheriv) { cb({ errorCode: "NO_NODE_CRYPTO" }); return; }
 		try {
-			var iv = ivFromNonce(nonce, 0, 0);
-			var cipher = _nc.createDecipheriv("aes-128-ctr", toBuffer(aesKeyBytes), iv);
+			var useBuf = _detectCipherBuf();
+			var keyArg = useBuf ? toBuffer(aesKeyBytes) : _binStr(aesKeyBytes);
+			var ivArg  = useBuf ? toBuffer(_zeros(16))  : _binStr(_zeros(16));
+			var nb = a32ToBytes([nonce[0], nonce[1]]);   // 8-byte nonce
+			// ECB ignores the IV, but node builds disagree on its form: modern node wants an
+			// EMPTY iv, the device's 0.4.12 wants a 16-byte one. Detect which this build accepts.
+			var emptyIv = useBuf ? toBuffer([]) : "";
+			var ecbIv;
+			try { _nc.createCipheriv("aes-128-ecb", keyArg, emptyIv); ecbIv = emptyIv; }
+			catch (eiv) { ecbIv = ivArg; }
 			var fin = _fs.openSync(inPath, "r");
 			var fout = _fs.openSync(outPath, "w");
-			var buf = new Buffer(262144), n;
-			while ((n = _fs.readSync(fin, buf, 0, buf.length, null)) > 0) {
-				var out = cipher.update(buf.slice(0, n));
-				if (out && out.length) { _fs.writeSync(fout, out, 0, out.length); }
+			var CHUNK = 65536, buf = new Buffer(CHUNK), blockIndex = 0, n;
+			while ((n = _fs.readSync(fin, buf, 0, CHUNK, null)) > 0) {
+				var nblocks = Math.floor((n + 15) / 16), ctr = [], b, idx;
+				for (b = 0; b < nblocks; b++) {
+					idx = blockIndex + b;   // counter = nonce(8) || 0(4) || uint32_be(idx)
+					ctr.push(nb[0], nb[1], nb[2], nb[3], nb[4], nb[5], nb[6], nb[7],
+						0, 0, 0, 0, (idx >>> 24) & 0xff, (idx >>> 16) & 0xff, (idx >>> 8) & 0xff, idx & 0xff);
+				}
+				var ecb = _nc.createCipheriv("aes-128-ecb", keyArg, ecbIv);
+				if (ecb.setAutoPadding) { ecb.setAutoPadding(false); }
+				var data = new Buffer(n), i;
+				if (useBuf) {
+					var ksB = ecb.update(toBuffer(ctr));
+					for (i = 0; i < n; i++) { data[i] = buf[i] ^ ksB[i]; }
+				} else {
+					var ksS = ecb.update(_binStr(ctr), "binary", "binary");
+					for (i = 0; i < n; i++) { data[i] = buf[i] ^ (ksS.charCodeAt(i) & 0xff); }
+				}
+				_fs.writeSync(fout, data, 0, n);
+				blockIndex += nblocks;
 			}
-			var last = cipher.final();
-			if (last && last.length) { _fs.writeSync(fout, last, 0, last.length); }
 			_fs.closeSync(fin); _fs.closeSync(fout);
 			cb(null);
 		} catch (e) { cb({ errorCode: "CTR_FAILED", detail: String(e && e.message || e) }); }
