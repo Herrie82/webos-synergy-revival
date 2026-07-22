@@ -1,134 +1,169 @@
 # webOS Synergy Revival
 
-Reviving the defunct **Synergy** cloud connectors on the HP TouchPad (webOS 3.0.5,
+Reviving the defunct **Synergy** account connectors on the HP TouchPad (webOS 3.0.5,
 `nova-cust-image-topaz`). The stock connectors died with their backends (old APIs,
-2009-era TLS, closed helper apps). This repo modernizes them: OAuth2/PKCE account
-sign-in, modern-TLS transport, and real file/photo I/O — decoupled from the dead
-QuickOffice engine.
+2009-era TLS, closed helper apps). This repo modernizes two families of them:
 
-## Status
+- **Cloud / file connectors** — OAuth2/PKCE (or token / SigV4 / E2E-crypto) account sign-in,
+  modern-TLS transport, and real file/photo I/O, decoupled from the dead QuickOffice engine.
+  They light up **Settings → Accounts**, the **QuickOffice** file browser, and the stock
+  **Photos** app.
+- **Messaging / IM connectors** — modern chat networks brought back to the stock **Messaging**
+  app (and, where built, the **Phone** app for calls) via `libpurple` protocol plugins bridged
+  into webOS by `imlibpurpleservice`. Details live in [`messaging/README.md`](messaging/README.md).
 
-| Connector | What works | State |
+## Cloud / file connectors
+
+Capabilities: **Doc** = DOCUMENTS (QuickOffice file browse/open/save + files app);
+**Photo** = PHOTO.UPLOAD (appears as a source in the stock Photos app).
+✅ works · 🟡 partial/off-device only · ❌ n/a for this service.
+
+| Connector | Auth | Doc | Photo | State |
+|---|---|:--:|:--:|---|
+| **Dropbox** | OAuth2 + PKCE (public, no secret) | ✅ | ✅ | ✅ **verified end-to-end on device** — reference implementation |
+| **kDrive** (Infomaniak) | personal API token (Bearer) | ✅ | ✅ | ✅ **deployed + verified on device** — sign-in, browse, QuickOffice, upload/save-back, photo source all exercised |
+| **Box** | OAuth2 + PKCE (secret optional) | ✅ | ✅ | 🟡 code-complete, mirrors Dropbox — untested pending a Box `client_id` |
+| **OneDrive** | OAuth2 + PKCE (no secret, MS Graph) | ✅ | ✅ | 🟡 code-complete — **verified vs live Graph off-device**; on-device customUI sign-in unexercised |
+| **Google Drive** | OAuth2 + PKCE **+ client_secret** | ✅ | ❌ | 🟡 code-complete (personal/≤100-user) — untested pending a Google `client_id`+secret; Google Photos not reachable headlessly. [recon](recon/google-drive.md) |
+| **pCloud** | OAuth2 + secret (no PKCE); US/EU host | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — untested on device; [recon](recon/pcloud.md) |
+| **Yandex Disk** | OAuth2 + PKCE (+ secret), `Authorization: OAuth` | ✅ | ✅ | 🟡 code-complete, **app registered** — **verified vs live API off-device**; on-device sign-in unexercised; [recon](recon/yandex.md) |
+| **MEGA** | email + password (no OAuth) + **E2E crypto** | ✅ | ✅ | ✅ **verified on device** — email+password sign-in, browse, download and upload work; pure-JS AES/RSA/PBKDF2 crypto with device-specific fixes (key-gen, PBKDF2, AES-CTR, meta-MAC); [details](mega/README.md) |
+| **Koofr** | OAuth2 (secret + PKCE, scope `public`) | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — wiring validated off-device (mock server); on-device pending; [details](koofr/README.md) |
+| **HiDrive** (STRATO) | OAuth2 + secret (refresh-on-401) | ✅ | ✅ | 🟡 code-complete, **client_id/secret wired** — off-device mock flow (incl. refresh) validated; on-device pending; [details](hidrive/README.md) |
+| **S3-compatible** (AWS S3 / IDrive e2 / B2 / Wasabi / MinIO / Storj) | **AWS SigV4** (user-supplied keys; nothing to register) | ✅ | ✅ | 🟡 code-complete — SigV4 vs AWS official test vectors + full mock-server flow validated; on-device account pending; [details](s3/README.md) |
+| **Flickr** | **OAuth 1.0a** (HMAC-SHA1, signed in node) | ❌ | ✅ | 🟡 code-complete (signer verified vs OAuth 1.0a test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
+| Facebook / LinkedIn | — | ❌ | ❌ | ❌ dead as photo sources (private APIs, perms revoked); recon only |
+| Instagram | — | ❌ | ❌ | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
+| Snapfish | — | ❌ | ❌ | ⚠️ marginal (private OAuth gateway); recon only |
+
+**Dropbox**, **kDrive** and **MEGA** have been **run on real hardware**: an account is created
+and survives reboots, files browse/upload/download byte-exact, QuickOffice opens and saves them
+back, and the cloud folder appears as an album in the Photos app. The remaining connectors reuse
+the same verified plumbing and are blocked only on a per-provider credential or a first on-device
+sign-in.
+
+### QuickOffice + Photos integration (shared, not connectors)
+
+| Piece | What it does | State |
 |---|---|---|
-| **Dropbox** | Account sign-in (OAuth2 + PKCE), file browse/upload/download (file-picker app), **and photos in the stock Photos app** | ✅ **complete, verified end-to-end on device** |
-| **QuickOffice** | Remote file **list + open + save-back (edit)** rerouted onto six services (Dropbox/Box/OneDrive/Drive/pCloud/Yandex); dead MX proxy bypassed; patches fit both the Office and PDF apps | ✅ patched (2 patches, JS-only) |
-| **Box** | Full stack — sign-in (OAuth2 + PKCE), file browse/upload/download, auth + file-picker apps, and photos provider | 🟡 **code-complete, mirrors Dropbox** — untested pending a Box `client_id` |
-| **OneDrive** | Full stack — sign-in (OAuth2 + PKCE, **no secret**), file browse/upload/download, auth + file-picker apps, and photos (Camera Roll) provider | 🟡 **code-complete, mirrors Dropbox** — untested pending an Azure `client_id` |
-| **Doc viewer** | Atlas-hosted viewer for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep) | 🧪 **PoC — deployed on device**; PDF.js/mammoth/SheetJS vendored (view-only). On-device open of a real PDF still to be exercised |
-| **Google Drive** | DOCUMENTS — sign-in (OAuth2 + PKCE), file browse/upload/download, native-doc export, auth + file-picker apps | 🟡 **code-complete (personal/≤100-user)** — untested pending a Google client_id+secret; [recon](recon/google-drive.md) |
-| **pCloud** | Full stack — sign-in (OAuth2, ships secret), file browse/upload/download, auth + file-picker apps, photos provider; region-aware US/EU host | 🟡 **code-complete, mirrors Dropbox** — untested pending a pCloud `client_id`+secret; [recon](recon/pcloud.md) |
-| **Yandex Disk** | DOCUMENTS — sign-in (OAuth2, ships secret, PKCE-capable), path-based browse/upload/download, auth + file-picker apps | 🟡 **code-complete, mirrors Dropbox** — untested pending a Yandex `client_id`+secret; [recon](recon/yandex.md) |
-| **MEGA** | DOCUMENTS + PHOTO.UPLOAD — **email+password** sign-in (no OAuth) + **end-to-end crypto** done in pure JS (AES/RSA/PBKDF2), own auth app; browse/upload/download + photo album | 🟡 **code-complete; crypto validated off-device** (primitives vs native `crypto`, full login/list/download/upload flow vs a mock server) — on-device sign-in pending; [details](mega/README.md) |
-| **S3-compatible** (AWS S3 / IDrive e2 / Backblaze B2 / Wasabi / MinIO) | DOCUMENTS + PHOTO.UPLOAD — **generic** connector: endpoint+bucket+access-key form, **AWS SigV4** request signing (native `crypto`), presigned-URL photos; browse/upload/download | 🟢 **code-complete; SigV4 vs AWS official test vectors + full mock-server flow validated** — on-device account pending; [details](s3/README.md) |
-| **HiDrive** (STRATO) | DOCUMENTS + PHOTO.UPLOAD — OAuth2 (native app + refresh), path-based browse/upload/download, shared auth webview | 🟡 **code-complete, mirrors Yandex** — untested pending a HiDrive `client_id`+secret (mock-flow incl. refresh-on-401 validated); [details](hidrive/README.md) |
-| **Koofr** | DOCUMENTS + PHOTO.UPLOAD — **app-password / HTTP Basic** (no OAuth), mount+path model, own auth app; browse/upload/download + photo album | 🟢 **code-complete; wiring validated off-device** (mount resolution, Basic auth, list/download/upload/link vs a mock server) — on-device account pending; [details](koofr/README.md) |
-| **Flickr** | PHOTO.UPLOAD — sign-in (**OAuth 1.0a**, HMAC-SHA1 signed in node), album/photo browse + download into the Photos app | 🟡 **code-complete** (signer verified vs OAuth spec test vector) — untested pending a Flickr API key+secret; [recon](recon/flickr.md) |
-| Facebook / LinkedIn | — | ❌ dead (private APIs, perms revoked); recon only |
-| Instagram | — | ❌ dead (Basic Display API shut down 2024-12; successors need Business acct + secret + App Review); [recon](recon/instagram.md) |
-| Snapfish | — | ⚠️ marginal (private OAuth gateway); recon only |
+| **QuickOffice reroute** | Reroutes QuickOffice's dead MX proxy onto any DOCUMENTS account (list + open + **save-back**); account-derived, zero code per new connector; fits both the Office and PDF apps | ✅ **Box + Dropbox verified interactively on device**; kDrive/OneDrive/Drive/pCloud/Yandex share the identical path |
+| **Photos integration** | Patches to stock `com.palm.service.photos` so any PHOTO.UPLOAD account becomes a Photos source (templateId→service routing + per-service Library icons) | ✅ dynamic source recognition + system curl; routes Dropbox/Box/OneDrive/pCloud/Flickr/kDrive/Yandex/MEGA/Koofr/HiDrive |
+| **Doc viewer** | Atlas-hosted viewer PoC for file types the frozen native QuickOffice engine can't (PDF/docx/xlsx via JS libs; text/images zero-dep, view-only) | 🧪 PoC on device — text/image renderers work end-to-end; PDF.js/mammoth/SheetJS **not committed** (drop in per `docviewer/.../lib/README.md`) |
 
-Everything under `dropbox/` has been built and **run on real hardware**: an account is
-created and survives reboots; files browse/upload/download byte-exact; and a Dropbox
-folder appears as an album in the Photos app with images synced down through the modern
-curl.
+## Messaging / IM connectors
 
-## The one hard constraint (shapes the whole design)
+Synergy **IM** account providers, each bridging a `libpurple` protocol plugin into the stock
+Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Media** = image/video
+attachments · **Voice** / **Video** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
+❔ not documented as verified on webOS · ❌ none.
 
-The device `node` runtime is **OpenSSL 0.9.8k** and the stock webview is WebKit ~2009 —
-**neither can complete a TLS 1.2/1.3 handshake**, so *no modern HTTPS can happen in the
-webOS JS/node layer*. Every modern-TLS step is therefore pushed out of JS:
+| Connector | Plugin | Auth | IM | Media | Voice | Video |
+|---|---|---|:--:|:--:|:--:|:--:|
+| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❌ | ❌ |
+| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | 🟡 | ❌ |
+| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | 🟡 | ❔ | 🟡 | ❌ |
+| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | 🟡 | ❌ |
+| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) | phone + QR / pairing code | ✅ | 🟡 | ❌ | ❌ |
+| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❌ | ❌ |
+| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | `c_user`/`xs`/`datr` cookies | 🟡 | ❌ | ❌ | ❌ |
 
-- **The login page** runs in **Atlas** (WPE browser, modern TLS) — not the stock webview.
-- **All token/API/file calls** shell out to a **bundled modern curl** (curl 7.88.1 /
-  OpenSSL 1.1.1w, TLS 1.3) at `/var/dropbox-tls/curl`.
-- **Auth is a public client + PKCE** (RFC 7636) — there is **no client_secret** anywhere,
-  so the identical package ships to every device with nothing to provision.
+Notes:
+- **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
+  libpurple 2.14 + ssl-openssl (Teams-port) backend; most have not yet been ticked off as
+  end-to-end verified on device, but Teams is the reference deployment.
+- **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
+  stock Phone app — **one-way audio working on device** (mic capture in progress). No video.
+- **Signal** calling is second: incoming calls ring the Phone app (signaling staged on device)
+  and the SRTP-GCM + Opus **media loopback passes on device**; a real two-way call is unverified.
+  Signal IM itself is fully built but **on-device test still pending** (plugin is archived/2022,
+  pinned to signal-cli 0.8.0).
+- **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
+  DAVE E2EE stack) that has **never completed a live voice handshake**.
+- **Facebook**: the plain `purple-facebook` (email+password) is **retired** — it can't reach
+  today's E2EE Messenger threads. The current path is `purple-gometa` (cookie auth, Signal-protocol
+  E2EE), still at the login-spike/prpl-glue-in-progress stage. Uses the original Facebook account
+  icon.
+
+## The transport reality (shapes the whole design)
+
+The device `node` (`/usr/palm/nodejs/node`) links **OpenSSL 0.9.8k** and the stock webview is
+WebKit ~2009 — **neither can complete a TLS 1.2/1.3 handshake**, so *no modern HTTPS can happen
+in the webOS JS/node layer*. Every modern-TLS step is pushed out of JS:
+
+- **All token/API/file calls shell out to a modern curl.** The companion **OpenSSL-11 update**
+  now ships a modern **system curl** — `/usr/bin/curl` (curl 7.88.1 / OpenSSL 1.1.1w, TLS 1.3),
+  verified doing TLS 1.2/1.3 to the cloud APIs on-device. Connectors set `CURL: "/usr/bin/curl"`
+  with no `LD_LIBRARY_PATH` — **the old private `/var/dropbox-tls/` bundle is no longer required.**
+- **OAuth login pages** that need modern TLS run in **Atlas** (WPE browser) via the customUI
+  webview, not the stock account webview.
+- **Public clients + PKCE** wherever the provider allows it (Dropbox/Box/OneDrive) — no
+  `client_secret`, so the identical package ships to every device with nothing to provision.
+  Providers that require a secret (Google/pCloud/Koofr/HiDrive/Yandex) ship it; token/SigV4/E2E
+  connectors (kDrive/S3/MEGA) avoid OAuth entirely.
+- **Crypto in JS uses node's core `crypto`** (OpenSSL 0.9.8k) — MEGA's E2E stack and S3's SigV4
+  signer are built on it, with device-specific workarounds where 0.9.8k/node 0.4 fall short
+  (e.g. MEGA derives AES-CTR from a native ECB keystream; PBKDF2 `digest()` returns a string).
+- **Messaging** uses a vendored **libpurple 2.14 + ssl-openssl** backend cross-compiled for
+  ARMv7, with an `imlibpurpleservice` SSL override so the plugins' native TLS loads.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture.
+
+## Shared `_cloudcore` runtime
+
+Newer cloud connectors share one byte-identical runtime, `cloudcore/service/_cloudcore/`
+(generic `cloudservice.js` assistant + `oauth2.js` + `httpcurl.js` + generic commands), plus one
+generic OAuth webview app `cloudcore/auth/com.palm.app.cloud-auth/`. A connector on this runtime
+is **just two files** — its `config.js` (endpoints/credentials) and `adapter.js` (provider REST).
+
+- **On `_cloudcore`:** OneDrive, pCloud, Yandex-*(own service predates it)*, MEGA, Koofr,
+  HiDrive, S3, kDrive. (OneDrive/pCloud/HiDrive use the shared `cloud-auth` webview; MEGA/Koofr/
+  S3/kDrive ship their own credential-form app since they aren't OAuth-webview flows.)
+- **Own standalone service** (predate cloudcore): Dropbox, Box, Google Drive, Yandex, Flickr.
 
 ## Layout
 
 ```
-dropbox/
-  service/com.palm.service.dropbox/   OAuth2 + API v2 service (sign-in, files, photos provider)
-  apps/com.palm.app.dropbox-auth/     customUI OAuth webview (drives Atlas login)
-  apps/com.palm.app.dropbox-files/    Enyo file-picker/manager consumer app
-  account/com.palm.dropbox/           Synergy account template (base + 7 locale overrides)
-photos-integration/
-  patches/                            2 patches to the stock com.palm.service.photos
-  README.md                           the 4-point recipe to add any cloud photo source
-quickoffice-integration/
-  patches/RemoteFileService.js.patch  reroute QuickOffice's remote-file layer onto our service
-  README.md
-box/
-  service/com.palm.service.boxnet/    Box service (OAuth2/PKCE + REST v2, files + photos)
-  apps/com.palm.app.boxnet-auth/      customUI OAuth login
-  apps/com.palm.app.boxnet-files/     Enyo file-picker/manager (folder-ID breadcrumb)
-  account/com.palm.boxnet.json        Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-onedrive/
-  service/com.palm.service.onedrive/  OneDrive service (OAuth2/PKCE + Microsoft Graph)
-  apps/com.palm.app.onedrive-auth/    customUI OAuth login
-  apps/com.palm.app.onedrive-files/   Enyo file-picker/manager (folder-ID breadcrumb)
-  account/com.palm.onedrive.json      Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-gdrive/
-  service/com.palm.service.gdrive/    Google Drive service (OAuth2/PKCE + Drive API v3, DOCUMENTS)
-  apps/com.palm.app.gdrive-auth/      customUI OAuth login
-  apps/com.palm.app.gdrive-files/     Enyo file-picker/manager (native-doc export)
-  account/com.palm.gdrive.json        Synergy template (DOCUMENTS only)
-pcloud/
-  service/com.palm.service.pcloud/    pCloud service (OAuth2 + REST, region-aware US/EU host, DOCUMENTS + PHOTO.UPLOAD)
-  apps/com.palm.app.pcloud-auth/      customUI OAuth login
-  apps/com.palm.app.pcloud-files/     Enyo file-picker/manager (folder-ID breadcrumb)
-  account/com.palm.pcloud.json        Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-yandex/
-  service/com.palm.service.yandexdisk/ Yandex Disk service (OAuth2 + REST, path-based, DOCUMENTS)
-  apps/com.palm.app.yandexdisk-auth/  customUI OAuth login
-  apps/com.palm.app.yandexdisk-files/ Enyo file-picker/manager (path breadcrumb)
-  account/com.palm.yandexdisk.json    Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-mega/
-  service/com.palm.service.mega/      MEGA service — end-to-end-encrypted; pure-JS AES/RSA/PBKDF2 crypto,
-                                      /cs command queue, us0/us email+password login (DOCUMENTS + PHOTO.UPLOAD)
-  apps/com.palm.app.mega-auth/        customUI email+password sign-in (no OAuth webview)
-  account/com.palm.mega.json          Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-koofr/
-  service/com.palm.service.koofr/     Koofr service (app-password/HTTP Basic, mount+path, DOCUMENTS + PHOTO.UPLOAD)
-  apps/com.palm.app.koofr-auth/       customUI email + app-password form
-  account/com.palm.koofr.json         Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-hidrive/
-  service/com.palm.service.hidrive/   HiDrive service (OAuth2 + REST 2.1, path-based, refresh, DOCUMENTS + PHOTO.UPLOAD)
-  account/com.palm.hidrive.json       Synergy template (shared cloud-auth OAuth webview)
-s3/
-  service/com.palm.service.s3/        Generic S3-compatible service — AWS SigV4 signing (s3sig.js),
-                                      ListObjectsV2 XML (s3xml.js), path/prefix model (DOCUMENTS + PHOTO.UPLOAD)
-  apps/com.palm.app.s3-auth/          customUI endpoint/region/bucket/access-key form
-  account/com.palm.s3.json            Synergy template (DOCUMENTS + PHOTO.UPLOAD)
-flickr/
-  service/com.palm.service.flickr/    Flickr service (OAuth 1.0a signed in node + REST, PHOTO.UPLOAD)
-  apps/com.palm.app.flickr-auth/      customUI OAuth 1.0a login (captures oauth_verifier)
-  account/com.palm.flickr/            Synergy template (PHOTO.UPLOAD only)
-docviewer/
-  com.palm.app.docviewer/             Atlas-hosted viewer PoC (PDF/docx/xlsx + text/images)
+cloudcore/
+  service/_cloudcore/                 shared connector runtime (cloudservice/oauth2/httpcurl + commands)
+  auth/com.palm.app.cloud-auth/       one generic OAuth webview app (drives Atlas login)
+dropbox/  box/  onedrive/  gdrive/     per-connector: service/ + apps/ (auth + files) + account/ template
+pcloud/  yandex/  mega/  koofr/
+hidrive/  s3/  kdrive/  flickr/
+  <connector>/service/com.palm.service.<svc>/   config.js + adapter.js (on cloudcore) or full service
+  <connector>/apps/…-auth/  …-files/            customUI sign-in + Enyo file-picker/manager
+  <connector>/account/com.palm.<svc>.json       Synergy account template (DOCUMENTS / PHOTO.UPLOAD)
+photos-integration/                   patches to stock com.palm.service.photos (+ recipe to add a source)
+quickoffice-integration/              reroute QuickOffice's remote-file layer onto our services
+docviewer/                            Atlas-hosted view-only viewer PoC (PDF/docx/xlsx + text/images)
+messaging/                            libpurple IM connectors — see messaging/README.md
+  imlibpurpleservice/                 shared libpurple <-> webOS bridge (used by all)
+  teams/ telegram/ signal/ discord/   per-service: account/ + apps/ + plugin/ (+ calling/ where built)
+  whatsapp/ googlechat/ facebook-e2ee/
 recon/                                RE notes: facebook, linkedin, snapfish, google-drive, instagram, pcloud, yandex, flickr
-docs/ARCHITECTURE.md
+device-setup/                         on-device font install, etc.
+docs/ARCHITECTURE.md  docs/legal/     architecture + Privacy Policy / Terms (for OAuth app registration)
 ```
 
 ## Deployment prerequisites
 
-This connector depends on two things being present on-device (from the companion
-`OpenSSL-11-Update` / deployment-bundle work — **not** committed here):
+The cloud connectors depend on the companion **OpenSSL-11 update** (deployment bundle — **not**
+committed here) being on-device:
 
-1. **The modern-TLS curl bundle** at `/var/dropbox-tls/` (`curl` + `libssl.so.1.1` +
-   `libcrypto.so.1.1` + `libcurl.so.4`). All HTTPS shells out to this.
-2. **A current CA store** at `/etc/ssl/certs/ca-certificates.crt`. The stock rootfs ships
-   a 2011 stub with no modern roots (e.g. ISRG Root X1), so a flashed/reset device can't
-   verify Dropbox's cert until this is refreshed.
+1. **A modern system curl** at `/usr/bin/curl` (curl 7.88.1 + OpenSSL 1.1.1w). All HTTPS shells
+   out to it.
+2. **A current CA store** at `/etc/ssl/certs/ca-certificates.crt`. The stock rootfs ships a 2011
+   stub with no modern roots (e.g. ISRG Root X1), so a flashed/reset device can't verify a modern
+   cloud cert until this is refreshed.
 
-With those in place, deploy `dropbox/` into `/usr/palm/…`, apply the `photos-integration/`
-patches, restart the accounts + photos services, and sign in via Settings → Accounts →
-Dropbox. Per-component READMEs have the details.
+With those in place: deploy a connector into `/usr/palm/…`, drop its account template + LS2 role
+files, apply the `photos-integration/`/`quickoffice-integration/` patches as needed, restart the
+accounts + photos services, and sign in via **Settings → Accounts**. Per-component READMEs have the
+details. Messaging connectors have their own build/deploy scripts (ARM cross-compile) — see
+[`messaging/README.md`](messaging/README.md).
 
 ## License / attribution
 
-Original Palm/HP account-service and Photos-app code is **not** vendored here — the Photos
-changes ship as **patches** against the stock files. Everything under `dropbox/`,
-`box/service/`, and the templates is new work.
+Original Palm/HP account-service and Photos-app code is **not** vendored here — those changes ship
+as **patches** against the stock files. Messaging plugin **source** is vendored (built binaries are
+git-ignored) and tracks the upstream forks listed in `messaging/README.md`. Everything under the
+cloud connectors and the account templates is new work.

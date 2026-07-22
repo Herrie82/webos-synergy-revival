@@ -82,7 +82,7 @@ Register a free app at **https://oauth.yandex.com/client/new**:
     `PLACEHOLDER…` default — `oauth2.js` then never sends a secret (it still sends the S256
     challenge). Whether Yandex accepts a secret-less exchange depends on the app type chosen.
 
-Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as Dropbox/OneDrive.
+Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as Dropbox/OneDrive.
 
 ## Photos (PHOTO.UPLOAD)
 

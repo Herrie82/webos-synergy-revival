@@ -95,9 +95,9 @@ account, the modern-curl POST/upload behaviour, and account-DB persistence. Thos
 
 ## Deployment
 
-Same prerequisites as the other connectors (see the top-level README): the modern-TLS curl
-bundle at `/var/dropbox-tls/` and a current CA store at `/etc/ssl/certs/ca-certificates.crt`.
-Then:
+Same prerequisites as the other connectors (see the top-level README): the modern system curl
+at `/usr/bin/curl` (from the OpenSSL-11 update) and a current CA store at
+`/etc/ssl/certs/ca-certificates.crt`. Then:
 
 1. Deploy `service/com.palm.service.mega/` → `/usr/palm/services/com.palm.service.mega/`
    (alongside the existing `_cloudcore/`).

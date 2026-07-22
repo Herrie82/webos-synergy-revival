@@ -71,8 +71,8 @@ account/com.palm.kdrive.json         Synergy template: customUI -> kdrive-auth, 
 ## Configuration
 
 Nothing to configure in the repo — the user pastes the token at add-time and it is stored ONLY
-in the on-device account DB. Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as
-the other connectors.
+in the on-device account DB. Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites
+as the other connectors.
 
 ## Status / caveats
 

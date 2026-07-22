@@ -7,7 +7,10 @@ How the revived connectors work on a 2011 device talking to 2026 cloud APIs.
 The device `node` (`/usr/palm/nodejs/node`) links **OpenSSL 0.9.8k**, and the stock webview
 is WebKit ~2009. Neither can negotiate TLS 1.2/1.3, so **no modern HTTPS can happen in the
 webOS JS/node layer** — the exact wall the Teams port hit. Modern TLS exists on the device
-only via a **bundled curl** (curl 7.88.1 / OpenSSL 1.1.1w, TLS 1.3) at `/var/dropbox-tls/`.
+only via a **modern curl**: the companion **OpenSSL-11 update** ships a system curl at
+`/usr/bin/curl` (curl 7.88.1 / OpenSSL 1.1.1w, TLS 1.3), which the connectors shell out to.
+(The retired approach bundled a private curl + libs at `/var/dropbox-tls/`; that is no longer
+required now that a modern system curl is present.)
 
 Consequences, applied consistently:
 
@@ -18,9 +21,8 @@ Consequences, applied consistently:
 - **Photo downloads** (in the stock Photos aggregator) → the one plain-HTTP downloader is
   patched to shell out to the same curl.
 
-Every curl invocation needs `LD_LIBRARY_PATH=/var/dropbox-tls` (its bundled
-`libssl.so.1.1` / `libcrypto.so.1.1` / `libcurl.so.4`) and `--cacert
-/etc/ssl/certs/ca-certificates.crt`.
+Every curl invocation runs `/usr/bin/curl` (no `LD_LIBRARY_PATH` needed — the system curl
+links its own modern libs) with `--cacert /etc/ssl/certs/ca-certificates.crt`.
 
 ### Current CA roots are a deployment prerequisite
 

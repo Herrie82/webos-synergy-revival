@@ -30,9 +30,9 @@ Unlike the Dropbox public-client/PKCE model, Flickr requires a real **consumer s
 is one half of the HMAC signing key, so it must ship in `config.js` (`CONSUMER_SECRET`).
 
 The critical device constraint is the **TLS wall**: the device node runtime is OpenSSL
-0.9.8k and cannot open a modern TLS socket, so *all HTTPS* is shelled out to the bundled
-modern curl (`/var/dropbox-tls/curl`, `LD_LIBRARY_PATH=/var/dropbox-tls`, `--cacert
-/etc/ssl/certs/ca-certificates.crt` — the same bundle the Dropbox connector deploys).
+0.9.8k and cannot open a modern TLS socket, so *all HTTPS* is shelled out to the modern
+system curl (`/usr/bin/curl`, `--cacert /etc/ssl/certs/ca-certificates.crt` — installed by
+the companion OpenSSL-11 update, the same prerequisite every connector relies on).
 
 **But the OAuth 1.0a signature is computed IN node, not over TLS.** HMAC-SHA1 is an old
 algorithm the 0.9.8k runtime supports via `crypto.createHmac('sha1', key)`. So the split is:
@@ -105,8 +105,8 @@ so the aggregator's curl fetches these with **no auth header** (private photos i
   placeholders in `config.js` and must be filled in.
 - `CALLBACK_URL` = `http://localhost/flickr/oauth1callback` — configure the Flickr app's
   callback URL to this (Atlas intercepts navigation to it to capture `oauth_verifier`).
-- `CURL` / `CURL_LD_LIBRARY_PATH` = `/var/dropbox-tls` (the bundled modern curl + libs, the
-  Dropbox deployment-bundle prerequisite).
+- `CURL` = `/usr/bin/curl` (the modern system curl from the OpenSSL-11 update; no
+  `CURL_LD_LIBRARY_PATH` needed).
 - `CURL_CAINFO` = `/etc/ssl/certs/ca-certificates.crt` (the current system CA store).
 
 ## Integration (handled separately)

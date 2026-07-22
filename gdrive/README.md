@@ -52,7 +52,7 @@ files app maps a Google-native doc to an export format and appends the extension
    `http://localhost/gdrive/oauth2callback`.
 3. Paste **both** `CLIENT_ID` and `CLIENT_SECRET` into `service/com.palm.service.gdrive/config.js`.
 
-Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as the other connectors.
+Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as the other connectors.
 
 ## Status / caveats
 

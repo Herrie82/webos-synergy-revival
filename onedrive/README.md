@@ -58,7 +58,7 @@ Register a free app in the **Azure portal → App registrations**:
 - **Authentication → Allow public client flows: Yes.**
 - Copy the **Application (client) ID** into `service/com.palm.service.onedrive/config.js` (`CLIENT_ID`). **No client_secret** — leave the placeholder; `oauth2.js` runs pure PKCE.
 
-Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as Dropbox.
+Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as Dropbox.
 
 ## Status / caveats
 

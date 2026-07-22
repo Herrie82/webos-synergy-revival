@@ -12,9 +12,9 @@
 var Config = {
 	// Modern-TLS HTTP: the device node is OpenSSL 0.9.8k and cannot handshake with
 	// api.flickr.com / www.flickr.com / live.staticflickr.com, so ALL Flickr HTTPS is
-	// shelled out to the modern curl bundled at /var/dropbox-tls (curl 7.88.1 +
-	// OpenSSL 1.1.1w). Its 3 libs load via LD_LIBRARY_PATH. This is the SAME bundle the
-	// Dropbox connector deploys (the deployment-bundle prerequisite), reused verbatim.
+	// shelled out to the modern system curl at /usr/bin/curl (curl 7.88.1 +
+	// OpenSSL 1.1.1w, TLS 1.3), installed by the companion OpenSSL-11 update - the same
+	// prerequisite every connector relies on; no private bundle or LD_LIBRARY_PATH.
 	CURL:                 "/usr/bin/curl",
 	CURL_LD_LIBRARY_PATH: "",
 	// CA bundle = the SYSTEM store, refreshed to a current bundle by the deployment-bundle

@@ -7,12 +7,11 @@
  */
 var Config = {
 	// Modern-TLS HTTP: the device node is OpenSSL 0.9.8k and cannot handshake with
-	// api.dropboxapi.com, so ALL Dropbox HTTPS is shelled out to this curl.
-	// deployment-bundle/usr/bin/curl = curl 7.88.1 + OpenSSL 1.1.1 (TLS 1.3) must be
-	// installed at this path on-device.
-	// Private modern-TLS curl bundle deployed at /var/dropbox-tls (curl 7.88.1 +
-	// OpenSSL 1.1.1w; runs on the stock loader, needs only GLIBC_2.4). Its 3 libs
-	// (libcurl.so.4, libssl.so.1.1, libcrypto.so.1.1) load via LD_LIBRARY_PATH.
+	// api.dropboxapi.com, so ALL Dropbox HTTPS is shelled out to a modern curl.
+	// The companion OpenSSL-11 update ships a system curl at /usr/bin/curl
+	// (curl 7.88.1 + OpenSSL 1.1.1w, TLS 1.3), so no private bundle or
+	// LD_LIBRARY_PATH is needed. (The retired path bundled curl + libs under
+	// /var/dropbox-tls; that is no longer required.)
 	CURL:                "/usr/bin/curl",
 	CURL_LD_LIBRARY_PATH: "",
 	// CA bundle = the SYSTEM store. The stock rootfs ships a 2011 stub, so the

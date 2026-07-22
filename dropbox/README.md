@@ -66,7 +66,8 @@ Key correctness points (each was a real bug fixed during bring-up):
   <https://www.dropbox.com/developers/apps> with `account_info.read files.metadata.read
   files.content.read files.content.write`, `token_access_type=offline`, and **"Allow public
   clients" enabled**.
-- `CURL` / `CURL_LD_LIBRARY_PATH` = `/var/dropbox-tls` (the bundled modern curl + libs).
+- `CURL` = `/usr/bin/curl` (the modern system curl from the OpenSSL-11 update; no
+  `CURL_LD_LIBRARY_PATH` needed).
 - `CURL_CAINFO` = `/etc/ssl/certs/ca-certificates.crt` (the current system CA store — a
   deployment prerequisite; see top-level README).
 

@@ -83,7 +83,7 @@ applications*):
   required** — pCloud does **not** support PKCE, so the code→token exchange must send the
   secret (same as the gdrive "Desktop app" client).
 
-Same modern-curl (`/var/dropbox-tls/`) + current-CA prerequisites as the other connectors.
+Same modern system-curl (`/usr/bin/curl`) + current-CA prerequisites as the other connectors.
 
 ## Status / caveats
 
