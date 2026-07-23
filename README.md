@@ -56,33 +56,41 @@ same verified plumbing.
 
 Synergy **IM** account providers, each bridging a `libpurple` protocol plugin into the stock
 Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images / Audio / Video**
-= attachments · **Voice / Video call** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
+= attachments · **Reactions** = inline reaction badges (both on received and on your own messages)
+· **Voice / Video call** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
 ❔ not documented as verified on webOS · ❌ none.
 
-| Connector | Plugin | Auth | IM | Images | Audio | Video | Voice call | Video call |
-|---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
-| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
-| **Signal** | `purple-signal` / presage (JVM + Rust libsignal) | phone register / device link | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
-| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
-| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | 🟡 | ❌ |
-| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
-| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
+| Connector | Plugin | Auth | IM | Images | Audio | Video | Reactions | Voice call | Video call |
+|---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ |
+| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
+| **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ❔ | ❔ | ❔ | ✅ | 🟡 | ❌ |
+| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | ❌ | 🟡 | ❌ |
+| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ❌ |
+| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ |
+| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ❔ | ❔ | ❔ | ✅ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
   libpurple 2.14 + ssl-openssl (Teams-port) backend. **WhatsApp** (IM + calls) and **Signal** (IM)
   are verified end-to-end on device; Teams is the reference deployment; the rest are built but most
   have not yet been ticked off end-to-end on device.
+- **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
+  line) and work **both ways** — reactions others place on your messages and reactions you place —
+  **confirmed on device for Telegram, WhatsApp, Signal and Facebook** (including E2EE Messenger
+  threads). Telegram uses an aggregated/replace model; the others merge per-sender. Reactions on
+  your *own* messages ride the same "carbon" path that syncs messages you sent from another client
+  (the phone) into the thread.
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
 - **Signal**: IM **works on device** (send/receive). Calling is second-most advanced: incoming
   calls ring the Phone app (signaling staged on device) and the SRTP-GCM + Opus **media loopback
   passes on device**; a real two-way call is still unverified.
-- **WhatsApp**: IM works, and **voice calls work on device** via the `wacallm` media bridge —
-  incoming/outgoing calls connect, and both directions carry audio (mic capture works). What
-  remains is **audio-quality tuning**. No video.
+- **WhatsApp**: IM works, image/audio/video **attachments are confirmed on device**, and **voice
+  calls work on device** via the `wacallm` media bridge — incoming/outgoing calls connect, and both
+  directions carry audio (mic capture works). What remains is **audio-quality tuning**. No video
+  calls. (Telegram image attachments are also confirmed on device.)
 - **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
   DAVE E2EE stack) that has **never completed a live voice handshake**.
 - **Facebook**: the plain `purple-facebook` is **retired** — it can't reach today's E2EE
