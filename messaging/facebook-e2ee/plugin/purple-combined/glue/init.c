@@ -23,6 +23,7 @@
 
 #include "gowhatsapp.h"
 #include "libwhatsmeow.h" // for gowhatsapp_go_init
+#include <gmodule.h>      // g_module_make_resident - pin the Go .so so libpurple can't dlclose/unmap it
 
 #ifndef PLUGIN_VERSION
 #error Must set PLUGIN_VERSION in build system
@@ -140,6 +141,15 @@ static PurplePluginProtocolInfo prpl_info = {
 extern void gometa_register_second_prpl(void);
 
 static void plugin_init(PurplePlugin *plugin) {
+    // The Go runtime (cgo c-archive) cannot survive g_module_close(): libpurple dlcloses plugins
+    // during its startup plugin probe, which unmaps code the Go scheduler threads are still executing
+    // -> SIGSEGV/SIGBUS, crash-looping imlibpurpletransport on a FULL device boot (and taking every
+    // other account down with it, since they share the transport process). Pin this module resident
+    // so g_module_close can never unmap it. Covers both prpls - WhatsApp and the Facebook/gometa
+    // second prpl live in this same .so. plugin->handle is the GModule* set by purple's probe.
+    if (plugin->handle) {
+        g_module_make_resident((GModule *) plugin->handle);
+    }
     prpl_info.protocol_options = gowhatsapp_add_account_options(prpl_info.protocol_options);
     gometa_register_second_prpl();
 }
