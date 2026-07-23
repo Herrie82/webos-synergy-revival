@@ -238,6 +238,16 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         break;
     };
 
+    case td::td_api::updateMessageInteractionInfo::ID: {
+        // webOS reactions: Telegram reports reactions as an aggregated per-emoji summary (not
+        // per-sender events). Push the whole summary to the transport, which REPLACES this message's
+        // reaction badges. A null interaction_info clears them.
+        auto &interactionUpdate = static_cast<td::td_api::updateMessageInteractionInfo &>(update);
+        showReactions(m_data, interactionUpdate.chat_id_, interactionUpdate.message_id_,
+                      interactionUpdate.interaction_info_.get());
+        break;
+    };
+
     default:
         purple_debug_misc(config::pluginId, "Incoming update: ignorig ID=%d\n", update.get_id());
         break;

@@ -83,7 +83,8 @@ void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *co
 }
 
 void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const char *text,
-                       const char *notification, time_t timestamp, PurpleMessageFlags flags)
+                       const char *notification, time_t timestamp, PurpleMessageFlags flags,
+                       const char *serviceMessageId)
 {
     PurpleConversation *conv = NULL;
 
@@ -92,10 +93,22 @@ void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const
             // serv_got_im seems to work for messages sent from another client, but not for
             // echoed messages from this client. Therefore, this (code snippet from facebook plugin).
             conv = getImConversation(account.purpleAccount, purpleUserName);
+            // webOS reactions: stash this carbon's id so the transport (incoming_message_cb, which sees
+            // this write with PURPLE_MESSAGE_REMOTE_SEND) stores it as the Outbox row's serviceMessageId.
+            if (serviceMessageId && *serviceMessageId) {
+                purple_conversation_set_data(conv, "webos-msg-id", g_strdup(serviceMessageId));
+            }
             purple_conv_im_write(purple_conversation_get_im_data(conv),
                                  purple_account_get_name_for_display(account.purpleAccount),
                                  text, flags, timestamp);
         } else {
+            // webOS reactions: stash this message's id on the conv BEFORE serv_got_im so the transport
+            // stores it as serviceMessageId (read in incoming_message_cb); a later reaction update
+            // targets it by "<chatId>:<messageId>".
+            if (serviceMessageId && *serviceMessageId) {
+                conv = getImConversation(account.purpleAccount, purpleUserName);
+                purple_conversation_set_data(conv, "webos-msg-id", g_strdup(serviceMessageId));
+            }
             serv_got_im(purple_account_get_connection(account.purpleAccount), purpleUserName, text,
                         flags, timestamp);
             conv = getImConversation(account.purpleAccount, purpleUserName);
@@ -118,7 +131,8 @@ void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const
 
 static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &chat,
                                 const TgMessageInfo &message, const char *text,
-                                const char *notification, PurpleMessageFlags flags)
+                                const char *notification, PurpleMessageFlags flags,
+                                const char *serviceMessageId = NULL)
 {
     // Again, doing what facebook plugin does
     int purpleId = account.getPurpleChatId(getId(chat));
@@ -138,6 +152,13 @@ static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &
                 std::string who = message.incomingGroupchatSender.empty() ? "someone" : message.incomingGroupchatSender;
                 if (!message.incomingGroupchatSenderId.empty())
                     who = message.incomingGroupchatSenderId + "\x1f" + who;
+                // webOS reactions: stash this message's id on the chat conv BEFORE serv_got_chat_in so
+                // the transport stores it as serviceMessageId; a later reaction update targets it.
+                if (serviceMessageId && *serviceMessageId) {
+                    PurpleConversation *baseConv = conv ? purple_conv_chat_get_conversation(conv) : NULL;
+                    if (baseConv)
+                        purple_conversation_set_data(baseConv, "webos-msg-id", g_strdup(serviceMessageId));
+                }
                 serv_got_chat_in(purple_account_get_connection(account.purpleAccount), purpleId,
                                  who.c_str(), flags, text, message.timestamp);
             }
@@ -270,6 +291,17 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
     if (!newText.empty())
         text = newText.c_str();
 
+    // webOS reactions: a stable per-message key the transport stores as serviceMessageId. Telegram
+    // message ids are unique only within a chat, so scope it with the chat id: "<chatId>:<messageId>".
+    // A later updateMessageInteractionInfo emits reactions targeting this same key. Stash it for
+    // incoming messages AND for carbons of messages we sent from another client (outgoing but not
+    // sentLocally) - the transport stores those as Outbox rows, so reactions can attach to them too.
+    // Local echoes (sentLocally) are stored by the app's own send path, so we skip them.
+    std::string serviceMessageId;
+    if (message.id.valid() && (!message.outgoing || !message.sentLocally))
+        serviceMessageId = std::to_string(getId(chat).value()) + ":" + std::to_string(message.id.value());
+    const char *svcMsgId = serviceMessageId.empty() ? NULL : serviceMessageId.c_str();
+
     const td::td_api::user *privateUser = account.getUserByPrivateChat(chat);
     if (privateUser) {
         std::string userName = getPurpleBuddyName(*privateUser);
@@ -278,17 +310,43 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         // to alias, so use display name instead of idXXXXXXXXX
         if (!purple_find_buddy(account.purpleAccount, userName.c_str()))
             userName = account.getDisplayName(*privateUser);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId);
     }
 
     SecretChatId secretChatId = getSecretChatId(chat);
     if (secretChatId.valid()) {
         std::string userName = getSecretChatBuddyName(secretChatId);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId);
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid())
-        showMessageTextChat(account, chat, message, text, notification, flags);
+        showMessageTextChat(account, chat, message, text, notification, flags, svcMsgId);
+}
+
+// webOS reactions: turn a message's aggregated reaction summary into the "count<SP>emoji\n..." set
+// the transport expects and emit it. See showReactions() declaration in receiving.h.
+void showReactions(TdAccountData &account, int64_t chatId, int64_t messageId,
+                   const td::td_api::messageInteractionInfo *info)
+{
+    std::string serialized;
+    if (info && info->reactions_) {
+        for (const auto &r : info->reactions_->reactions_) {
+            if (!r || !r->type_ || r->total_count_ <= 0)
+                continue;
+            // Only unicode emoji reactions map to something we can render; skip custom (sticker) emoji.
+            if (r->type_->get_id() != td::td_api::reactionTypeEmoji::ID)
+                continue;
+            const auto &emojiType = static_cast<const td::td_api::reactionTypeEmoji &>(*r->type_);
+            if (emojiType.emoji_.empty())
+                continue;
+            serialized += std::to_string(r->total_count_) + " " + emojiType.emoji_ + "\n";
+        }
+    }
+
+    // Target key must match the serviceMessageId stashed when the message was shown.
+    std::string targetId = std::to_string(chatId) + ":" + std::to_string(messageId);
+    purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction-set",
+                       account.purpleAccount, targetId.c_str(), serialized.c_str(), (const char *)NULL);
 }
 
 void showChatNotification(TdAccountData &account, const td::td_api::chat &chat,
