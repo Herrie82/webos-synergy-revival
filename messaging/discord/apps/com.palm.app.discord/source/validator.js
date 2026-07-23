@@ -150,11 +150,10 @@ enyo.kind({
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
         ]},
         { kind: "ModalDialog", name: "confirmDialog", lazy: false, caption: "Remove Account", components: [
-            { className: "accounts-body-text", style: "padding: 16px; line-height: 1.4;",
-              content: "Are you sure you want to remove this account? Its messages will be deleted from this device." },
-            { kind: "HFlexBox", style: "padding: 8px 12px 12px;", components: [
-                { kind: "Button", flex: 1, caption: "Cancel", onclick: "closeConfirm" },
-                { kind: "Button", flex: 1, name: "confirmRemoveBtn", caption: "Remove Account", className: "enyo-button-negative", onclick: "doRemove" }
+            { className: "enyo-paragraph", content: "Are you sure you want to remove this account and all associated data from your device? Data from this account will be erased from all applications." },
+            { kind: "HFlexBox", components: [
+                { kind: "Button", caption: "Cancel", flex: 0.8, className: "enyo-button-light", onclick: "closeConfirm" },
+                { kind: "Button", name: "confirmRemoveBtn", caption: "Remove Account", flex: 1, className: "enyo-button-negative", onclick: "doRemove" }
             ]}
         ]},
         { kind: "PalmService", name: "acctService", service: "palm://com.palm.service.accounts/", onSuccess: "removeDone", onFailure: "removeDone" },
