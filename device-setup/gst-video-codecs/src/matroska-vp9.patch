@@ -1,7 +1,0 @@
-# Two additions to gst-plugins-good-0.10.31/gst/matroska to recognise VP9 (2012 matroska didn't):
-# matroska-ids.h:
-+#define GST_MATROSKA_CODEC_ID_VIDEO_VP9          "V_VP9"
-# matroska-demux.c (after the V_VP8 else-if block in gst_matroska_demux_video_caps):
-+  } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP9)) {
-+    caps = gst_caps_new_simple ("video/x-vp9", NULL);
-+    *codec_name = g_strdup_printf ("VP9");

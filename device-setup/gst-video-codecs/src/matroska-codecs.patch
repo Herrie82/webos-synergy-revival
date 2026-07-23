@@ -1,0 +1,30 @@
+# Additions to gst-plugins-good-0.10.31/gst/matroska so the 2012 demuxer recognises VP9 video and
+# Opus audio (it tagged both as x-unknown / failed to negotiate otherwise).
+#
+# matroska-ids.h:
++#define GST_MATROSKA_CODEC_ID_VIDEO_VP9          "V_VP9"
++#define GST_MATROSKA_CODEC_ID_AUDIO_OPUS           "A_OPUS"
+#
+# matroska-demux.c, gst_matroska_demux_video_caps (after the V_VP8 else-if):
++  } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP9)) {
++    caps = gst_caps_new_simple ("video/x-vp9", NULL);
++    *codec_name = g_strdup_printf ("VP9");
+#
+# matroska-demux.c, gst_matroska_demux_audio_caps (after the A_SPEEX else-if): map A_OPUS to
+# audio/x-opus and synthesise the [OpusHead, OpusTags] streamheader opusdec needs (matroska only
+# carries the OpusHead in CodecPrivate; a minimal empty "OpusTags" is appended as header[1]):
++  } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)) {
++    caps = gst_caps_new_simple ("audio/x-opus", NULL);
++    if (context->codec_priv && context->codec_priv_size >= 19) {
++      GstBuffer *head = gst_buffer_new_and_alloc (context->codec_priv_size);
++      GstBuffer *tags = gst_buffer_new_and_alloc (16);
++      GValue arr = { 0, }, v = { 0, }; guint8 *td;
++      memcpy (GST_BUFFER_DATA (head), context->codec_priv, context->codec_priv_size);
++      td = GST_BUFFER_DATA (tags); memcpy (td, "OpusTags", 8); memset (td + 8, 0, 8);
++      g_value_init (&arr, GST_TYPE_ARRAY); g_value_init (&v, GST_TYPE_BUFFER);
++      gst_value_set_buffer (&v, head); gst_value_array_append_value (&arr, &v); g_value_reset (&v);
++      gst_value_set_buffer (&v, tags); gst_value_array_append_value (&arr, &v); g_value_unset (&v);
++      gst_structure_set_value (gst_caps_get_structure (caps, 0), "streamheader", &arr);
++      g_value_unset (&arr); gst_buffer_unref (head); gst_buffer_unref (tags);
++    }
++    *codec_name = g_strdup ("Opus");
