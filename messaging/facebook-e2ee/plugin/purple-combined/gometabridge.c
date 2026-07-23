@@ -33,7 +33,10 @@ static gboolean gometa_do_request(gpointer data) {
     // login-code flow); the user's reply is captured in gometa_go_send_message and fed back to
     // the waiting login goroutine via its input channel.
     if (gc) {
-        purple_serv_got_im(gc, "Facebook", r->prompt, PURPLE_MESSAGE_RECV, time(NULL));
+        // NB: serv_got_im, NOT purple_serv_got_im — the device's libpurple 2.x exports the
+        // classic name (as Telegram uses); purple_serv_got_im is undefined there and aborts
+        // the transport with a symbol lookup error the moment this path runs.
+        serv_got_im(gc, "Facebook", r->prompt, PURPLE_MESSAGE_RECV, time(NULL));
     }
     free(r->prompt);
     g_free(r);
