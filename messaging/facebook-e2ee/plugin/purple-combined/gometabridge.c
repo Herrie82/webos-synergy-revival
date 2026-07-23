@@ -25,18 +25,16 @@ void gometa_set_setting(PurpleAccount *account, const char *key, const char *val
 // ---- interactive login prompt (2FA/captcha) ----
 struct gometa_req { PurpleAccount *account; char *prompt; };
 
-static void gometa_input_ok(void *user_data, const char *value) {
-    gometa_go_submit_input((PurpleAccount *)user_data, (char *)(value ? value : ""));
-}
-static void gometa_input_cancel(void *user_data) {
-    gometa_go_submit_input((PurpleAccount *)user_data, (char *)"");
-}
 static gboolean gometa_do_request(gpointer data) {
     struct gometa_req *r = (struct gometa_req *)data;
     PurpleConnection *gc = purple_account_get_connection(r->account);
-    purple_request_input(gc, "Facebook login", r->prompt, NULL, NULL, FALSE, FALSE, NULL,
-        "OK", G_CALLBACK(gometa_input_ok), "Cancel", G_CALLBACK(gometa_input_cancel),
-        r->account, NULL, NULL, r->account);
+    // imlibpurple leaves the request UI-ops NULL, so purple_request_input never reaches the
+    // user. Surface the prompt in a "Facebook" auth conversation instead (like the QR / Telegram
+    // login-code flow); the user's reply is captured in gometa_go_send_message and fed back to
+    // the waiting login goroutine via its input channel.
+    if (gc) {
+        purple_serv_got_im(gc, "Facebook", r->prompt, PURPLE_MESSAGE_RECV, time(NULL));
+    }
     free(r->prompt);
     g_free(r);
     return FALSE;

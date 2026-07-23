@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -54,6 +55,20 @@ func gometa_go_close(account *PurpleAccount) {
 
 //export gometa_go_send_message
 func gometa_go_send_message(account *PurpleAccount, who *C.char, message *C.char) C.int {
+	// During interactive login the 2FA prompt is shown in a "Facebook" auth chat (imlibpurple
+	// has no request-input UI-op, so purple_request_input can't surface). The user replies with
+	// the code in that chat; if an input prompt is pending for this account, capture the reply
+	// as the code instead of sending it as a real message.
+	gometaInputMu.Lock()
+	ch := gometaInputWaiters[account]
+	gometaInputMu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- strings.TrimSpace(C.GoString(message)):
+		default:
+		}
+		return 1
+	}
 	h, ok := gometaHandlers[account]
 	if !ok {
 		return 0
@@ -610,13 +625,24 @@ func (h *gometaHandler) fillLoginStep(step *bridgev2.LoginStep, email, password 
 			out[f.ID] = password
 			*credsSent = true
 		case bridgev2.LoginInputFieldTypeSelect:
-			// 2FA method picker: pick login-approval (no code to type).
+			// 2FA method picker: choose a code method (Authentication app / Text message);
+			// the code is then entered in the Facebook auth chat (see the 2FACode case).
 			choice := gometaPreferredMFA(f.Options)
 			if choice == "" {
-				return nil, fmt.Errorf("your account uses a code-based two-factor method %v; for now only 'Notification on another device' (login approval) works — enable it in Facebook Security settings", f.Options)
+				return nil, fmt.Errorf("this Facebook account offers no code-based two-factor method we can use (%v) — enable Authentication app or Text message in Facebook Security settings", f.Options)
 			}
 			h.logger.Info().Str("mfa", choice).Msg("selecting 2FA method")
 			out[f.ID] = choice
+		case bridgev2.LoginInputFieldType2FACode:
+			// Facebook wants the login/2FA code. imlibpurple has no request-input UI-op, so we
+			// surface the prompt in a "Facebook" auth chat and block until the user replies
+			// there with the code (captured in gometa_go_send_message). Mirrors Telegram.
+			h.logger.Info().Str("prompt", step.Instructions).Msg("waiting for 2FA code from the Facebook auth chat")
+			code := strings.TrimSpace(h.promptInput("Facebook needs your login/2FA code. Reply to this chat with the code: " + step.Instructions))
+			if code == "" {
+				return nil, fmt.Errorf("no Facebook 2FA code was entered")
+			}
+			out[f.ID] = code
 		default:
 			return nil, fmt.Errorf("this Facebook login needs a typed %q, which isn't supported yet", f.Type)
 		}
@@ -624,11 +650,16 @@ func (h *gometaHandler) fillLoginStep(step *bridgev2.LoginStep, email, password 
 	return out, nil
 }
 
-// gometaPreferredMFA picks a 2FA method that needs no typed code (login approval).
+// gometaPreferredMFA picks a 2FA method we can complete by typing a code into the Facebook
+// auth chat. Code methods are preferred in this order. "Notification on another device" (AFAD)
+// is deliberately NOT selected: Meta rejects it in this messagix flow (the afad_state.async RPC
+// returns an error, which older mautrix-meta even crashes parsing), so it can never complete.
 func gometaPreferredMFA(options []string) string {
-	for _, o := range options {
-		if o == "Notification on another device" {
-			return o
+	for _, want := range []string{"Authentication app", "Text message", "WhatsApp"} {
+		for _, o := range options {
+			if o == want {
+				return o
+			}
 		}
 	}
 	return ""
