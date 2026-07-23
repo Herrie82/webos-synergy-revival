@@ -56,8 +56,10 @@ enyo.kind({
             ]}
         ]},
         { className: "accounts-footer-shadow" },
-        { name: "removeButton", kind: "Button", caption: "Remove Account", showing: false,
-          className: "accounts-btn", style: "background-color: #be0003; color: #fff;", onclick: "confirmRemove" },
+        { name: "removeBox", className: "box-center", showing: false, components: [
+            { name: "removeButton", kind: "Button", caption: "Remove Account",
+              className: "enyo-button-negative accounts-btn", onclick: "confirmRemove" }
+        ]},
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
         ]},
@@ -101,7 +103,7 @@ enyo.kind({
                 this.$.displayName.setValue(params.account.alias);
             }
             if (this.accountId) {
-                this.$.removeButton.show();
+                this.$.removeBox.show();
             }
         }
         this.validateInput();

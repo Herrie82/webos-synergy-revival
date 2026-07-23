@@ -96,8 +96,10 @@ enyo.kind({
         ]},
 
         { className: "accounts-footer-shadow" },
-        { name: "removeButton", kind: "Button", caption: "Remove Account", showing: false,
-          className: "accounts-btn", style: "background-color: #be0003; color: #fff;", onclick: "confirmRemove" },
+        { name: "removeBox", className: "box-center", showing: false, components: [
+            { name: "removeButton", kind: "Button", caption: "Remove Account",
+              className: "enyo-button-negative accounts-btn", onclick: "confirmRemove" }
+        ]},
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
         ]},
@@ -131,7 +133,7 @@ enyo.kind({
         // Re-auth of an existing account also offers Remove (this flow bypasses the framework
         // account-detail view, the only other place with a Remove button).
         this.accountId = (params.account && (params.account._id || params.account.id)) || params.accountId || null;
-        if (this.accountId) { this.$.removeButton.show(); }
+        if (this.accountId) { this.$.removeBox.show(); }
         if (params.account && params.account.username) {
             this.$.username.setValue(params.account.username);
             this.$.username.setDisabled(true);
