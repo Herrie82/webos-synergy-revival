@@ -67,7 +67,7 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 | **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ |
 | **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | 🟡 | 🟡 | 🟡 | 🟡 | ❌ |
 | **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
-| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | `c_user`/`xs`/`datr` cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
+| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
@@ -85,9 +85,11 @@ Notes:
   remains is **audio-quality tuning**. No video.
 - **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
   DAVE E2EE stack) that has **never completed a live voice handshake**.
-- **Facebook**: the plain `purple-facebook` (email+password) is **retired** — it can't reach
-  today's E2EE Messenger threads. The current path is `purple-gometa` (cookie auth, Signal-protocol
-  E2EE), and **text IM now works**; attachment media is not yet wired up. Uses the original
+- **Facebook**: the plain `purple-facebook` is **retired** — it can't reach today's E2EE
+  Messenger threads. The current path is `purple-gometa` (mautrix-meta messagix + whatsmeow,
+  Signal-protocol E2EE). Sign-in is **email + password + a typed 2FA code** entered in a "Facebook"
+  chat in the Messaging app (code method, not the Meta-rejected approve-on-another-device flow);
+  **text IM is verified working on device**, attachment media not yet wired up. Uses the original
   Facebook account icon.
 
 ## The transport reality (shapes the whole design)
