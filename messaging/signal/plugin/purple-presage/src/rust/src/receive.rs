@@ -321,6 +321,18 @@ async fn process_data_message<C: presage::store::Store>(
     message: crate::bridge::Message,
     data_message: &presage::proto::DataMessage,
 ) -> Option<String> {
+    // webOS reactions: a reaction is not a message. Forward it to the transport as a typed
+    // "webos-im-reaction" signal (targeting the reacted-to message by its sent timestamp, which is
+    // that message's serviceMessageId) and suppress the prose "Reacted with X" line that would
+    // otherwise appear as a separate message. An empty emoji signals removal to the transport.
+    if let Some(reaction) = &data_message.reaction {
+        if let Some(target) = reaction.target_sent_timestamp {
+            let emoji = if reaction.remove() { String::new() } else { reaction.emoji().to_string() };
+            let sender = message.who.clone().unwrap_or_default();
+            crate::bridge::emit_reaction(message.account, target.to_string(), emoji, sender);
+        }
+        return None;
+    }
     // download sticker if present
     if let Some(sticker) = &data_message.sticker {
         if let Some(attachment) = &sticker.data {

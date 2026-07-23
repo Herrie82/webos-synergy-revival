@@ -118,6 +118,14 @@ extern "C" {
         state: u32,
         call_id: u64,
     );
+
+    // implemented by receive_text.c - emit the cross-prpl "webos-im-reaction" signal.
+    fn presage_emit_reaction(
+        account: *mut crate::bridge_structs::PurpleAccount,
+        target_id: *const std::os::raw::c_char,
+        emoji: *const std::os::raw::c_char,
+        sender: *const std::os::raw::c_char,
+    );
 }
 
 // Signal call states pushed to the Phone app's com.palm.signal.call service (must match call.c).
@@ -143,6 +151,28 @@ pub fn handle_call_state(
     let name_p = name.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     unsafe {
         presage_handle_call_state(account as *mut crate::bridge_structs::PurpleAccount, who_p, name_p, state, call_id);
+    }
+}
+
+// webOS reactions: forward a Signal reaction to the transport via the "webos-im-reaction" signal.
+// target_id is the reacted-to message's sent timestamp (its serviceMessageId); sender is the reactor's
+// UUID; an empty emoji ("") means the reaction was removed.
+pub fn emit_reaction(
+    account: *const crate::bridge_structs::PurpleAccount,
+    target_id: String,
+    emoji: String,
+    sender: String,
+) {
+    let target = std::ffi::CString::new(target_id).unwrap_or_default();
+    let emoji = std::ffi::CString::new(emoji).unwrap_or_default();
+    let sender = std::ffi::CString::new(sender).unwrap_or_default();
+    unsafe {
+        presage_emit_reaction(
+            account as *mut crate::bridge_structs::PurpleAccount,
+            target.as_ptr(),
+            emoji.as_ptr(),
+            sender.as_ptr(),
+        );
     }
 }
 
