@@ -135,6 +135,16 @@ gowhatsapp_process_message(gowhatsapp_message_t *gwamsg)
                 gowhatsapp_handle_attachment(gwamsg);
             }
             break;
+        case gowhatsapp_message_type_reaction:
+            // webOS reactions: forward to the transport's cross-prpl "webos-im-reaction" signal
+            // (registered by imlibpurpletransport) instead of showing a "reacted with X" message.
+            // messageId = the reacted-to message's id, text = emoji ("" = removed), senderJid = reactor.
+            // Runs on the libpurple main thread (message bridge), so emitting the signal here is safe.
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction",
+                    gwamsg->account, gwamsg->messageId,
+                    gwamsg->text ? gwamsg->text : "",
+                    gwamsg->senderJid ? gwamsg->senderJid : "");
+            break;
         case gowhatsapp_message_type_profile_picture:
             gowhatsapp_handle_profile_picture(gwamsg);
             break;

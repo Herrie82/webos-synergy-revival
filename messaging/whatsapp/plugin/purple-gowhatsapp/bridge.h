@@ -24,6 +24,7 @@
     MESSAGE_TYPE(typing_stopped) \
     MESSAGE_TYPE(text) \
     MESSAGE_TYPE(attachment) \
+    MESSAGE_TYPE(reaction) \
     MESSAGE_TYPE(profile_picture) \
     MESSAGE_TYPE(group) \
     MESSAGE_TYPE(max) \

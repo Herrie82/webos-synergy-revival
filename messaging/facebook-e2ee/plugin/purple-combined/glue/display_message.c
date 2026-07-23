@@ -66,8 +66,15 @@ void gowhatsapp_display_text_message(
 
     g_free(escaped_text);
     
+    // webOS reactions: stash this message's WhatsApp id on the conversation right before serv_got_*
+    // (which synchronously drives the transport's incoming_message_cb). The transport reads it as
+    // "webos-msg-id" and stores it as serviceMessageId so a later reaction can target this message.
+    // Only for RECV messages - the transport ignores our own echoes.
     if (isGroup) {
-        gowhatsapp_enter_group_chat(connection, remoteJid, NULL);
+        PurpleConversation *gconv = gowhatsapp_enter_group_chat(connection, remoteJid, NULL);
+        if (gconv != NULL && (flags & PURPLE_MESSAGE_RECV) && messageId != NULL && *messageId != '\0') {
+            purple_conversation_set_data(gconv, "webos-msg-id", g_strdup(messageId));
+        }
         purple_serv_got_chat_in(connection, g_str_hash(remoteJid), senderJid, flags, text_with_id, timestamp);
     } else {
         if (flags & PURPLE_MESSAGE_SEND) {
@@ -81,6 +88,13 @@ void gowhatsapp_display_text_message(
         } else {
             if (purple_account_get_bool(account, GOWHATSAPP_UPDATE_BUDDY_ON_MESSAGE_OPTION, TRUE)) {
                 gowhatsapp_ensure_buddy_in_blist(account, remoteJid, name);
+            }
+            PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, remoteJid, account);
+            if (conv == NULL) {
+                conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account, remoteJid);
+            }
+            if (messageId != NULL && *messageId != '\0') {
+                purple_conversation_set_data(conv, "webos-msg-id", g_strdup(messageId));
             }
             purple_serv_got_im(connection, remoteJid, text_with_id, flags, timestamp);
         }

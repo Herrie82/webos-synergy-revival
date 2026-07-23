@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
-	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -108,48 +107,14 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 	{
 		rm := message.GetReactionMessage()
 		if rm != nil && rm.Text != nil && rm.Key != nil && rm.Key.ID != nil {
-			quote := fmt.Sprintf("unknown message with ID %s", rm.Key.GetID())
-			cached_message := handler.lookup_cached_message_by_id(rm.Key.GetID())
-			if cached_message != nil {
-				//handler.log.Infof("Lookup yielded message: %#v", &cached_message.Message)
-				text := cached_message.Message.GetConversation()
-				if cached_message.Message.ExtendedTextMessage != nil {
-					text = cached_message.Message.ExtendedTextMessage.GetText()
-				}
-				if text != "" {
-					ellipsis := ""
-					if len(text) > 50 {
-						ellipsis = "…" // add elipis to indicate message body truncation
-					}
-					quote = fmt.Sprintf("message „%.50s%s“", text, ellipsis)
-				} else {
-					message_type := "message of unknown type"
-					if cached_message.Message.ImageMessage != nil {
-						message_type = "image"
-					}
-					if cached_message.Message.VideoMessage != nil {
-						message_type = "video"
-					}
-					if cached_message.Message.PtvMessage != nil {
-						message_type = "voice message"
-					}
-					if cached_message.Message.AudioMessage != nil {
-						message_type = "audio message"
-					}
-					if cached_message.Message.StickerMessage != nil {
-						message_type = "sticker"
-					}
-					if cached_message.Message.DocumentMessage != nil {
-						message_type = "document"
-					}
-					quote = fmt.Sprintf("%s from %s", message_type, cached_message.Timestamp.Format(time.RFC822))
-				}
-			}
-			if *rm.Text == "" {
-				text += fmt.Sprintf("removed their reaction to %s.", quote)
-			} else {
-				text += fmt.Sprintf("reacted with %s to %s.", *rm.Text, quote)
-			}
+			// webOS reactions: attach to the target message via the transport's reaction signal
+			// instead of posting a "reacted with X" message. rm.Key.ID = the reacted-to message id,
+			// rm.Text = the emoji ("" means the reaction was removed), Sender = who reacted. Return
+			// early: a ReactionMessage carries nothing else to display.
+			chat := info.MessageSource.Chat.ToNonAD().String()
+			sender := info.MessageSource.Sender.ToNonAD().String()
+			purple_handle_reaction(handler.account, chat, rm.Key.GetID(), rm.GetText(), sender)
+			return
 		}
 	}
 	{

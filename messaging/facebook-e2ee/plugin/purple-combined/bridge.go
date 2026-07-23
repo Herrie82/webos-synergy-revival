@@ -506,6 +506,24 @@ func purple_set_profile_picture(account *PurpleAccount, who string, data []byte,
 }
 
 /*
+ * webOS reactions: forward a reaction to the transport's cross-prpl "webos-im-reaction" signal
+ * (emitted C-side in process_message on the libpurple main thread) instead of posting a "reacted
+ * with X" message. targetId = the reacted-to message id, emoji = "" means the reaction was removed,
+ * sender = who reacted. The message bridge frees the CStrings.
+ */
+func purple_handle_reaction(account *PurpleAccount, remoteJid string, targetId string, emoji string, sender string) {
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_reaction),
+		remoteJid: C.CString(remoteJid),
+		senderJid: C.CString(sender),
+		messageId: C.CString(targetId),
+		text:      C.CString(emoji),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
+
+/*
  * This will inform purple that the remote user started typing.
  */
 func purple_composing(account *PurpleAccount, remoteJid string) {
