@@ -351,10 +351,25 @@ func (h *gometaHandler) parseTable(tbl *table.LSTable) {
 		h.notifyPresence(p.ContactId, p.Status != 0)
 	}
 	for _, m := range tbl.LSInsertMessage {
-		h.handleMessage(m.ThreadKey, m.SenderId, m.Text, m.OfflineThreadingId, m.TimestampMs)
+		h.handleMessage(m.ThreadKey, m.SenderId, m.Text, m.OfflineThreadingId, m.MessageId, m.TimestampMs)
 	}
 	for _, m := range tbl.LSUpsertMessage {
-		h.handleMessage(m.ThreadKey, m.SenderId, m.Text, m.OfflineThreadingId, m.TimestampMs)
+		h.handleMessage(m.ThreadKey, m.SenderId, m.Text, m.OfflineThreadingId, m.MessageId, m.TimestampMs)
+	}
+	// webOS reactions: attach a reaction to its TARGET message (by MessageId) via the shared
+	// "webos-im-reaction" signal instead of a separate message. Facebook sends these as both V1 and
+	// V2 tables; add/change carries the emoji, delete removes it (emoji "").
+	for _, r := range tbl.LSUpsertReaction {
+		h.notifyReaction(r.ThreadKey, r.MessageId, r.ActorId, r.Reaction)
+	}
+	for _, r := range tbl.LSUpdateOrInsertReactionV2 {
+		h.notifyReaction(r.ThreadKey, r.MessageID, r.ReactionFBID, r.ReactionLiteral)
+	}
+	for _, r := range tbl.LSDeleteReaction {
+		h.notifyReaction(r.ThreadKey, r.MessageId, r.ActorId, "")
+	}
+	for _, r := range tbl.LSDeleteReactionV2 {
+		h.notifyReaction(r.ThreadKey, r.MessageID, r.ReactionFBID, "")
 	}
 }
 
@@ -371,7 +386,7 @@ func (h *gometaHandler) addContact(id int64, name string) {
 	h.notifyBuddy(id, name)
 }
 
-func (h *gometaHandler) handleMessage(threadKey, senderID int64, text, offlineThreadingID string, tsMs int64) {
+func (h *gometaHandler) handleMessage(threadKey, senderID int64, text, offlineThreadingID, messageID string, tsMs int64) {
 	if text == "" || threadKey == 0 {
 		return
 	}
@@ -398,7 +413,17 @@ func (h *gometaHandler) handleMessage(threadKey, senderID int64, text, offlineTh
 		h.addContact(threadKey, partnerName)
 	}
 	h.notifyMessage(strconv.FormatInt(threadKey, 10), strconv.FormatInt(senderID, 10),
-		name, text, tsMs/1000, isGroup, senderID == h.selfID)
+		name, text, messageID, tsMs/1000, isGroup, senderID == h.selfID)
+}
+
+// webOS reactions: forward a Facebook reaction to the shared "webos-im-reaction" signal (via the
+// account-agnostic purple_handle_reaction) so it attaches to the target message. emoji "" = removed.
+func (h *gometaHandler) notifyReaction(threadKey int64, messageID string, actorID int64, emoji string) {
+	if messageID == "" {
+		return
+	}
+	purple_handle_reaction(h.account, strconv.FormatInt(threadKey, 10), messageID,
+		emoji, strconv.FormatInt(actorID, 10))
 }
 
 func (h *gometaHandler) notifyBuddy(id int64, name string) {
@@ -428,7 +453,7 @@ func (h *gometaHandler) notifyChat(threadKey int64, name string) {
 	C.gometa_process_message(msg)
 }
 
-func (h *gometaHandler) notifyMessage(conv, who, name, text string, ts int64, isGroup, isOutgoing bool) {
+func (h *gometaHandler) notifyMessage(conv, who, name, text, messageID string, ts int64, isGroup, isOutgoing bool) {
 	msg := C.gometa_message_t{account: h.account, msgtype: C.char(C.gometa_message_type_text), timestamp: C.time_t(ts)}
 	msg.conv = C.CString(conv)
 	msg.who = C.CString(who)
@@ -436,6 +461,11 @@ func (h *gometaHandler) notifyMessage(conv, who, name, text string, ts int64, is
 		msg.name = C.CString(name)
 	}
 	msg.text = C.CString(text)
+	// webOS reactions: carry the Facebook MessageId so the bridge can stash it on the conversation
+	// -> stored as serviceMessageId, which a later reaction (LSUpsertReaction.MessageId) targets.
+	if messageID != "" {
+		msg.id = C.CString(messageID)
+	}
 	if isGroup {
 		msg.isGroup = 1
 	}

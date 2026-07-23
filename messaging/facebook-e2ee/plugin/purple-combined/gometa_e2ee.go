@@ -137,7 +137,7 @@ func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
 	}
 	h.addContact(chatFbid, name)
 	h.notifyMessage(strconv.FormatInt(chatFbid, 10), strconv.FormatInt(senderFbid, 10),
-		name, text, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe)
+		name, text, evt.Info.ID, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe)
 }
 
 // sendE2EE sends a text message over the encrypted (whatsmeow) transport to a Messenger thread.

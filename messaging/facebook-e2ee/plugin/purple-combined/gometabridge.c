@@ -91,10 +91,16 @@ static void gometa_ensure_chat(PurpleAccount *account, const char *threadKey, co
 }
 
 static void gometa_group_message(PurpleConnection *pc, const char *threadKey, const char *senderName,
-                                 const char *text, time_t ts, int isOutgoing) {
+                                 const char *text, time_t ts, int isOutgoing, const char *msgId) {
     int chat_id = (int)g_str_hash(threadKey);
     if (purple_find_chat(pc, chat_id) == NULL) {
         serv_got_joined_chat(pc, chat_id, threadKey);
+    }
+    // webOS reactions: stash the message id on the chat conv so the transport stores it as
+    // serviceMessageId (read in incoming_message_cb during serv_got_chat_in). RECV only.
+    if (!isOutgoing && msgId && *msgId) {
+        PurpleConversation *conv = purple_find_chat(pc, chat_id);
+        if (conv) purple_conversation_set_data(conv, "webos-msg-id", g_strdup(msgId));
     }
     const char *from = (senderName && *senderName) ? senderName : "unknown";
     serv_got_chat_in(pc, chat_id, from, isOutgoing ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV, text, ts);
@@ -142,13 +148,20 @@ static gboolean gometa_dispatch(gpointer data) {
             case gometa_message_type_text:
                 if (m->text && m->conv) {
                     if (m->isGroup) {
-                        gometa_group_message(pc, m->conv, m->name ? m->name : m->who, m->text, ts, m->isOutgoing);
+                        gometa_group_message(pc, m->conv, m->name ? m->name : m->who, m->text, ts, m->isOutgoing, m->id);
                     } else if (m->isOutgoing) {
                         // own 1:1 message: serv_got_im forces RECV, so write to the IM conv directly
                         PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, m->conv, m->account);
                         if (!conv) conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, m->account, m->conv);
                         purple_conv_im_write(purple_conversation_get_im_data(conv), m->conv, m->text, PURPLE_MESSAGE_SEND, ts);
                     } else {
+                        // webOS reactions: stash the message id so the transport stores it as
+                        // serviceMessageId (read in incoming_message_cb during serv_got_im).
+                        if (m->id && *m->id) {
+                            PurpleConversation *iconv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, m->conv, m->account);
+                            if (!iconv) iconv = purple_conversation_new(PURPLE_CONV_TYPE_IM, m->account, m->conv);
+                            purple_conversation_set_data(iconv, "webos-msg-id", g_strdup(m->id));
+                        }
                         serv_got_im(pc, m->conv, m->text, PURPLE_MESSAGE_RECV, ts);
                     }
                 }
