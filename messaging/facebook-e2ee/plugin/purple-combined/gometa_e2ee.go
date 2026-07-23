@@ -100,6 +100,10 @@ func (h *gometaHandler) e2eeEventHandler(rawEvt any) {
 		h.logger.Info().Msg("E2EE socket connected")
 	case *events.LoggedOut:
 		h.logger.Warn().Msg("E2EE socket logged out")
+	default:
+		// Surface anything we don't handle (e.g. if reactions ever arrive as a distinct event type
+		// rather than an FBMessage) so it's visible in the log instead of silently dropped.
+		h.logger.Debug().Str("type", fmt.Sprintf("%T", rawEvt)).Msg("unhandled E2EE event")
 	}
 }
 
@@ -130,7 +134,22 @@ func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
 
 	var text string
 	if consumer, ok := evt.Message.(*waConsumerApplication.ConsumerApplication); ok {
-		text = consumer.GetPayload().GetContent().GetMessageText().GetText()
+		content := consumer.GetPayload().GetContent()
+		// webOS reactions: on an ENCRYPTED Messenger thread a reaction arrives HERE as a
+		// ConsumerApplication carrying a ReactionMessage (over the whatsmeow socket) - NOT via the
+		// messagix LSUpsertReaction table that plaintext threads use. Forward it to the shared
+		// "webos-im-reaction" signal so it attaches to the target message, then return (nothing to
+		// display). Key.ID = the reacted-to message id (matches the serviceMessageId we stored from
+		// evt.Info.ID); Text = the emoji ("" means the reaction was removed); sender = who reacted.
+		if rm := content.GetReactionMessage(); rm != nil {
+			targetID := rm.GetKey().GetID()
+			if targetID != "" {
+				purple_handle_reaction(h.account, strconv.FormatInt(chatFbid, 10), targetID,
+					rm.GetText(), strconv.FormatInt(senderFbid, 10))
+			}
+			return
+		}
+		text = content.GetMessageText().GetText()
 	}
 	if text == "" {
 		return

@@ -84,6 +84,13 @@ void gowhatsapp_display_text_message(
             if (conv == NULL) {
                 conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account, remoteJid); // MEMCHECK: caller takes ownership
             }
+            // webOS reactions/carbons: a message we sent from ANOTHER device carries REMOTE_SEND and the
+            // transport stores it as an Outbox row - stash its id as the serviceMessageId so a later
+            // reaction can attach to our own message. A plain local echo (SEND without REMOTE_SEND) is
+            // left to the app's own send path, so don't stash for it.
+            if ((flags & PURPLE_MESSAGE_REMOTE_SEND) && messageId != NULL && *messageId != '\0') {
+                purple_conversation_set_data(conv, "webos-msg-id", g_strdup(messageId));
+            }
             purple_conv_im_write(purple_conversation_get_im_data(conv), remoteJid, text_with_id, flags, timestamp);
         } else {
             if (purple_account_get_bool(account, GOWHATSAPP_UPDATE_BUDDY_ON_MESSAGE_OPTION, TRUE)) {

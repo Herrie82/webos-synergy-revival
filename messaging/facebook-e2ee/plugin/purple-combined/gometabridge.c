@@ -151,10 +151,18 @@ static gboolean gometa_dispatch(gpointer data) {
                     if (m->isGroup) {
                         gometa_group_message(pc, m->conv, m->name ? m->name : m->who, m->text, ts, m->isOutgoing, m->id);
                     } else if (m->isOutgoing) {
-                        // own 1:1 message: serv_got_im forces RECV, so write to the IM conv directly
+                        // A message we sent from ANOTHER client (phone) - handleMessage already dropped
+                        // the echoes of our OWN sends (sentOtids), so everything here is a genuine
+                        // carbon. Write it with PURPLE_MESSAGE_REMOTE_SEND so the transport stores it as
+                        // an Outbox row (making it appear on the sent side of the thread), and stash the
+                        // message id as its serviceMessageId so a reaction can attach to our own message.
                         PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, m->conv, m->account);
                         if (!conv) conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, m->account, m->conv);
-                        purple_conv_im_write(purple_conversation_get_im_data(conv), m->conv, m->text, PURPLE_MESSAGE_SEND, ts);
+                        if (m->id && *m->id) {
+                            purple_conversation_set_data(conv, "webos-msg-id", g_strdup(m->id));
+                        }
+                        purple_conv_im_write(purple_conversation_get_im_data(conv), m->conv, m->text,
+                                (PurpleMessageFlags)(PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_REMOTE_SEND), ts);
                     } else {
                         // webOS reactions: stash the message id so the transport stores it as
                         // serviceMessageId (read in incoming_message_cb during serv_got_im).
