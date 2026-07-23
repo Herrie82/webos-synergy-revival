@@ -1,0 +1,7 @@
+#!/bin/sh
+# media-pipeline wrapper - installed by install-videoplayer-webm.sh as /usr/bin/media-pipeline.
+# The stock media-pipeline is itself a tiny LD_PRELOAD launcher (ptmalloc3 + memcpy); we replace it
+# with this script that ALSO preloads libmp-autoplug.so (the decodebin autoplug shim) before exec'ing
+# the real binary. The original stock launcher is preserved as /usr/bin/media-pipeline.wrapper.orig.
+export LD_PRELOAD="/usr/lib/libptmalloc3.so /usr/lib/libmemcpy.so /usr/lib/libmp-autoplug.so"
+exec /usr/bin/media-pipeline.real "$@"
