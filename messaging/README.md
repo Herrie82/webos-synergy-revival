@@ -4,15 +4,21 @@ Synergy **IM** account providers for webOS, alongside the cloud/file connectors.
 modern chat network back to the stock **Messaging** app via a `libpurple` protocol plugin bridged
 into webOS by **imlibpurpleservice**.
 
-| Service | Account template | App(s) | Protocol plugin | Notes |
-|---|---|---|---|---|
-| **Teams** | `com.palm.teams` | `com.palm.app.teams` | `purple-teams` | OAuth device-code → refresh_token as credential; silent re-login |
-| **Discord** | `com.palm.discord` | `com.palm.app.discord`, `com.palm.app.discordqr` | `purple-discord` (+ `libqrencode` for QR login) | QR or paste-token sign-in |
-| **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | **TDLib**-based; supersedes the older tgl `telegram-purple` |
-| **Facebook** | `com.palm.facebookim` | `com.palm.app.facebookim` | `purple-facebook` | Plain email + password. Uses a distinct templateId — the stock dead `com.palm.facebook` template collides. Upstream fragile (2FA can't log in) |
-| **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
-| **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
-| **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-signal` (+ cross-built OpenJDK 11 JRE, libsignal_jni, libzkgroup) | Fully built; embeds a JVM to drive signal-cli. On-device test pending. See below |
+| Service | Account template | App(s) | Protocol plugin | React: recv¹ | React: own² | Notes |
+|---|---|---|---|---|---|---|
+| **Teams** | `com.palm.teams` | `com.palm.app.teams` | `purple-teams` | — | — | OAuth device-code → refresh_token as credential; silent re-login |
+| **Discord** | `com.palm.discord` | `com.palm.app.discord`, `com.palm.app.discordqr` | `purple-discord` (+ `libqrencode` for QR login) | — | — | QR or paste-token sign-in |
+| **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | ✅ | ✅ | **TDLib**-based; supersedes the older tgl `telegram-purple`. Aggregated (replace) reaction model |
+| **Facebook** | `com.palm.facebookim` | `com.palm.app.facebookim` | `purple-facebook` | — | — | Legacy plain email + password; upstream fragile (2FA can't log in). Superseded on-device by the combined gometa plugin below |
+| **Facebook (E2EE)** | `com.palm.facebook` (gometa) | via Messaging | `purple-combined` (messagix + whatsmeow, Go `c-archive`) | ✅ | ✅ | Email + password + 2FA code. Reactions on both plaintext threads (`LSUpsertReaction`) and encrypted threads (whatsmeow `ConsumerApplication.ReactionMessage`) |
+| **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | — | — | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
+| **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | ✅ | ✅ | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
+| **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-presage` (Rust `presage`, no JVM) | ✅ | ✅ | Phone linking via QR |
+
+¹ **React: recv** — reactions others place on a message, rendered as inline badges on the bubble (instead of a separate "reacted with X" message).
+² **React: own** — reactions that land on messages *you* sent, including messages sent from another client (the phone), which are synced into the thread via the outgoing-carbon path.
+
+Legend: ✅ confirmed on device · 🔨 built, on-device test pending · ⚠️ partial (see notes) · — not implemented
 
 ## Layout
 
