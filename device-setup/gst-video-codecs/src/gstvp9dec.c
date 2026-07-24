@@ -44,6 +44,7 @@
 #ifdef HAVE_VP8_DECODER
 
 #include <string.h>
+#include <unistd.h>
 
 #include "gstvp9dec.h"
 #include "gstvp8utils.h"
@@ -423,8 +424,24 @@ gst_vp9_dec_handle_frame (GstBaseVideoDecoder * decoder, GstVideoFrame * frame)
       }
     }
 
-    status =
-        vpx_codec_dec_init (&dec->decoder, &vpx_codec_vp9_dx_algo, NULL, flags);
+    {
+      /* Enable libvpx multi-threaded VP9 decode. The stock init passed a NULL
+       * cfg -> threads defaults to 1, so VP9 (heavy software decode) ran on a
+       * single core. Scale to the online CPUs (2 on the TouchPad's OMAP4) so
+       * tile/loopfilter work is spread across both cores. Capped at 4. */
+      vpx_codec_dec_cfg_t cfg = { 0, };
+      long nproc = sysconf (_SC_NPROCESSORS_ONLN);
+      cfg.threads = (nproc > 1) ? (unsigned int) nproc : 1;
+      if (cfg.threads > 4)
+        cfg.threads = 4;
+      cfg.w = stream_info.w;
+      cfg.h = stream_info.h;
+      GST_INFO_OBJECT (dec, "initializing VP9 decoder with %u threads",
+          cfg.threads);
+      status =
+          vpx_codec_dec_init (&dec->decoder, &vpx_codec_vp9_dx_algo, &cfg,
+          flags);
+    }
     if (status != VPX_CODEC_OK) {
       GST_ELEMENT_ERROR (dec, LIBRARY, INIT,
           ("Failed to initialize VP9 decoder"), ("%s",
