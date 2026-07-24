@@ -18,14 +18,18 @@
         "com.palm.app.contacts",
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
-        "com.palm.app.whatsapp"
+        "com.palm.app.whatsapp",
+        "com.palm.whatsapp",
+        "com.palm.app.phone"
     ],
     "writePermissions": [
         "com.palm.app.contacts",
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
         "com.palm.app.messaging",
-        "com.palm.app.whatsapp"
+        "com.palm.app.whatsapp",
+        "com.palm.whatsapp",
+        "com.palm.app.phone"
     ],
     "capabilityProviders": [
         {
@@ -66,6 +70,20 @@
             "db_kinds": {
                 "contact": "com.palm.contact.libpurple:1"
             }
+        },
+        {
+            "capability": "PHONE",
+            "id": "com.palm.whatsapp.call",
+            "alwaysOn": true,
+            "implementation": "palm://com.palm.whatsapp/",
+            "serviceName": "type_whatsapp",
+            "wanAllowed": true,
+            "wifiAllowed": true,
+            "pausePrompt": false,
+            "pauseCode": [],
+            "waitCode": [],
+            "keyHoldMappings": [],
+            "launchCode": "*#"
         }
     ]
 }]
