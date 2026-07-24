@@ -149,6 +149,22 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " send succeeded\n",
                           sendSucceeded.old_message_id_);
         removeTempFile(sendSucceeded.old_message_id_);
+        // webOS: the message the user sent FROM THE APP now has its real network id. Its Outbox row was
+        // persisted with no serviceMessageId (the app can't know the id at send time), so emit the same
+        // "<chatId>:<messageId>" key incoming messages use, plus the plain text as a correlation hint;
+        // the transport's OutboxIdHandler attaches it to the row so the user can react to their own msg.
+        if (sendSucceeded.message_ && sendSucceeded.message_->is_outgoing_) {
+            const td::td_api::message &msg = *sendSucceeded.message_;
+            std::string svcMsgId = std::to_string(msg.chat_id_) + ":" + std::to_string(msg.id_);
+            std::string text;
+            if (msg.content_ && msg.content_->get_id() == td::td_api::messageText::ID) {
+                const auto &mt = static_cast<const td::td_api::messageText &>(*msg.content_);
+                if (mt.text_) text = mt.text_->text_;
+            }
+            purple_debug_misc(config::pluginId, "outbox-id: sent message now has id %s\n", svcMsgId.c_str());
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
+                               m_account, svcMsgId.c_str(), text.c_str());
+        }
         break;
     }
 
@@ -1044,6 +1060,58 @@ void PurpleTdClient::updateChatLastMessage(td::td_api::updateChatLastMessage &la
                 m_chatGaps.back().lastMessage = lastMessageId;
             }
         }
+    }
+}
+
+void PurpleTdClient::sendReactionResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+{
+    if (object && object->get_id() == td::td_api::error::ID) {
+        auto &err = static_cast<td::td_api::error &>(*object);
+        purple_debug_warning(config::pluginId, "add/removeMessageReaction FAILED: %d %s\n", err.code_, err.message_.c_str());
+    } else {
+        purple_debug_misc(config::pluginId, "add/removeMessageReaction OK\n");
+    }
+}
+
+void PurpleTdClient::sendReaction(int64_t chatId, int64_t messageId, const std::string &emojiIn, bool remove)
+{
+    // Telegram's reaction set uses the BARE emoji: strip emoji variation selectors (U+FE0E/U+FE0F,
+    // UTF-8 "EF B8 8E/8F") that the picker/decoder may include (e.g. "❤️" -> "❤"), else
+    // add/removeMessageReaction rejects it as an unknown reaction.
+    std::string emoji;
+    for (size_t i = 0; i < emojiIn.size();) {
+        if (i + 2 < emojiIn.size() && (unsigned char)emojiIn[i] == 0xEF && (unsigned char)emojiIn[i+1] == 0xB8 &&
+            ((unsigned char)emojiIn[i+2] == 0x8F || (unsigned char)emojiIn[i+2] == 0x8E)) {
+            i += 3;
+            continue;
+        }
+        emoji.push_back(emojiIn[i]);
+        i++;
+    }
+    if (emoji.empty()) {
+        purple_debug_warning(config::pluginId, "sendReaction: empty emoji, ignoring (chat=%" G_GINT64_FORMAT ")\n", chatId);
+        return;
+    }
+    // setMessageReactions is bot-only ("400 Only bots can use the method"); regular user accounts must
+    // use add/removeMessageReaction with a specific reaction. Both need the bare emoji, so the app
+    // carries it through even on removal. addMessageReaction replaces my prior reaction (non-premium =
+    // one reaction/message), matching the app's one-reaction-per-user model.
+    purple_debug_misc(config::pluginId, "sendReaction %s chat=%" G_GINT64_FORMAT " msg=%" G_GINT64_FORMAT " emoji='%s'\n",
+                      remove ? "remove" : "add", chatId, messageId, emoji.c_str());
+    if (remove) {
+        auto req = td::td_api::make_object<td::td_api::removeMessageReaction>();
+        req->chat_id_       = chatId;
+        req->message_id_    = messageId;
+        req->reaction_type_ = td::td_api::make_object<td::td_api::reactionTypeEmoji>(emoji);
+        m_transceiver.sendQuery(std::move(req), &PurpleTdClient::sendReactionResponse);
+    } else {
+        auto req = td::td_api::make_object<td::td_api::addMessageReaction>();
+        req->chat_id_                 = chatId;
+        req->message_id_              = messageId;
+        req->reaction_type_           = td::td_api::make_object<td::td_api::reactionTypeEmoji>(emoji);
+        req->is_big_                  = false;
+        req->update_recent_reactions_ = true;
+        m_transceiver.sendQuery(std::move(req), &PurpleTdClient::sendReactionResponse);
     }
 }
 

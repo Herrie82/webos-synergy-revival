@@ -21,6 +21,10 @@ public:
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
     static std::string getBaseDatabasePath();
     int  sendMessage(const char *buddyName, const char *message);
+    // webOS reactions (SEND): add (remove=false) or remove (remove=true) MY `emoji` reaction on a
+    // message via TDLib add/removeMessageReaction. Called from the webos-im-send-reaction handler.
+    void sendReaction(int64_t chatId, int64_t messageId, const std::string &emoji, bool remove);
+    void sendReactionResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void sendTyping(const char *buddyName, bool isTyping);
     void sendReadReceipts(PurpleConversation *conversation);
 

@@ -320,6 +320,35 @@ conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type)
     }
 }
 
+// webOS reactions (SEND): the transport emits "webos-im-send-reaction" (registered process-wide) when
+// the user reacts from the TouchPad. It fires for EVERY account, so filter to Telegram. targetId is
+// "<chatId>:<messageId>" (matching the composite serviceMessageId we stored). `removeFlag` is "1" to
+// remove my `emoji` reaction, else add it (the emoji is always supplied, even on removal).
+static void tgprpl_send_reaction_cb(PurpleAccount *account, const char *targetId, const char *emoji,
+                                    const char *peer, const char *removeFlag, void *data)
+{
+    if (!account || !targetId || !*targetId) {
+        return;
+    }
+    if (g_strcmp0(purple_account_get_protocol_id(account), config::pluginId) != 0) {
+        return; // not a Telegram account
+    }
+    PurpleTdClient *tdClient = getTdClient(account);
+    if (!tdClient) {
+        return;
+    }
+    const char *colon = strchr(targetId, ':');
+    if (!colon) {
+        return;
+    }
+    int64_t chatId    = g_ascii_strtoll(targetId, NULL, 10);
+    int64_t messageId = g_ascii_strtoll(colon + 1, NULL, 10);
+    if (chatId == 0 || messageId == 0) {
+        return;
+    }
+    tdClient->sendReaction(chatId, messageId, emoji ? emoji : "", removeFlag && removeFlag[0] == '1');
+}
+
 static void tgprpl_login (PurpleAccount *acct)
 {
     purple_debug_misc(config::pluginId, "version %s\n", config::versionString);
@@ -332,6 +361,15 @@ static void tgprpl_login (PurpleAccount *acct)
 
     purple_signal_connect(purple_conversations_get_handle(), "conversation-updated",
                           acct, PURPLE_CALLBACK(conversation_updated_cb), NULL);
+
+    // Connect once (process-wide) to the transport's send-reaction signal; the callback filters to
+    // Telegram accounts. The transport registers the signal at init, before any account logs in.
+    static bool s_sendReactionConnected = false;
+    if (!s_sendReactionConnected) {
+        s_sendReactionConnected = true;
+        purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction",
+                              purple_get_core(), PURPLE_CALLBACK(tgprpl_send_reaction_cb), NULL);
+    }
 }
 
 static void tgprpl_close (PurpleConnection *gc)
