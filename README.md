@@ -62,7 +62,7 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 
 | Connector | Plugin | Auth | IM | Images | Audio | Video | Reactions | Voice call | Video call |
 |---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ |
+| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ | ❌ |
 | **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
 | **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ❔ | ❔ | ❔ | ✅ | 🟡 | ❌ |
 | **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | ❌ | 🟡 | ❌ |
@@ -76,11 +76,15 @@ Notes:
   are verified end-to-end on device; Teams is the reference deployment; the rest are built but most
   have not yet been ticked off end-to-end on device.
 - **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
-  line) and work **both ways** — reactions others place on your messages and reactions you place —
-  **confirmed on device for Telegram, WhatsApp, Signal and Facebook** (including E2EE Messenger
-  threads). Telegram uses an aggregated/replace model; the others merge per-sender. Reactions on
-  your *own* messages ride the same "carbon" path that syncs messages you sent from another client
-  (the phone) into the thread.
+  line) and work **both ways**: reactions others place on your messages are received as badges, and
+  reactions you place **from the Messaging app are transmitted to the network** (add / change /
+  remove) — **confirmed end-to-end on device for Telegram, WhatsApp, Signal and Facebook**
+  (including E2EE Messenger threads). You can also react to your **own** sent messages: the app-sent
+  Outbox row is tagged with the network id (via a `webos-im-outbox-id` signal) so a reaction can
+  target it. Telegram uses an aggregated/replace model and needs its picker emoji mapped to
+  Telegram's curated set (per the account template); the others accept arbitrary emoji and merge
+  per-sender. **Teams** reactions (receive, send, own) are built but not yet verified on device (the
+  Teams `emotions` send endpoint is unconfirmed).
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.

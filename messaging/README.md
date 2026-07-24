@@ -4,19 +4,20 @@ Synergy **IM** account providers for webOS, alongside the cloud/file connectors.
 modern chat network back to the stock **Messaging** app via a `libpurple` protocol plugin bridged
 into webOS by **imlibpurpleservice**.
 
-| Service | Account template | App(s) | Protocol plugin | React: recv¹ | React: own² | Notes |
-|---|---|---|---|---|---|---|
-| **Teams** | `com.palm.teams` | `com.palm.app.teams` | `purple-teams` | — | — | OAuth device-code → refresh_token as credential; silent re-login |
-| **Discord** | `com.palm.discord` | `com.palm.app.discord`, `com.palm.app.discordqr` | `purple-discord` (+ `libqrencode` for QR login) | — | — | QR or paste-token sign-in |
-| **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | ✅ | ✅ | **TDLib**-based; supersedes the older tgl `telegram-purple`. Aggregated (replace) reaction model |
-| **Facebook** | `com.palm.facebookim` | `com.palm.app.facebookim` | `purple-facebook` | — | — | Legacy plain email + password; upstream fragile (2FA can't log in). Superseded on-device by the combined gometa plugin below |
-| **Facebook (E2EE)** | `com.palm.facebook` (gometa) | via Messaging | `purple-combined` (messagix + whatsmeow, Go `c-archive`) | ✅ | ✅ | Email + password + 2FA code. Reactions on both plaintext threads (`LSUpsertReaction`) and encrypted threads (whatsmeow `ConsumerApplication.ReactionMessage`) |
-| **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | — | — | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
-| **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` (whatsmeow, Go `c-archive`) | ✅ | ✅ | Phone + QR/pairing link; pure-Go backend cross-compiled for arm; ~19 MB |
-| **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-presage` (Rust `presage`, no JVM) | ✅ | ✅ | Phone linking via QR |
+| Service | Account template | App(s) | Protocol plugin | React: recv¹ | React: send² | React: own³ | Notes |
+|---|---|---|---|---|---|---|---|
+| **Teams** | `com.palm.teams` | `com.palm.app.teams` | `purple-teams` | 🔨 | 🔨 | 🔨 | OAuth device-code → refresh_token as credential; silent re-login. Reactions built (Teams `emotions` ↔ emoji, incl. send via the `messages/.../properties?name=emotions` endpoint — **unverified**); built stock (native prpl id, transport maps it flexibly). On-device test pending |
+| **Discord** | `com.palm.discord` | `com.palm.app.discord`, `com.palm.app.discordqr` | `purple-discord` (+ `libqrencode` for QR login) | — | — | — | QR or paste-token sign-in |
+| **Telegram** | `com.palm.telegram` | `com.palm.app.telegram` | `tdlib-purple` (+ `tdlib-src`) | ✅ | ✅ | ✅ | **TDLib**-based; supersedes the older tgl `telegram-purple`. Aggregated (replace) reaction model. Send via `add`/`removeMessageReaction`; picker emoji mapped to Telegram's set per account template (😆→😁, 😮→😱) |
+| **Facebook** | `com.palm.facebookim` | `com.palm.app.facebookim` | `purple-facebook` | — | — | — | Legacy plain email + password; upstream fragile (2FA can't log in). Superseded on-device by the combined gometa plugin below |
+| **Facebook (E2EE)** | `com.palm.facebook` (gometa) | via Messaging | `purple-combined` (messagix + whatsmeow, Go `c-archive`) | ✅ | ✅ | ✅ | Email + password + 2FA code. Reactions on both plaintext threads (`LSUpsertReaction` / `SendReactionTask`) and encrypted threads (whatsmeow `ConsumerApplication.ReactionMessage`) |
+| **Google Chat** | `com.palm.googlechat` | `com.palm.app.googlechat` | `purple-googlechat` (+ cross-built `libprotobuf-c`) | — | — | — | Auth via 5 pasted cookies → prpl protocol options; protobuf wire format |
+| **WhatsApp** | `com.palm.whatsapp` | `com.palm.app.whatsapp` | `purple-gowhatsapp` / `purple-combined` (whatsmeow, Go `c-archive`) | ✅ | ✅ | ✅ | Phone + QR/pairing link; pure-Go backend cross-compiled for arm. Send via whatsmeow `BuildReaction` |
+| **Signal** | `com.palm.signal` | `com.palm.app.signal` | `purple-presage` (Rust `presage`, no JVM) | ✅ | ✅ | ✅ | Phone linking via QR. Send via a `presage` `DataMessage` reaction (target author resolved from the message store) |
 
 ¹ **React: recv** — reactions others place on a message, rendered as inline badges on the bubble (instead of a separate "reacted with X" message).
-² **React: own** — reactions that land on messages *you* sent, including messages sent from another client (the phone), which are synced into the thread via the outgoing-carbon path.
+² **React: send** — reactions *you* place from the **Messaging app** (add / change / remove), transmitted to the network — including reactions on your **own** sent messages (the app-sent Outbox row is tagged with the network id via `webos-im-outbox-id`).
+³ **React: own** — reactions that land on messages *you* sent (from the app or another client, the latter synced via the outgoing-carbon path).
 
 Legend: ✅ confirmed on device · 🔨 built, on-device test pending · ⚠️ partial (see notes) · — not implemented
 
