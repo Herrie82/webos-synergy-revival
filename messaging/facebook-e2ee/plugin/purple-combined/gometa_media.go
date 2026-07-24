@@ -122,6 +122,9 @@ func (h *gometaHandler) sendMediaPlaintext(threadID int64, data []byte, filename
 	if sendResp != nil {
 		for _, r := range sendResp.LSReplaceOptimsiticMessage {
 			if r.OfflineThreadingId == otidStr {
+				// webOS outbox-id: stamp the app-sent image's Outbox row with its otid (the id a later
+				// reaction targets) so reactions to our own sent image attach instead of being dropped.
+				purple_handle_outbox_id(h.account, otidStr, "")
 				h.logger.Info().Int64("thread", threadID).Msg("media sent")
 				return nil
 			}
@@ -189,14 +192,24 @@ func (h *gometaHandler) sendImageE2EE(threadID int64, data []byte, mime string) 
 		},
 	}
 	otid := methods.GenerateEpochID()
+	otidStr := strconv.FormatInt(otid, 10)
 	h.mu.Lock()
 	h.sentOtids[otid] = true
+	// Record this as our own message so a later reaction over E2EE builds a FromMe=true MessageKey
+	// (mirrors sendE2EE for text).
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
 	h.mu.Unlock()
 	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
 	if _, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
-		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(strconv.FormatInt(otid, 10))}); err != nil {
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)}); err != nil {
 		return fmt.Errorf("e2ee image send: %w", err)
 	}
+	// webOS outbox-id: the otid we forced as SendRequestExtra{ID} IS this image's message id, and it is
+	// exactly what a later reaction targets (reaction Key.ID == this otid). Hand it to the transport so
+	// the app-sent image's Outbox row gets that serviceMessageId and becomes reactable. Text is empty for
+	// media, so OutboxIdHandler falls back to the most-recent-unlabeled Outbox row (the image). Without
+	// this the sent image carried no id and reactions to it were silently dropped. Mirrors sendE2EE.
+	purple_handle_outbox_id(h.account, otidStr, "")
 	h.logger.Info().Int64("thread", threadID).Msg("e2ee image sent")
 	return nil
 }
