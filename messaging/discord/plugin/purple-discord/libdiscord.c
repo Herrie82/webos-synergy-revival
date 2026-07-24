@@ -404,6 +404,7 @@ typedef struct {
 
 	gint64 seq; /* incrementing counter */
 	guint heartbeat_timeout;
+	gboolean heartbeat_ack_pending; /* webOS #1: set when a heartbeat is sent, cleared on OP_HEARTBEAT_ACK; still set at the next heartbeat => gateway zombied => reconnect */
 	guint five_minute_restart;
 
 	GHashTable *one_to_ones;		/* A store of known room_id's -> username's */
@@ -1860,11 +1861,28 @@ discord_send_auth(DiscordAccount *da)
 	json_object_unref(obj);
 }
 
+static void discord_start_socket(DiscordAccount *da); /* webOS #1: used by the heartbeat-ACK watchdog below */
+
 static gboolean
 discord_send_heartbeat(gpointer userdata)
 {
 	DiscordAccount *da = userdata;
-	JsonObject *obj = json_object_new();
+	JsonObject *obj;
+
+	/* webOS #1: zombie-connection watchdog. Discord ACKs every heartbeat (OP_HEARTBEAT_ACK). If our
+	 * previous heartbeat was never ACKed, the socket is half-dead - Discord has stopped delivering
+	 * events (new messages) and sends no close frame, so nothing else notices. Reconnect now so
+	 * real-time delivery recovers automatically, instead of silently dying until a manual re-login
+	 * (this was the "Discord messages only arrive after logout/login" bug). */
+	if (da->heartbeat_ack_pending) {
+		purple_debug_error("discord", "heartbeat not ACKed - gateway zombied, reconnecting\n");
+		da->heartbeat_ack_pending = FALSE;
+		da->heartbeat_timeout = 0; /* we're inside this source; keep discord_start_socket from removing it */
+		discord_start_socket(da);  /* tears down + reconnects; OP_HELLO installs a fresh heartbeat timer */
+		return FALSE;              /* drop this (now stale) timer */
+	}
+
+	obj = json_object_new();
 
 #ifdef USE_QRCODE_AUTH
 	if (da->running_auth_qrcode)
@@ -1875,6 +1893,7 @@ discord_send_heartbeat(gpointer userdata)
 	json_object_set_int_member(obj, "op", OP_HEARTBEAT);
 	json_object_set_int_member(obj, "d", da->seq);
 
+	da->heartbeat_ack_pending = TRUE; /* expect an ACK before the next heartbeat fires */
 	discord_socket_write_json(da, obj);
 
 	json_object_unref(obj);
@@ -6728,6 +6747,7 @@ discord_process_frame(DiscordAccount *da, const gchar *frame)
 		}
 
 		case OP_HEARTBEAT_ACK: { /* Heartbeat ACK */
+			da->heartbeat_ack_pending = FALSE; /* webOS #1: gateway is alive and delivering */
 			break;
 		}
 
@@ -6938,6 +6958,12 @@ discord_inflate(DiscordAccount *da, gchar *frame, gsize frame_len)
 	}
 
 	if (gzres != Z_OK && gzres != Z_STREAM_END) {
+		/* WEBOS-DIAG (issue #1): a persistent zlib-stream desync. Once this happens EVERY subsequent
+		 * gateway frame fails to inflate, so real-time events are lost until a full reconnect resets
+		 * the stream. Usual cause: a fragmented websocket payload whose continuation frames were dropped
+		 * (see the "unknown websocket error" opcode 0/1/128 log below). */
+		purple_debug_error("discord", "WEBOS-DIAG inflate FAILED gzres=%d avail_in=%u frame_len=%" G_GSIZE_FORMAT " -- zlib-stream desynced; real-time events lost until reconnect\n",
+			gzres, zs->avail_in, frame_len);
 		g_string_free(ret, TRUE);
 		return NULL;
 	}
@@ -7046,7 +7072,11 @@ discord_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInpu
 					return;
 				}
 
-				purple_debug_error("discord", "unknown websocket error %d\n", ya->packet_code);
+				/* WEBOS-DIAG (issue #1): opcodes 0 (continuation), 1 (non-FIN text) and 128 (FIN+continuation)
+				 * land here and get DROPPED - this reader only reassembles single-frame 129/130 payloads.
+				 * A dropped continuation frame feeds the persistent zlib-stream partial data -> desync ->
+				 * every later real-time event is lost until reconnect (see the inflate-FAILED log). */
+				purple_debug_error("discord", "WEBOS-DIAG DROPPING websocket frame opcode=%d (fragmented/continuation not reassembled -> desyncs zlib-stream)\n", ya->packet_code);
 				return;
 			}
 
@@ -7094,9 +7124,16 @@ discord_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInpu
 			gboolean success;
 
 			if (ya->compress) {
+				guint64 pre_len = ya->frame_len;
 				gchar *temp = discord_inflate(ya, ya->frame, ya->frame_len);
 				g_free(ya->frame);
 				ya->frame = temp;
+				if (temp == NULL) {
+					/* WEBOS-DIAG (issue #1): the inflate failed, so discord_process_frame is about to be
+					 * handed NULL, fail to parse, and return TRUE (success) - the gateway event vanishes
+					 * with no error and no reconnect. This is why new messages only show after re-login. */
+					purple_debug_error("discord", "WEBOS-DIAG inflate returned NULL for a %" G_GUINT64_FORMAT "-byte compressed frame -> gateway event SILENTLY DROPPED (no reconnect)\n", pre_len);
+				}
 			}
 
 #ifdef USE_QRCODE_AUTH
@@ -7195,6 +7232,8 @@ static void
 discord_start_socket(DiscordAccount *da)
 {
 	const gchar *server;
+
+	da->heartbeat_ack_pending = FALSE; /* webOS #1: fresh connection starts with no outstanding ACK */
 
 	if (da->heartbeat_timeout) {
 		g_source_remove(da->heartbeat_timeout);
