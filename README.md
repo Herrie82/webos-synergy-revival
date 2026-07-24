@@ -62,7 +62,7 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 
 | Connector | Plugin | Auth | IM | Images | Audio | Video | Reactions | Voice call | Video call |
 |---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ | ❌ |
+| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ✅ | ❌ | ❌ |
 | **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
 | **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
 | **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ✅ | ❔ | ❔ | ❌ | 🟡 | ❌ |
@@ -83,8 +83,9 @@ Notes:
   Outbox row is tagged with the network id (via a `webos-im-outbox-id` signal) so a reaction can
   target it. Telegram uses an aggregated/replace model and needs its picker emoji mapped to
   Telegram's curated set (per the account template); the others accept arbitrary emoji and merge
-  per-sender. **Teams** reactions (receive, send, own) are built but not yet verified on device (the
-  Teams `emotions` send endpoint is unconfirmed).
+  per-sender. **Teams** send/remove is confirmed on device (consumer chatsvc `emotions` property,
+  `PUT`/`DELETE` with a numeric-ms `value` body — verified by decompiling the Teams app); 🙏 has no
+  consumer-Teams reaction and is dropped from the picker via the template map.
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
