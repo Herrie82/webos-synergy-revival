@@ -468,6 +468,7 @@ teams_node_menu(PurpleBlistNode *node)
 static gulong conversation_updated_signal = 0;
 static gulong chat_conversation_typing_signal = 0;
 static gulong im_conversation_created_signal = 0;
+static gulong send_reaction_signal = 0;
 
 static void
 teams_im_conversation_created(PurpleConversation *conv)
@@ -603,6 +604,17 @@ teams_login(PurpleAccount *account)
 	}
 	if (!im_conversation_created_signal) {
 		im_conversation_created_signal = purple_signal_connect(purple_conversations_get_handle(), "conversation-created", purple_connection_get_protocol(pc), PURPLE_CALLBACK(teams_im_conversation_created), NULL);
+	}
+	// webOS reactions (SEND): connect once, process-wide, to the transport's send-reaction
+	// signal. It fires for every account; teams_send_reaction_signal_cb filters to ours. The
+	// transport registers this signal at init (before any account logs in); on non-webOS
+	// libpurple the signal doesn't exist and purple_signal_connect harmlessly returns 0.
+	if (!send_reaction_signal) {
+		send_reaction_signal = purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction", purple_get_core(), PURPLE_CALLBACK(teams_send_reaction_signal_cb), NULL);
+		if (!send_reaction_signal) {
+			// Signal not registered (non-webOS build); don't retry every login.
+			send_reaction_signal = G_MAXULONG;
+		}
 	}
 	// Setup callbacks for the preferences.
 	// handle = purple_proxy_get_handle();

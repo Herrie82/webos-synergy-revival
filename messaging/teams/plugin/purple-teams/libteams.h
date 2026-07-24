@@ -135,6 +135,15 @@
 #define TEAMS_PERSONAL_PLUGIN_ID "prpl-eionrobb-msteams-personal"
 #endif
 
+/* The protocol id THIS build registers (see teams_protocol_init / plugin init): the
+ * personal build overrides info->id to the personal id. Reaction signal handlers use this
+ * to filter the process-wide "webos-im-send-reaction" signal to our own accounts. */
+#ifdef ENABLE_TEAMS_PERSONAL
+#define TEAMS_THIS_PLUGIN_ID TEAMS_PERSONAL_PLUGIN_ID
+#else
+#define TEAMS_THIS_PLUGIN_ID TEAMS_PLUGIN_ID
+#endif
+
 #define TEAMS_LOCKANDKEY_APPID "msmsgs@msnmsgr.com"
 #define TEAMS_LOCKANDKEY_SECRET "Q1P7W2E4J9R8U3S5"
 

@@ -69,4 +69,9 @@ void teams_mark_conv_seen(PurpleConversation *conv, PurpleConversationUpdateType
 
 void teams_gather_self_properties(TeamsAccount *sa);
 
+/* webOS reactions (SEND): connected once (process-wide) to the transport's
+ * "webos-im-send-reaction" signal; filters to this plugin's accounts and PUTs the emotion. */
+void teams_send_reaction_signal_cb(PurpleAccount *account, const gchar *targetServiceMessageId,
+	const gchar *emoji, const gchar *peer, const gchar *removeFlag, gpointer user_data);
+
 #endif /* TEAMS_MESSAGES_H */

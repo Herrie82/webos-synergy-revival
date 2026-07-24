@@ -111,7 +111,9 @@ TeamsConnection *teams_post_or_get_with_error(TeamsAccount *sa, TeamsMethod meth
 	purple_http_request_set_timeout(request, 120);
 	purple_http_request_set_max_len(request, -1);
 	
-	if (method & (TEAMS_METHOD_POST | TEAMS_METHOD_PUT)) {
+	// DELETE included so a DELETE-with-body (Teams reaction removal PUTs its JSON via DELETE) gets the
+	// Content-Type + contents attached; a bodyless DELETE just gets a harmless Content-Type header.
+	if (method & (TEAMS_METHOD_POST | TEAMS_METHOD_PUT | TEAMS_METHOD_DELETE)) {
 		if (postdata && (postdata[0] == '[' || postdata[0] == '{')) {
 			purple_http_request_header_set(request, "Content-Type", "application/json"); // hax
 		} else {
