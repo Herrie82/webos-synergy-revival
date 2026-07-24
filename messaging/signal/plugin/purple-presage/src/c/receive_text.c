@@ -32,6 +32,35 @@ void presage_emit_reaction(PurpleAccount *account, const char *target_id, const 
     purple_timeout_add(0, presage_reaction_apply, e); /* thread-safe; runs on the main thread */
 }
 
+/* webOS reactions: emit the cross-prpl "webos-im-outbox-id" signal, telling the transport the server
+ * id (sent timestamp) of a message the user sent from the app. Called from the Rust command loop
+ * (worker thread), so - like presage_emit_reaction - copy the strings and hop to the libpurple main
+ * thread before touching purple_signal_emit. */
+typedef struct {
+    PurpleAccount *account;
+    char *service_message_id;
+    char *text;
+} PresageOutboxEvt;
+
+static gboolean presage_outbox_id_apply(gpointer data) {
+    PresageOutboxEvt *e = (PresageOutboxEvt *)data;
+    purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
+        e->account, e->service_message_id, e->text);
+    g_free(e->service_message_id); g_free(e->text); g_free(e);
+    return FALSE; /* one-shot */
+}
+
+void presage_emit_outbox_id(PurpleAccount *account, const char *service_message_id, const char *text) {
+    if (account == NULL || service_message_id == NULL || *service_message_id == '\0') {
+        return;
+    }
+    PresageOutboxEvt *e = g_new0(PresageOutboxEvt, 1);
+    e->account = account;
+    e->service_message_id = g_strdup(service_message_id);
+    e->text = g_strdup(text ? text : "");
+    purple_timeout_add(0, presage_outbox_id_apply, e); /* thread-safe; runs on the main thread */
+}
+
 void presage_handle_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags flags, uint64_t timestamp_ms, const char *body) {
     // escaping is now done in rust part
     presage_display_text(connection, who, name, group, flags, timestamp_ms, body);

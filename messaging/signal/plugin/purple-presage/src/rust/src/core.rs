@@ -86,12 +86,16 @@ async fn run<C: presage::store::Store + 'static>(
             }
             // now do the actual sending and error-handling
             match crate::send::send(&mut manager, recipient, message.clone(), xfer).await {
-                Ok(_) => {
+                Ok(sent_ts) => {
                     // NOTE: for Spectrum, send-acknowledgements should be PURPLE_MESSAGE_SEND only (without PURPLE_MESSAGE_REMOTE_SEND)
                     msg.flags = crate::bridge_structs::PurpleMessageFlags::PURPLE_MESSAGE_SEND;
                     if let Some(body) = message {
                         msg.body = Some(body);
                     }
+                    // webOS reactions: surface the server id (the sent timestamp, in ms) of this
+                    // app-composed message so the transport (OutboxIdHandler) can label the Outbox row
+                    // -> a later reaction can target the user's own message by its serviceMessageId.
+                    crate::bridge::emit_outbox_id(account, sent_ts.to_string(), msg.body.clone().unwrap_or_default());
                 }
                 Err(err) => {
                     // TODO: remove this purple_debug once handling errors is reasonably well tested
@@ -106,6 +110,42 @@ async fn run<C: presage::store::Store + 'static>(
             }
             // feed the feed-back back into purple
             crate::bridge::append_message(msg);
+            Ok(true)
+        }
+        crate::structs::Cmd::SendReaction {
+            recipient,
+            target_ts,
+            emoji,
+            remove,
+        } => {
+            // Resolve a phone-number recipient to the contact's UUID (same policy as Cmd::Send: never
+            // disconnect over one unsendable reaction).
+            let recipient = match recipient {
+                crate::structs::Recipient::ContactByPhone(phone) => match resolve_phone_to_uuid(&mut manager, &phone).await {
+                    Some(uuid) => crate::structs::Recipient::Contact(uuid),
+                    None => {
+                        crate::bridge::purple_debug(
+                            account,
+                            crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                            format!("Cannot send reaction: no Signal contact found for {phone}\n"),
+                        );
+                        return Ok(true);
+                    }
+                },
+                other => other,
+            };
+            match crate::send::send_reaction(&mut manager, recipient, target_ts, emoji, remove).await {
+                Ok(_) => crate::bridge::purple_debug(
+                    account,
+                    crate::bridge_structs::PURPLE_DEBUG_INFO,
+                    format!("sent reaction targeting {target_ts}\n"),
+                ),
+                Err(err) => crate::bridge::purple_debug(
+                    account,
+                    crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                    format!("Error sending reaction targeting {target_ts}: {err}\n"),
+                ),
+            }
             Ok(true)
         }
         crate::structs::Cmd::ListGroups => {

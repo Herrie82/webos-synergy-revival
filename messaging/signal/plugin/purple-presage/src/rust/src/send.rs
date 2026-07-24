@@ -60,8 +60,9 @@ pub async fn send<C: presage::store::Store + 'static>(
     recipient: crate::structs::Recipient,
     body: Option<String>,
     xfer: *const crate::bridge_structs::PurpleXfer,
-) -> Result<(), anyhow::Error> {
-    // -> Result<(), presage::Error<<C>::Error>>
+) -> Result<u64, anyhow::Error> {
+    // Returns the message's sent timestamp (its serviceMessageId, in ms). The caller emits this back
+    // to the transport via "webos-im-outbox-id" so a later reaction can target the user's own message.
     if let Some(body) = body.as_ref() {
         if body.len() > 2048 {
             // until https://github.com/whisperfish/presage/pull/384 is merged
@@ -129,6 +130,103 @@ pub async fn send<C: presage::store::Store + 'static>(
                 .await?;
         }
         crate::structs::Recipient::ContactByPhone(_) => unreachable!("phone recipient is resolved to a UUID before send()"),
+        crate::structs::Recipient::Group(master_key) => {
+            data_message.group_v2 = Some(presage::proto::GroupContextV2 {
+                master_key: Some(master_key.to_vec()),
+                revision: Some(0),
+                ..Default::default()
+            });
+            manager
+                .send_message_to_group(&master_key, presage::libsignal_service::content::ContentBody::DataMessage(data_message), timestamp)
+                .await?;
+        }
+    }
+
+    Ok(timestamp)
+}
+
+/*
+ * Looks up the ACI (author) of a stored message by its sent timestamp within a thread.
+ *
+ * Used to fill Reaction.target_author_aci, which the reaction signal does not carry. For an incoming
+ * message the sender is the peer; for our own (synchronized) message it is our own ACI -- so this
+ * resolves both directions correctly, provided the message is in the store.
+ */
+async fn lookup_message_author_by_timestamp<S: presage::store::Store>(
+    manager: &presage::Manager<S, presage::manager::Registered>,
+    thread: &presage::store::Thread,
+    timestamp: u64,
+) -> Option<presage::libsignal_service::prelude::Uuid> {
+    match manager.store().message(thread, timestamp).await {
+        Ok(Some(content)) => Some(content.metadata.sender.raw_uuid()),
+        _ => None,
+    }
+}
+
+/*
+ * Sends a reaction (an ordinary outgoing DataMessage with the `reaction` field set) to a recipient.
+ *
+ * `target_ts` is the reacted-to message's sent timestamp; `emoji` is always supplied (even on removal
+ * so backends that retract a specific reaction have it); `remove` true retracts the user's reaction.
+ */
+pub async fn send_reaction<C: presage::store::Store + 'static>(
+    manager: &mut presage::Manager<C, presage::manager::Registered>,
+    recipient: crate::structs::Recipient,
+    target_ts: u64,
+    emoji: String,
+    remove: bool,
+) -> Result<(), anyhow::Error> {
+    // Build the thread that keys the store lookup for the reacted-to message's author.
+    let thread = match &recipient {
+        crate::structs::Recipient::Contact(uuid) => {
+            presage::store::Thread::Contact(presage::libsignal_service::protocol::ServiceId::Aci((*uuid).into()))
+        }
+        crate::structs::Recipient::ContactByPhone(_) => unreachable!("phone recipient is resolved to a UUID before send_reaction()"),
+        crate::structs::Recipient::Group(key) => presage::store::Thread::Group(*key),
+    };
+
+    // Resolve the target author's ACI. The store lookup is authoritative for both incoming and own
+    // (synchronized) messages. Groups MUST use it (Signal requires the correct author). For a 1:1 we
+    // fall back to the peer UUID if the message is not in the store (the common case: reacting to a
+    // message the peer sent us); reacting to our OWN 1:1 message that is not in the store is the only
+    // case this mis-attributes -- see the runtime note.
+    let target_author = match lookup_message_author_by_timestamp(manager, &thread, target_ts).await {
+        Some(uuid) => uuid,
+        None => match &recipient {
+            crate::structs::Recipient::Contact(uuid) => *uuid,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Cannot resolve reaction target author for timestamp {target_ts} (message not in store)."
+                ))
+            }
+        },
+    };
+
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
+    let reaction = presage::proto::data_message::Reaction {
+        emoji: Some(emoji),
+        remove: Some(remove),
+        target_author_aci: Some(target_author.to_string()),
+        target_sent_timestamp: Some(target_ts),
+        target_author_aci_binary: Some(target_author.as_bytes().to_vec()),
+    };
+    let mut data_message = presage::libsignal_service::content::DataMessage {
+        timestamp: Some(timestamp),
+        reaction: Some(reaction),
+        ..Default::default()
+    };
+
+    match recipient {
+        crate::structs::Recipient::Contact(uuid) => {
+            manager
+                .send_message(
+                    presage::libsignal_service::protocol::ServiceId::Aci(uuid.into()),
+                    presage::libsignal_service::content::ContentBody::DataMessage(data_message),
+                    timestamp,
+                )
+                .await?;
+        }
+        crate::structs::Recipient::ContactByPhone(_) => unreachable!("phone recipient is resolved to a UUID before send_reaction()"),
         crate::structs::Recipient::Group(master_key) => {
             data_message.group_v2 = Some(presage::proto::GroupContextV2 {
                 master_key: Some(master_key.to_vec()),

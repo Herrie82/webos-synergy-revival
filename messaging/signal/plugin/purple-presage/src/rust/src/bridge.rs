@@ -126,6 +126,14 @@ extern "C" {
         emoji: *const std::os::raw::c_char,
         sender: *const std::os::raw::c_char,
     );
+
+    // implemented by receive_text.c - emit the cross-prpl "webos-im-outbox-id" signal, telling the
+    // transport the server id (sent timestamp) of a message the user sent from the app.
+    fn presage_emit_outbox_id(
+        account: *mut crate::bridge_structs::PurpleAccount,
+        service_message_id: *const std::os::raw::c_char,
+        text: *const std::os::raw::c_char,
+    );
 }
 
 // Signal call states pushed to the Phone app's com.palm.signal.call service (must match call.c).
@@ -172,6 +180,26 @@ pub fn emit_reaction(
             target.as_ptr(),
             emoji.as_ptr(),
             sender.as_ptr(),
+        );
+    }
+}
+
+// webOS reactions: tell the transport the server id of a message the user sent from the app, via the
+// "webos-im-outbox-id" signal. service_message_id is the message's sent timestamp (its serviceMessageId,
+// in ms, decimal); text is the sent body (used by the transport only as a correlation hint). The C side
+// hops to the libpurple main thread before emitting.
+pub fn emit_outbox_id(
+    account: *const crate::bridge_structs::PurpleAccount,
+    service_message_id: String,
+    text: String,
+) {
+    let id = std::ffi::CString::new(service_message_id).unwrap_or_default();
+    let text = std::ffi::CString::new(text).unwrap_or_default();
+    unsafe {
+        presage_emit_outbox_id(
+            account as *mut crate::bridge_structs::PurpleAccount,
+            id.as_ptr(),
+            text.as_ptr(),
         );
     }
 }

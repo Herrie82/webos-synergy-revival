@@ -106,6 +106,23 @@ pub unsafe extern "C" fn presage_rust_get_group_members(
     }
 }
 
+// Classify a conversation destination string into a Recipient exactly like presage_rust_send: a
+// 36-char dashed string is a contact UUID, a "+<digits>" string is an E.164 phone (resolved to a
+// UUID in the command loop), anything else is a hex group master key. Shared by the send + reaction
+// FFI entry points so both classify peers identically.
+fn classify_recipient(destination: &str) -> Result<crate::structs::Recipient, anyhow::Error> {
+    let d = destination.as_bytes();
+    if d.len() == 36 && d[8] == b'-' && d[13] == b'-' && d[18] == b'-' && d[23] == b'-' {
+        presage::libsignal_service::prelude::Uuid::parse_str(destination)
+            .map(|uuid| crate::structs::Recipient::Contact(uuid))
+            .map_err(|err| anyhow::anyhow!(err))
+    } else if d.first() == Some(&b'+') && d.len() > 1 && d[1..].iter().all(|c| c.is_ascii_digit()) {
+        Ok(crate::structs::Recipient::ContactByPhone(destination.to_owned()))
+    } else {
+        parse_group_master_key(destination).map(|master_key_bytes| crate::structs::Recipient::Group(master_key_bytes))
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn presage_rust_send(
     account: *mut crate::bridge_structs::PurpleAccount,
@@ -116,20 +133,7 @@ pub unsafe extern "C" fn presage_rust_send(
     xfer: *const crate::bridge_structs::PurpleXfer,
 ) {
     let destination = std::ffi::CStr::from_ptr(c_destination).to_str().unwrap();
-    let d = destination.as_bytes();
-    let recipient = if d.len() == 36 && d[8] == b'-' && d[13] == b'-' && d[18] == b'-' && d[23] == b'-' {
-        // destination looks like a UUID, assume it is a contact
-        presage::libsignal_service::prelude::Uuid::parse_str(destination)
-            .map(|uuid| crate::structs::Recipient::Contact(uuid))
-            .map_err(|err| anyhow::anyhow!(err))
-    } else if d.first() == Some(&b'+') && d.len() > 1 && d[1..].iter().all(|c| c.is_ascii_digit()) {
-        // destination is an E.164 phone number (e.g. "+31611745571") -> resolve to the contact's
-        // UUID in the command loop. Previously this fell through to parse_group_master_key(), which
-        // failed with "Invalid character '+' at position 0" and (below) disconnected the account.
-        Ok(crate::structs::Recipient::ContactByPhone(destination.to_owned()))
-    } else {
-        parse_group_master_key(destination).map(|master_key_bytes| crate::structs::Recipient::Group(master_key_bytes))
-    };
+    let recipient = classify_recipient(destination);
     match recipient {
         Ok(recipient) => {
             let cmd = crate::structs::Cmd::Send {
@@ -151,6 +155,50 @@ pub unsafe extern "C" fn presage_rust_send(
                 account,
                 crate::bridge_structs::PURPLE_DEBUG_ERROR,
                 format!("Cannot send: unrecognized recipient \"{destination}\": {err}\n"),
+            );
+        }
+    }
+}
+
+/// webOS reactions (SEND): transmit a reaction the user placed from the app. Called by
+/// presage_send_reaction_cb (connection.c), which handles the "webos-im-send-reaction" signal. `c_peer`
+/// is the conversation peer (contact UUID / E.164 / group hex), classified exactly like a send;
+/// `target_ts` is the reacted-to message's sent timestamp; `c_emoji` is the (always supplied) emoji;
+/// `remove` nonzero retracts the user's reaction.
+#[no_mangle]
+pub unsafe extern "C" fn presage_rust_send_reaction(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    rt: *mut tokio::runtime::Runtime,
+    tx: *mut tokio::sync::mpsc::Sender<crate::structs::Cmd>,
+    c_peer: *const std::os::raw::c_char,
+    target_ts: u64,
+    c_emoji: *const std::os::raw::c_char,
+    remove: std::os::raw::c_int,
+) {
+    let peer = match std::ffi::CStr::from_ptr(c_peer).to_str() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let emoji = if c_emoji.is_null() {
+        String::new()
+    } else {
+        std::ffi::CStr::from_ptr(c_emoji).to_str().unwrap_or("").to_owned()
+    };
+    match classify_recipient(peer) {
+        Ok(recipient) => {
+            let cmd = crate::structs::Cmd::SendReaction {
+                recipient,
+                target_ts,
+                emoji,
+                remove: remove != 0,
+            };
+            send_cmd(account, rt, tx, cmd);
+        }
+        Err(err) => {
+            crate::bridge::purple_debug(
+                account,
+                crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                format!("Cannot send reaction: unrecognized peer \"{peer}\": {err}\n"),
             );
         }
     }

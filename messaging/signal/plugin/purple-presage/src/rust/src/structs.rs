@@ -10,6 +10,16 @@ pub enum Cmd {
         message: Option<String>,
         xfer: *const crate::bridge_structs::PurpleXfer,
     },
+    // webOS reactions (SEND): transmit a reaction the user placed from the app. `recipient` is the
+    // conversation peer (contact UUID / phone / group key); `target_ts` is the reacted-to message's
+    // sent timestamp (its serviceMessageId); `remove` true retracts the user's emoji. Carries only
+    // Send data, so the `unsafe impl Send for Cmd` above stays sound.
+    SendReaction {
+        recipient: Recipient,
+        target_ts: u64,
+        emoji: String,
+        remove: bool,
+    },
     ListGroups,
     GetGroupMembers {
         master_key_bytes: [u8; 32],

@@ -36,6 +36,8 @@ void presage_rust_get_group_members(PurpleAccount *, RustRuntimePtr, RustChannel
 void presage_rust_get_profile(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);
 void presage_rust_list_groups(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
 void presage_rust_place_call(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *); /* outgoing call: callee address */
+// webOS reactions (SEND): transmit a reaction the user placed from the app. (peer, target sent timestamp, emoji, remove flag)
+void presage_rust_send_reaction(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *peer, uint64_t target_ts, const char *emoji, int remove);
 
 // call.c - Signal calling (signaling-only): the com.palm.signal.call LS2 service that rings the stock
 // Phone app on an incoming Signal call. presage_handle_call_state is called from the Rust receive loop.
@@ -106,6 +108,9 @@ void presage_handle_uuid(PurpleConnection *connection, const char *uuid);
 void presage_handle_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags sent, uint64_t timestamp_ms, const char *body);
 // webOS reactions: emit the cross-prpl "webos-im-reaction" signal (called from the Rust receive loop).
 void presage_emit_reaction(PurpleAccount *account, const char *target_id, const char *emoji, const char *sender);
+// webOS reactions: emit the cross-prpl "webos-im-outbox-id" signal - the server id (sent timestamp) of a
+// message the user sent from the app (called from the Rust command loop).
+void presage_emit_outbox_id(PurpleAccount *account, const char *service_message_id, const char *text);
 void presage_display_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags sent, uint64_t timestamp_ms, const char *body);
 int presage_send_im(PurpleConnection *connection, const char *who, const char *message, PurpleMessageFlags flags);
 int presage_send_chat(PurpleConnection *connection, int id, const gchar *message, PurpleMessageFlags flags);

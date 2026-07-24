@@ -31,6 +31,38 @@ rust_main(void* account) {
     return 0;
 }
 
+/* webOS reactions (SEND): the transport emits "webos-im-send-reaction" when the user places a reaction
+ * from the app. Params: (account, targetServiceMessageId, emoji, peer, removeFlag). We resolve this
+ * account's Rust command channel and hand the reaction to the Rust side to transmit over Signal.
+ * targetServiceMessageId is the reacted-to message's sent timestamp (ms, decimal); removeFlag "1"
+ * retracts the user's emoji. Runs on the libpurple main thread (signal emit). */
+static void presage_send_reaction_cb(PurpleAccount *account, const char *target_id, const char *emoji, const char *peer, const char *remove_flag, void *unused) {
+    (void)unused;
+    if (account == NULL || peer == NULL || target_id == NULL) {
+        return;
+    }
+    // The signal fires process-wide for EVERY prpl's reactions - filter to Signal accounts before
+    // touching protocol_data (reading another prpl's protocol_data as a Presage* would be garbage).
+    if (g_strcmp0(purple_account_get_protocol_id(account), "prpl-hehoe-presage") != 0) {
+        return;
+    }
+    PurpleConnection *connection = purple_account_get_connection(account);
+    if (connection == NULL) {
+        return;
+    }
+    Presage *presage = purple_connection_get_protocol_data(connection);
+    if (presage == NULL || presage->tx_ptr == NULL) {
+        return;
+    }
+    uint64_t target_ts = g_ascii_strtoull(target_id, NULL, 10);
+    if (target_ts == 0) {
+        purple_debug_error(PLUGIN_NAME, "webos-im-send-reaction: unparseable target id \"%s\"\n", target_id);
+        return;
+    }
+    int remove = (remove_flag != NULL && remove_flag[0] == '1' && remove_flag[1] == '\0') ? 1 : 0;
+    presage_rust_send_reaction(account, rust_runtime, presage->tx_ptr, peer, target_ts, emoji, remove);
+}
+
 void presage_login(PurpleAccount *account) {
     purple_debug_info(PLUGIN_NAME, "login for account: %p\n", account);
     g_return_if_fail(rust_runtime != NULL);
@@ -46,6 +78,16 @@ void presage_login(PurpleAccount *account) {
     // Signal calling (signaling-only): register com.palm.signal.call so incoming Signal calls ring the
     // stock Phone app. Idempotent - just (re)binds this account on reconnect.
     callLunaInit(account);
+    // webOS reactions (SEND): connect ONCE to the transport's "webos-im-send-reaction" signal so a
+    // reaction the user places from the app is transmitted over Signal. The signal is registered by the
+    // transport on the conversations handle; connect with a static guard so reconnects/multiple accounts
+    // don't stack duplicate handlers (one handler serves all presage accounts; it routes per account).
+    static gboolean send_reaction_connected = FALSE;
+    if (!send_reaction_connected) {
+        purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction", purple_get_core(),
+            PURPLE_CALLBACK(presage_send_reaction_cb), NULL);
+        send_reaction_connected = TRUE;
+    }
     Presage *presage = g_new0(Presage, 1);
     purple_connection_set_protocol_data(connection, presage);
     #ifdef WIN32
