@@ -64,11 +64,11 @@ Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images /
 |---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | 🟡 | ❌ | ❌ |
 | **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
-| **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ❔ | ❔ | ❔ | ✅ | 🟡 | ❌ |
-| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ❔ | ❔ | ❔ | ❌ | 🟡 | ❌ |
+| **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
+| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ✅ | ❔ | ❔ | ❌ | 🟡 | ❌ |
 | **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ❌ |
 | **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ❔ | ❔ | ❔ | ✅ | ❌ | ❌ |
+| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ✅ | ❔ | ❔ | ✅ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
