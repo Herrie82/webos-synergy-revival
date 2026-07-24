@@ -3439,10 +3439,42 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				msg_type != MESSAGE_THREAD_STARTER_MESSAGE
 			)
 		{
-			purple_serv_got_chat_in(da->pc, discord_chat_hash(channel_id), name, flags, escaped_content, timestamp);
 			if (conv == NULL) {
 				PurpleChatConversation *chatconv = purple_conversations_find_chat(da->pc, discord_chat_hash(channel_id));
 				conv = PURPLE_CONVERSATION(chatconv);
+			}
+			if (conv == NULL) {
+				/* webOS: this channel has no open conversation, so purple would silently drop the
+				 * message (both purple_serv_got_chat_in and an outgoing write need a conv). But we
+				 * already inserted msg_id into received_message_ids above, and that set is PERSISTED
+				 * to disk (discord_seen_*.txt) - so a plain drop makes the loss PERMANENT: opening the
+				 * channel later re-fetches this message via REST history, the dedup then skips it, and
+				 * it never gets stored. That is exactly why self-sent carbons and messages in
+				 * not-yet-opened (background) channels never appear. Un-mark it so the eventual
+				 * channel-open history load delivers and stores it once (re-marking it on that
+				 * successful delivery). */
+				if (special_type == DISCORD_MESSAGE_NORMAL && msg_id != 0) {
+					gchar *unkey = from_int(msg_id);
+					g_hash_table_remove(da->received_message_ids, unkey);
+					g_free(unkey);
+				}
+			} else if (author_id == da->self_user_id) {
+				/* webOS #2: a channel message WE sent from another device (carbon - flags carry
+				 * SEND|REMOTE_SEND). purple_serv_got_chat_in would force PURPLE_MESSAGE_RECV, so the
+				 * transport would file it as received rather than our own sent row. Write it as an
+				 * OUTGOING chat message instead (RECV stays clear), mirroring the 1:1 DM self path, so
+				 * the transport's carbon store keeps it as our sent message in the channel. Suppress the
+				 * local echo of a message WE just sent from THIS device (its nonce is still in
+				 * sent_message_ids), exactly like the DM self path, so an app-sent channel message is
+				 * not written a second time on top of the app's own local copy. */
+				if (!nonce || !g_hash_table_remove(da->sent_message_ids, nonce)) {
+					PurpleMessage *pmsg = purple_message_new_outgoing(name, escaped_content, flags);
+					purple_message_set_time(pmsg, timestamp);
+					purple_conversation_write_message(conv, pmsg);
+					purple_message_destroy(pmsg);
+				}
+			} else {
+				purple_serv_got_chat_in(da->pc, discord_chat_hash(channel_id), name, flags, escaped_content, timestamp);
 			}
 
 		} else if (msg_type == MESSAGE_GUILD_MEMBER_JOIN) {
@@ -5818,6 +5850,49 @@ discord_send_lazy_guild_request(DiscordAccount *da, DiscordGuild *guild)
 	guild->next_mem_to_sync = 200 + last_synced;
 
 	g_free(guild_id);
+}
+
+/* webOS: subscribe the gateway to a SPECIFIC channel (the one the user just opened) so Discord starts
+ * live-pushing its MESSAGE_CREATE. discord_send_lazy_guild_request only ever subscribes one member-list
+ * channel per guild, so every other channel would only REST-sync on open and never receive live
+ * messages. This op-14 (lazy guild) request places THIS channel in the "channels" map - Discord reads
+ * that as "the client is viewing this channel" and begins fanning out its messages (+ member list). */
+static void
+discord_subscribe_channel(DiscordAccount *da, DiscordGuild *guild, guint64 channel_id)
+{
+	if (guild == NULL || channel_id == 0) {
+		return;
+	}
+
+	JsonObject *d = json_object_new();
+	gchar *guild_id_s = from_int(guild->id);
+	gchar *channel_id_s = from_int(channel_id);
+
+	json_object_set_string_member(d, "guild_id", guild_id_s);
+	json_object_set_boolean_member(d, "typing", TRUE);
+	json_object_set_boolean_member(d, "threads", TRUE);
+	json_object_set_boolean_member(d, "activities", TRUE);
+	json_object_set_array_member(d, "members", json_array_new());
+
+	/* one member range (0-99) is enough to register the channel as "viewed" */
+	JsonObject *channels = json_object_new();
+	JsonArray *ranges = json_array_new();
+	JsonArray *range = json_array_new();
+	json_array_add_int_element(range, 0);
+	json_array_add_int_element(range, 99);
+	json_array_add_array_element(ranges, range);
+	json_object_set_array_member(channels, channel_id_s, ranges);
+	json_object_set_object_member(d, "channels", channels);
+
+	JsonObject *obj = json_object_new();
+	json_object_set_int_member(obj, "op", OP_LAZY_GUILD_REQUEST);
+	json_object_set_object_member(obj, "d", d);
+
+	discord_socket_write_json(da, obj);
+
+	json_object_unref(obj);
+	g_free(guild_id_s);
+	g_free(channel_id_s);
 }
 
 static void
@@ -8240,6 +8315,12 @@ discord_open_chat(DiscordAccount *da, guint64 id, gboolean present)
 		gchar *name = discord_create_nickname_from_id(da, guild, channel, da->self_user_id);
 		purple_chat_conversation_set_nick(chatconv, name);
 		g_free(name);
+
+		/* webOS: tell the gateway we are now viewing this channel so Discord starts pushing its
+		 * MESSAGE_CREATE live. Without this an opened guild channel only REST-syncs on open and never
+		 * receives real-time messages - Discord's lazy user-account gateway only fans out a channel's
+		 * messages once the client subscribes to (i.e. "views") it. See discord_subscribe_channel. */
+		discord_subscribe_channel(da, guild, id);
 	}
 
 	return channel;
