@@ -32,6 +32,7 @@ static void gometa_login(PurpleAccount *account) {
     char *username = (char *)purple_account_get_username(account);
     char *user_dir = (char *)purple_user_dir();
     gometa_go_login(account, user_dir, username, (char *)(cookies ? cookies : ""), (char *)"");
+    webos_connect_send_reaction_once();
 }
 
 static void gometa_close(PurpleConnection *pc) {

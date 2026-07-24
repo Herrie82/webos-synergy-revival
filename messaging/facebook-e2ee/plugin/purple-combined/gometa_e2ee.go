@@ -154,6 +154,13 @@ func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
 	if text == "" {
 		return
 	}
+	// Record who sent this message so a later reaction over E2EE can build a correct MessageKey
+	// (FromMe / sender). Keyed by the message id (matches the serviceMessageId we store below).
+	if id := string(evt.Info.ID); id != "" {
+		h.mu.Lock()
+		h.e2eeMsgMeta[id] = e2eeMsgInfo{fromMe: evt.Info.IsFromMe, sender: strconv.FormatInt(senderFbid, 10)}
+		h.mu.Unlock()
+	}
 	h.addContact(chatFbid, name)
 	h.notifyMessage(strconv.FormatInt(chatFbid, 10), strconv.FormatInt(senderFbid, 10),
 		name, text, evt.Info.ID, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe)
@@ -174,9 +181,59 @@ func (h *gometaHandler) sendE2EE(threadID int64, text string) error {
 		},
 	}
 	otid := methods.GenerateEpochID()
+	otidStr := strconv.FormatInt(otid, 10)
 	h.mu.Lock()
 	h.sentOtids[otid] = true
+	// Record this as our own message so a later reaction over E2EE builds a FromMe=true MessageKey.
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
 	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
+	defer cancel()
+	_, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)})
+	if err == nil {
+		// webOS outbox-id: the otid we passed as SendRequestExtra{ID} IS this message's id — hand it to
+		// the transport so this app-sent encrypted message's Outbox row becomes reactable.
+		purple_handle_outbox_id(h.account, otidStr, text)
+	}
+	return err
+}
+
+// sendReactionE2EE reacts to (or, when reaction is empty, un-reacts) an encrypted Messenger message by
+// sending a ConsumerApplication ReactionMessage over the whatsmeow transport. E2EE here is 1:1 only, so
+// no Participant is needed. The MessageKey's FromMe comes from the per-message metadata recorded on
+// send/receive; if the target is unknown we default FromMe=false (best-effort — only our own known
+// messages get FromMe=true).
+func (h *gometaHandler) sendReactionE2EE(threadID int64, targetID, reaction string) error {
+	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
+	h.mu.Lock()
+	meta, known := h.e2eeMsgMeta[targetID]
+	h.mu.Unlock()
+	fromMe := false
+	if known {
+		fromMe = meta.fromMe
+	}
+	key := &waCommon.MessageKey{
+		RemoteJID: proto.String(to.String()),
+		FromMe:    proto.Bool(fromMe),
+		ID:        proto.String(targetID),
+	}
+	msg := &waConsumerApplication.ConsumerApplication{
+		Payload: &waConsumerApplication.ConsumerApplication_Payload{
+			Payload: &waConsumerApplication.ConsumerApplication_Payload_Content{
+				Content: &waConsumerApplication.ConsumerApplication_Content{
+					Content: &waConsumerApplication.ConsumerApplication_Content_ReactionMessage{
+						ReactionMessage: &waConsumerApplication.ConsumerApplication_ReactionMessage{
+							Key:               key,
+							Text:              proto.String(reaction),
+							SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+						},
+					},
+				},
+			},
+		},
+	}
+	otid := methods.GenerateEpochID()
 	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
 	defer cancel()
 	_, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},

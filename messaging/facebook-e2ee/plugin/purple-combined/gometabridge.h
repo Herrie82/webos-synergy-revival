@@ -44,3 +44,8 @@ extern void gometa_request_input(PurpleAccount *account, const char *prompt);
 // the Go caller frees it. Returns NULL if unset.
 extern char *gometa_get_setting(PurpleAccount *account, const char *key);
 extern void gometa_set_setting(PurpleAccount *account, const char *key, const char *value);
+
+// webOS reactions (SEND): connect once (process-wide) to the transport's "webos-im-send-reaction"
+// signal. Defined in glue/login.c; called from both login paths (guarded by a static bool so a
+// double connect is harmless).
+extern void webos_connect_send_reaction_once(void);

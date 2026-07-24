@@ -81,6 +81,8 @@ func (handler *Handler) send_file_bytes(recipient types.JID, isGroup bool, data 
 		return fmt.Errorf("error sending file: %v", err)
 	}
 	handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+	// webOS outbox-id: make this app-sent file reactable (react-to-your-own-message).
+	purple_handle_outbox_id(handler.account, send_response.ID, filepath.Base(filename))
 	return nil
 }
 

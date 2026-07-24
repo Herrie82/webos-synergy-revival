@@ -77,6 +77,20 @@ func gometa_go_send_message(account *PurpleAccount, who *C.char, message *C.char
 	return 1
 }
 
+//export gometa_go_send_reaction
+// webOS reactions (SEND): react to a Facebook message. targetId = the FB MessageId (plaintext) or the
+// numeric whatsmeow message id (E2EE); emoji = the reaction (ignored when removeFlag=="1"); peer = the
+// thread key; removeFlag "1" removes my reaction. Routes plaintext vs E2EE by e2eeContacts, like
+// sendMessage.
+func gometa_go_send_reaction(account *PurpleAccount, targetId *C.char, emoji *C.char, peer *C.char, removeFlag *C.char) {
+	h, ok := gometaHandlers[account]
+	if !ok {
+		return
+	}
+	remove := C.GoString(removeFlag) == "1"
+	go h.sendReaction(C.GoString(peer), C.GoString(targetId), C.GoString(emoji), remove)
+}
+
 //export gometa_go_submit_input
 // The UI's answer to an interactive login prompt (2FA/captcha code). Empty = cancelled.
 func gometa_go_submit_input(account *PurpleAccount, value *C.char) {
@@ -164,6 +178,15 @@ type gometaHandler struct {
 	// E2EE (whatsmeow) — Messenger encrypted threads ride WhatsApp's Signal transport.
 	e2ee         *whatsmeow.Client
 	e2eeContacts map[int64]bool // fbids known to use E2EE (learned from encrypted messages)
+	// Per encrypted-message metadata (message id -> who sent it). Needed to build the MessageKey when
+	// reacting over E2EE (whatsmeow's ReactionMessage requires the original message's FromMe/sender,
+	// which isn't otherwise recorded per-message). Populated on both send and receive of E2EE messages.
+	e2eeMsgMeta map[string]e2eeMsgInfo
+}
+
+type e2eeMsgInfo struct {
+	fromMe bool
+	sender string // fbid of the original message's sender
 }
 
 func (h *gometaHandler) eventHandler(ctx context.Context, rawEvt any) {
@@ -246,16 +269,23 @@ func (h *gometaHandler) sendMessage(who, text string) {
 	// HandleInvalidSendToOpen case). Auto-retry over the encrypted transport and remember it.
 	otidStr := strconv.FormatInt(otid, 10)
 	confirmed := false
+	serverMsgID := ""
 	if resp != nil {
 		for _, r := range resp.LSReplaceOptimsiticMessage {
 			if r.OfflineThreadingId == otidStr {
 				confirmed = true
+				serverMsgID = r.MessageId // the FB MessageId matching our otid
 				break
 			}
 		}
 	}
 	if confirmed {
 		h.logger.Info().Int64("thread", threadID).Msg("message sent")
+		// webOS outbox-id: hand the server-assigned FB MessageId to the transport so this app-sent
+		// message's Outbox row becomes reactable (react-to-your-own-message).
+		if serverMsgID != "" {
+			purple_handle_outbox_id(h.account, serverMsgID, text)
+		}
 		return
 	}
 	h.mu.Lock()
@@ -275,6 +305,55 @@ func (h *gometaHandler) sendMessage(who, text string) {
 		return
 	}
 	h.logger.Info().Int64("thread", threadID).Msg("e2ee message sent (after plaintext rejection)")
+}
+
+// sendReaction sends (or removes, when reaction is empty) a reaction to a Facebook message. Plaintext
+// threads use the messagix SendReactionTask; encrypted threads route over the whatsmeow transport
+// (sendReactionE2EE), mirroring sendMessage's plaintext-vs-E2EE split.
+func (h *gometaHandler) sendReaction(peer, targetID, emoji string, remove bool) {
+	threadID, err := strconv.ParseInt(peer, 10, 64)
+	if err != nil {
+		h.notifyError(fmt.Sprintf("Cannot react: invalid recipient %q", peer), false)
+		return
+	}
+	reaction := emoji
+	if remove {
+		reaction = ""
+	}
+	h.mu.Lock()
+	isE2EE := h.e2eeContacts[threadID]
+	h.mu.Unlock()
+	if isE2EE {
+		if h.e2ee == nil {
+			h.notifyError("Cannot react: this is an encrypted thread and E2EE isn't connected yet", false)
+			return
+		}
+		if err := h.sendReactionE2EE(threadID, targetID, reaction); err != nil {
+			h.logger.Warn().Err(err).Int64("thread", threadID).Msg("e2ee reaction failed")
+		}
+		return
+	}
+	if h.client == nil {
+		h.notifyError("Cannot react: Facebook not connected", false)
+		return
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
+	defer cancel()
+	if werr := h.client.WaitUntilCanSendMessages(ctx, 20*time.Second); werr != nil {
+		h.notifyError(fmt.Sprintf("Cannot react yet (connecting): %v", werr), false)
+		return
+	}
+	task := &socket.SendReactionTask{
+		ThreadKey: threadID,
+		MessageID: targetID,
+		ActorID:   h.selfID,
+		Reaction:  reaction,
+		SyncGroup: 1,
+	}
+	if _, err := h.client.ExecuteTasks(ctx, task); err != nil {
+		h.logger.Warn().Err(err).Int64("thread", threadID).Msg("reaction send failed")
+		h.notifyError(fmt.Sprintf("Failed to send reaction: %v", err), false)
+	}
 }
 
 func (h *gometaHandler) close() {
@@ -506,6 +585,7 @@ func gometaLogin(account *PurpleAccount, purpleUserDir, email, password, proxy s
 		threadGroup:   make(map[int64]bool), contactName: make(map[int64]string),
 		sentOtids:    make(map[int64]bool),
 		e2eeContacts: make(map[int64]bool),
+		e2eeMsgMeta:  make(map[string]e2eeMsgInfo),
 	}
 	gometaHandlers[account] = h
 

@@ -1,5 +1,45 @@
 #include "gowhatsapp.h"
-#include "libwhatsmeow.h" // for gowhatsapp_go_login
+#include "libwhatsmeow.h" // for gowhatsapp_go_login / gowhatsapp_go_send_reaction / gometa_go_send_reaction
+#include "../gometabridge.h" // for GOMETA_PLUGIN_ID
+
+// webOS reactions (SEND): the transport emits "webos-im-send-reaction" (registered process-wide) when
+// the user reacts from the TouchPad. It fires for EVERY account, so we filter by protocol id and route
+// to the matching Go send-reaction handler. Params (5): account, targetServiceMessageId, emoji (already
+// decoded UTF-8, always supplied even on removal), peer (the thread/chat id the transport uses),
+// removeFlag ("1" = remove my reaction, else add). This one .so hosts BOTH prpls (WhatsApp + gometa),
+// so the same callback covers both.
+static void webos_send_reaction_cb(PurpleAccount *account, const char *targetId, const char *emoji,
+                                   const char *peer, const char *removeFlag, void *data)
+{
+    (void)data;
+    if (!account || !targetId || !*targetId) {
+        return;
+    }
+    const char *proto = purple_account_get_protocol_id(account);
+    if (g_strcmp0(proto, GOWHATSAPP_PRPL_ID) == 0) {
+        gowhatsapp_go_send_reaction(account, (char *)targetId, (char *)(emoji ? emoji : ""),
+                                    (char *)(peer ? peer : ""), (char *)(removeFlag ? removeFlag : ""));
+    } else if (g_strcmp0(proto, GOMETA_PLUGIN_ID) == 0) {
+        gometa_go_send_reaction(account, (char *)targetId, (char *)(emoji ? emoji : ""),
+                                (char *)(peer ? peer : ""), (char *)(removeFlag ? removeFlag : ""));
+    }
+}
+
+// Connect once (process-wide) to the transport's send-reaction signal. The signal lives on
+// purple_conversations_get_handle(), so a single connect covers every account of both prpls in this
+// process. Called from BOTH login paths (gowhatsapp_login here and gometa_login) so it fires whether
+// the user has a WhatsApp account, a Facebook account, or both; the static guard prevents a double
+// connect. The transport registers the signal at init, before any account logs in.
+void webos_connect_send_reaction_once(void)
+{
+    static gboolean s_connected = FALSE;
+    if (s_connected) {
+        return;
+    }
+    s_connected = TRUE;
+    purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction",
+                          purple_get_core(), PURPLE_CALLBACK(webos_send_reaction_cb), NULL);
+}
 
 void
 gowhatsapp_login(PurpleAccount *account)
@@ -62,8 +102,9 @@ gowhatsapp_login(PurpleAccount *account)
     char *user_dir = (char *)purple_user_dir(); // cgo does not suport const
     gowhatsapp_go_login(account, user_dir, username, (char *)credentials, proxy_address); // cgo does not suport const
     g_free(proxy_address);
-    
+
     gowhatsapp_receipts_init(pc);
+    webos_connect_send_reaction_once();
 }
 
 void

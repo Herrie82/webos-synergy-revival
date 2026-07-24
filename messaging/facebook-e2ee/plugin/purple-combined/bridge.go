@@ -111,6 +111,19 @@ func gowhatsapp_go_send_message(account *PurpleAccount, who *C.char, message *C.
 	return -107 // ENOTCONN, see libpurple/prpl.h
 }
 
+//export gowhatsapp_go_send_reaction
+// webOS reactions (SEND): react to a WhatsApp message. targetId = the bare whatsmeow message id
+// (info.ID, no chat prefix); emoji = the reaction (ignored when removeFlag=="1"); peer = the chat JID
+// the transport uses; removeFlag "1" removes my reaction. Runs the actual send on a goroutine.
+func gowhatsapp_go_send_reaction(account *PurpleAccount, targetId *C.char, emoji *C.char, peer *C.char, removeFlag *C.char) {
+	handler, ok := handlers[account]
+	if !ok {
+		return
+	}
+	remove := C.GoString(removeFlag) == "1"
+	go handler.send_reaction(C.GoString(peer), C.GoString(targetId), C.GoString(emoji), remove)
+}
+
 //export gowhatsapp_go_send_file
 func gowhatsapp_go_send_file(account *PurpleAccount, who *C.char, filename *C.char) *C.char {
 	err := "Not connected."
@@ -519,6 +532,26 @@ func purple_handle_reaction(account *PurpleAccount, remoteJid string, targetId s
 		senderJid: C.CString(sender),
 		messageId: C.CString(targetId),
 		text:      C.CString(emoji),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
+
+/*
+ * webOS outbox-id: forward the server-assigned id of a message the app just sent to the transport's
+ * cross-prpl "webos-im-outbox-id" signal (emitted C-side in process_message on the libpurple main
+ * thread). The transport attaches the id to the Outbox row so the user can react to their own sent
+ * message. id = the message's service id, text = the message body (correlation hint). Account-agnostic:
+ * used by all three send paths (WhatsApp, FB plaintext, FB E2EE). The message bridge frees the CStrings.
+ */
+func purple_handle_outbox_id(account *PurpleAccount, id string, text string) {
+	if id == "" {
+		return
+	}
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_outbox_id),
+		messageId: C.CString(id),
+		text:      C.CString(text),
 	}
 	C.gowhatsapp_process_message_bridge(cmessage)
 }

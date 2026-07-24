@@ -145,6 +145,16 @@ gowhatsapp_process_message(gowhatsapp_message_t *gwamsg)
                     gwamsg->text ? gwamsg->text : "",
                     gwamsg->senderJid ? gwamsg->senderJid : "");
             break;
+        case gowhatsapp_message_type_outbox_id:
+            // webOS outbox-id: an app-sent message just got its server id. Forward it to the
+            // transport's cross-prpl "webos-im-outbox-id" signal so the Outbox row gets the id
+            // (making the user's own sent message reactable). messageId = the server id, text =
+            // the message body (correlation hint). Runs on the libpurple main thread (message
+            // bridge), so emitting the signal here is safe.
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
+                    gwamsg->account, gwamsg->messageId ? gwamsg->messageId : "",
+                    gwamsg->text ? gwamsg->text : "");
+            break;
         case gowhatsapp_message_type_profile_picture:
             gowhatsapp_handle_profile_picture(gwamsg);
             break;

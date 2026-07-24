@@ -120,7 +120,55 @@ func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, mes
 			purple_display_text_message(handler.account, recipientJid, isGroup, true, ownJid, nil, send_response.Timestamp, message, &msgID)
 		}
 		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+		// webOS outbox-id: hand the server id of this app-sent message to the transport so its Outbox
+		// row becomes reactable (react-to-your-own-message).
+		purple_handle_outbox_id(handler.account, send_response.ID, message)
 		return true
+	}
+}
+
+/*
+ * webOS reactions (SEND): send (or remove) a reaction to a WhatsApp message.
+ *
+ *   peer     = the chat JID the transport uses (parsed like a send recipient)
+ *   targetId = the bare whatsmeow message id of the message being reacted to
+ *   emoji    = the reaction emoji (ignored when remove is true)
+ *   remove   = true removes my previous reaction (sends an empty reaction)
+ *
+ * whatsmeow's BuildReaction/BuildMessageKey needs the ORIGINAL message's sender to set FromMe: for a
+ * message I sent, FromMe must be true; for one I received, FromMe is false (and, in a group, Participant
+ * is the sender). We recover the sender from the local message cache (populated on both send and
+ * receive). If the target isn't cached we fall back to: own message in a 1:1 (sender = self) is the only
+ * reliably-reactable case, otherwise treat it as received from the chat/peer.
+ */
+func (handler *Handler) send_reaction(peer string, targetId string, emoji string, remove bool) {
+	chat, err := parseJID(peer)
+	if err != nil {
+		purple_display_system_message(handler.account, peer, false, fmt.Sprintf("Cannot react: invalid recipient: %v", err))
+		return
+	}
+	reaction := emoji
+	if remove {
+		reaction = ""
+	}
+	// Recover the reacted-to message's sender so FromMe/Participant are correct.
+	var sender types.JID
+	if cached := handler.lookup_cached_message_by_id(targetId); cached != nil {
+		sender = cached.Sender.ToNonAD()
+	} else if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
+		// 1:1 fallback: we don't know if it's ours or theirs. Default to the peer as sender
+		// (FromMe=false) — reacting to a received 1:1 message is the common case. Reacting to our own
+		// uncached 1:1 message may target the wrong side, but that only happens after a restart.
+		sender = chat.ToNonAD()
+	} else {
+		// Group fallback with no cache entry: assume it's our own message (empty sender => FromMe=true).
+		sender = types.EmptyJID
+	}
+	msg := handler.client.BuildReaction(chat, sender, types.MessageID(targetId), reaction)
+	_, err = handler.client.SendMessage(context.Background(), chat, msg)
+	if err != nil {
+		handler.log.Warnf("Failed to send reaction to %s (target %s): %v", chat.String(), targetId, err)
+		purple_display_system_message(handler.account, chat.ToNonAD().String(), false, fmt.Sprintf("Failed to send reaction: %v", err))
 	}
 }
 
@@ -270,6 +318,8 @@ func (handler *Handler) send_link_message(recipient types.JID, isGroup bool, lin
 		purple_display_system_message(handler.account, recipient.ToNonAD().String(), isGroup, fmt.Sprintf("%s has been forwarded.", link)) // TODO: do not omit message ID in this particular case
 		msg.Conversation = &link                                                                                                           // hack to preserve link in cache
 		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+		// webOS outbox-id: make this app-sent media message reactable (react-to-your-own-message).
+		purple_handle_outbox_id(handler.account, send_response.ID, link)
 		return true
 	}
 }
