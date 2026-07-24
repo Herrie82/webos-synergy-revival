@@ -148,5 +148,19 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(local_file_path, data, 0o644)
+	if err := os.WriteFile(local_file_path, data, 0o644); err != nil {
+		return err
+	}
+	// For videos, also drop the sender's embedded JPEG thumbnail next to the file as "<base>.jpg".
+	// The Messaging app uses it as a <video poster> — a first-view preview that loads as a plain
+	// image (independent of the clip's own data), which lets the player stay preload="none". The old
+	// webOS WebKit can't paint a poster frame from an unplayed <video> otherwise, so without this the
+	// preview box is black until the clip has been played once. Best-effort: a missing poster is fine.
+	if vm, ok := message.(*waE2E.VideoMessage); ok {
+		if thumb := vm.GetJPEGThumbnail(); len(thumb) > 0 {
+			poster := strings.TrimSuffix(local_file_path, filepath.Ext(local_file_path)) + ".jpg"
+			os.WriteFile(poster, thumb, 0o644)
+		}
+	}
+	return nil
 }
