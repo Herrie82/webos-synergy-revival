@@ -1,5 +1,6 @@
 #include "gowhatsapp.h"
 #include "libwhatsmeow.h" // for gowhatsapp_go_login / gowhatsapp_go_send_reaction / gometa_go_send_reaction
+#include "call.h"         // for whatsapp_call_luna_init (WhatsApp voice calling LS2 service)
 #include "../gometabridge.h" // for GOMETA_PLUGIN_ID
 
 // webOS reactions (SEND): the transport emits "webos-im-send-reaction" (registered process-wide) when
@@ -101,6 +102,11 @@ gowhatsapp_login(PurpleAccount *account)
     char *username = (char *)purple_account_get_username(account); // cgo does not suport const
     char *user_dir = (char *)purple_user_dir(); // cgo does not suport const
     gowhatsapp_go_login(account, user_dir, username, (char *)credentials, proxy_address); // cgo does not suport const
+    // webOS: register the com.palm.whatsapp.call LS2 service so the stock Phone app can place/receive
+    // WhatsApp calls over this shared session (the Go side attaches meowcaller in startCalling).
+    // Idempotent (guarded by g_registered) across accounts/reconnects. Was missing from the combined
+    // plugin's login path, so com.palm.whatsapp.call never registered -> "service is not running".
+    whatsapp_call_luna_init();
     g_free(proxy_address);
 
     gowhatsapp_receipts_init(pc);

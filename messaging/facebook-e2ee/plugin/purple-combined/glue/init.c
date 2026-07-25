@@ -193,6 +193,9 @@ static void plugin_init(PurplePlugin *plugin) {
     if (plugin->handle) {
         g_module_make_resident((GModule *) plugin->handle);
     }
+    // NOTE: com.palm.whatsapp.call is registered at WhatsApp LOGIN (glue/login.c), not here at plugin
+    // probe. Registering an LS2 PalmService during purple_plugins_probe proved too fragile. Login-time
+    // registration mirrors the standalone purple-gowhatsapp plugin, which had working calling.
     prpl_info.protocol_options = gowhatsapp_add_account_options(prpl_info.protocol_options);
     gometa_register_second_prpl();
     // Clean up per-account backend stores when an account is deleted (WhatsApp: per-JID device row
