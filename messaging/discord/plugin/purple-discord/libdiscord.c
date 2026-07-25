@@ -1882,8 +1882,13 @@ discord_send_heartbeat(gpointer userdata)
 	if (da->heartbeat_ack_pending) {
 		purple_debug_error("discord", "heartbeat not ACKed - gateway zombied, reconnecting\n");
 		da->heartbeat_ack_pending = FALSE;
-		da->heartbeat_timeout = 0; /* we're inside this source; keep discord_start_socket from removing it */
-		discord_start_socket(da);  /* tears down + reconnects; OP_HELLO installs a fresh heartbeat timer */
+		da->heartbeat_timeout = 0; /* we're inside this source; returning FALSE drops it - don't let discord_close double-remove */
+		/* webOS: clean reconnect. Do NOT call discord_start_socket() here - that partial in-place
+		 * reconnect reuses the same DiscordAccount whose hash tables / signal state discord_close may
+		 * have torn down, hitting NULL-hash floods + freed-signal-name crashes. Route through
+		 * purple_connection_error instead: the transport does a full re-login (discord_close ->
+		 * discord_login) that reallocates ALL account state from scratch. */
+		purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Gateway zombied (heartbeat not ACKed) - reconnecting"));
 		return FALSE;              /* drop this (now stale) timer */
 	}
 
@@ -5290,8 +5295,10 @@ static void discord_start_socket(DiscordAccount *ya);
 static void
 discord_restart_channel(DiscordAccount *da)
 {
-	purple_connection_set_state(da->pc, PURPLE_CONNECTION_CONNECTING);
-	discord_start_socket(da);
+	/* webOS: clean full re-login (purple_connection_error -> discord_close -> fresh discord_login)
+	 * instead of a partial in-place discord_start_socket that reuses a torn-down DiscordAccount.
+	 * See the rationale on the heartbeat-ACK watchdog in discord_send_heartbeat. */
+	purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Reconnecting"));
 }
 
 static void
@@ -6904,7 +6911,8 @@ discord_process_frame(DiscordAccount *da, const gchar *frame)
 		}
 
 		case OP_RECONNECT: { /* Reconnect */
-			discord_start_socket(da);
+			/* webOS: clean full re-login (see discord_send_heartbeat) not a partial in-place reconnect */
+			purple_connection_error(da->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Server requested reconnect"));
 			break;
 		}
 
@@ -7225,8 +7233,8 @@ discord_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInpu
 						}
 					}
 
-					/* Try reconnect */
-					discord_start_socket(ya);
+					/* Try reconnect (webOS: clean full re-login, not partial in-place) */
+					purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Reconnecting"));
 
 					return;
 				} else if (ya->packet_code == 137) {
@@ -7355,8 +7363,8 @@ discord_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInpu
 		if (ya->frames_since_reconnect < 2) {
 			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Lost connection to server"));
 		} else {
-			/* Try reconnect */
-			discord_start_socket(ya);
+			/* Try reconnect (webOS: clean full re-login, not partial in-place) */
+			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, _("Lost connection to server"));
 		}
 	}
 }
