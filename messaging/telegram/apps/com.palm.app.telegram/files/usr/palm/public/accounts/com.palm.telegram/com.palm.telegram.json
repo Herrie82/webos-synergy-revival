@@ -71,6 +71,20 @@
             "db_kinds": {
                 "contact": "com.palm.contact.libpurple:1"
             }
+        },
+        {
+            "capability": "PHONE",
+            "id": "com.palm.telegram.call",
+            "alwaysOn": true,
+            "implementation": "palm://com.palm.imlibpurple/",
+            "serviceName": "type_telegram",
+            "wanAllowed": true,
+            "wifiAllowed": true,
+            "pausePrompt": false,
+            "pauseCode": [],
+            "waitCode": [],
+            "keyHoldMappings": [],
+            "launchCode": "*#"
         }
     ]
 }]

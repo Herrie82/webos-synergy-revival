@@ -55,7 +55,14 @@
                 "topicsSupported": true,
                 "invitesSupportMessages": false
             },
-            "chatWithNonBuddies": true
+            "chatWithNonBuddies": true,
+            "reactions": {
+                "supported": true,
+                "map": {
+                    "&#128518;": "&#128513;",
+                    "&#128558;": "&#128561;"
+                }
+            }
         },
         {
             "capability": "CONTACTS",
