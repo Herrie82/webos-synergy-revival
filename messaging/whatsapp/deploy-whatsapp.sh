@@ -16,7 +16,10 @@ NR="novacom run file://bin/sh"
 nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
 BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
 BACKEND_LIB="$(dirname "$BACKEND_PURPLE2")"
-BUILD="$PKG/plugin/purple-gowhatsapp/build-arm"
+# The WhatsApp prpl is the COMBINED plugin (facebook-e2ee/purple-combined) - ONE libwhatsmeow.so
+# hosts BOTH prpl-hehoe-whatsmeow and prpl-gometa (+ send-reaction, newsletters, calling). The old
+# standalone purple-gowhatsapp was removed; build with facebook-e2ee/plugin/purple-combined/build-combined.sh.
+BUILD="$PKG/../facebook-e2ee/plugin/purple-combined/build-arm"
 PRPL="$BUILD/libwhatsmeow.stripped.so"
 STAGING=/home/herrie/webos/wpe/staging-glibc-252
 

@@ -22,7 +22,9 @@
   */
 
 #include "gowhatsapp.h"
-#include "libwhatsmeow.h" // for gowhatsapp_go_init
+#include "constants.h"       // GOWHATSAPP_CREDENTIALS_KEY (for locating the device to unlink on delete)
+#include "../gometabridge.h" // GOMETA_PLUGIN_ID (branch account-removed by protocol id)
+#include "libwhatsmeow.h" // for gowhatsapp_go_init + gowhatsapp_go_account_removed / gometa_go_account_removed
 #include <gmodule.h>      // g_module_make_resident - pin the Go .so so libpurple can't dlclose/unmap it
 
 #ifndef PLUGIN_VERSION
@@ -140,6 +142,47 @@ static PurplePluginProtocolInfo prpl_info = {
 // Registers the Facebook (messagix) protocol as a second prpl in this same .so.
 extern void gometa_register_second_prpl(void);
 
+// Per-account store teardown on account deletion. libpurple's purple_accounts_delete() emits
+// "account-removed" (on purple_accounts_get_handle()) for the account being deleted, then destroys
+// it synchronously. This one .so hosts BOTH prpls, so a single handler covers WhatsApp and gometa;
+// we branch by protocol id and hand off to the matching Go export. Everything must complete
+// synchronously here — the account pointer is freed the moment this returns, so the Go side must not
+// defer any work that dereferences it.
+static void
+webos_account_removed_cb(PurpleAccount *account, gpointer data)
+{
+    (void)data;
+    if (account == NULL) {
+        return;
+    }
+    const char *proto = purple_account_get_protocol_id(account);
+    char *user_dir = (char *)purple_user_dir();                    // cgo does not support const
+    char *username = (char *)purple_account_get_username(account); // cgo does not support const
+    if (g_strcmp0(proto, GOWHATSAPP_PRPL_ID) == 0) {
+        // Match login.c: the device JID lives in the "credentials" setting (bitlbee falls back to
+        // the password field). Go uses it to delete ONLY this account's row from the shared store.
+        const char *credentials = purple_account_get_string(account, GOWHATSAPP_CREDENTIALS_KEY, NULL);
+        if (credentials == NULL) {
+            credentials = purple_account_get_password(account);
+        }
+        gowhatsapp_go_account_removed(account, user_dir, username, (char *)(credentials ? credentials : ""));
+    } else if (g_strcmp0(proto, GOMETA_PLUGIN_ID) == 0) {
+        gometa_go_account_removed(account, user_dir, username);
+    }
+}
+
+// Connect the "account-removed" handler once, using `plugin` as the signal handle so
+// libpurple2_plugin_unload's purple_signals_disconnect_by_handle(plugin) cleans it up. Called from
+// plugin_init (the module is pinned resident, so the callback can never be unmapped). The accounts
+// subsystem and its "account-removed" signal are registered by purple_core_init well before any
+// plugin is probed, so the handle is always valid here.
+static void
+webos_connect_account_removed(PurplePlugin *plugin)
+{
+    purple_signal_connect(purple_accounts_get_handle(), "account-removed",
+                          plugin, PURPLE_CALLBACK(webos_account_removed_cb), NULL);
+}
+
 static void plugin_init(PurplePlugin *plugin) {
     // The Go runtime (cgo c-archive) cannot survive g_module_close(): libpurple dlcloses plugins
     // during its startup plugin probe, which unmaps code the Go scheduler threads are still executing
@@ -152,6 +195,10 @@ static void plugin_init(PurplePlugin *plugin) {
     }
     prpl_info.protocol_options = gowhatsapp_add_account_options(prpl_info.protocol_options);
     gometa_register_second_prpl();
+    // Clean up per-account backend stores when an account is deleted (WhatsApp: per-JID device row
+    // from the shared whatsmeow.db; Facebook-E2EE: the per-account gometa-e2ee-<user>.db). Covers both
+    // prpls in this .so via one handler.
+    webos_connect_account_removed(plugin);
 }
 
 static PurplePluginInfo info = {

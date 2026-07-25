@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/mdp/qrterminal/v3"
@@ -162,7 +163,13 @@ func login(account *PurpleAccount, purple_user_dir string, username string, cred
 	}
 	handlers[account] = &handler
 	handler.LoadCachedMessages(filepath.Join(purple_user_dir, username+".json"))
+	handler.LoadNewsletterSeen(filepath.Join(purple_user_dir, username+".nlseen.json"))
 	handler.client.AddEventHandler(handler.eventHandler)
+
+	// webOS: attach the WhatsApp-calling engine (meowcaller) to THIS shared session so the
+	// stock Phone app can place/receive calls without a separate wacallm companion. Must run
+	// before Connect() so meowcaller's low-level <call> interception is in place first.
+	handler.startCalling()
 
 	if proxy_address != "" {
 		handler.client.SetProxyAddress(proxy_address)
@@ -249,6 +256,121 @@ func (handler *Handler) prune_devices(deviceJid types.JID) {
 			}
 		}
 	}
+}
+
+/*
+ * whatsapp_account_removed is invoked from the libpurple "account-removed" signal (fired by
+ * purple_accounts_delete) when the user DELETES a WhatsApp account on webOS. Its job is to unlink
+ * this device server-side and remove ONLY this account's row from the SHARED whatsmeow.db.
+ *
+ * The whatsmeow store (default file:$purple_user_dir/whatsmeow.db) is shared by every WhatsApp
+ * account in this transport — the default DB address has no $username in it. So we must NEVER delete
+ * the whole file (that would orphan every other WhatsApp account and log them all out). Instead we
+ * key strictly on THIS account's device JID and delete just that one device's rows.
+ *
+ * Per-account isolation:
+ *   - Preferred path: if a live, connected client for this account still exists, client.Logout()
+ *     sends a "remove-companion-device" IQ (unlinks server-side, clearing the "ghost linked device")
+ *     and then deletes only its own device from the store.
+ *   - Fallback (the usual case — libpurple disables + disconnects, and thus tears down the handler,
+ *     BEFORE emitting account-removed): open the shared store, look up this account's stored device
+ *     JID (from the "credentials" setting = "deviceJID|registrationId") and delete only that device's
+ *     rows via whatsmeow's store (Container.DeleteDevice, per-JID). A fresh pairing QR then works on
+ *     re-add. NOTE: while disconnected we cannot unlink server-side, so a stale linked device may
+ *     linger on the phone until the user removes it there — hooking a connected teardown would
+ *     require an earlier signal, but "account-disabled" also fires for a plain disable, which must
+ *     NOT wipe the store.
+ */
+func whatsapp_account_removed(account *PurpleAccount, purple_user_dir string, username string, credentials string) {
+	log := PurpleLogger(account, "AccountRemoved")
+
+	// Preferred: a live, connected client can Logout() (unlink server-side + delete its own row).
+	if handler, ok := handlers[account]; ok {
+		if handler.client != nil && handler.client.Store != nil && handler.client.Store.ID != nil {
+			deviceJid := *handler.client.Store.ID
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := handler.client.Logout(ctx); err != nil {
+				// e.g. not actually connected: fall back to deleting just this device's row via the
+				// container the handler already holds (still strictly per-JID).
+				log.Warnf("Logout failed (%v); deleting device %s from shared store", err, deviceJid.String())
+				whatsapp_delete_device(handler.container, deviceJid)
+			} else {
+				log.Infof("Logged out and removed device %s from shared whatsmeow store", deviceJid.String())
+			}
+		}
+		return
+	}
+
+	// Usual case: no live handler. Look up THIS account's stored device JID and delete only it.
+	creds := strings.Split(credentials, "|")
+	if len(creds) < 1 || creds[0] == "" {
+		log.Infof("No stored WhatsApp credentials for removed account; nothing to clean up.")
+		return
+	}
+	deviceJid, err := parseJID(creds[0])
+	if err != nil {
+		log.Warnf("Stored device JID %q is not valid; skipping store cleanup: %v", creds[0], err)
+		return
+	}
+	container, db, err := whatsapp_open_container(account, purple_user_dir, username)
+	if err != nil {
+		log.Warnf("Cannot open whatsmeow store to remove device %s: %v", deviceJid.String(), err)
+		return
+	}
+	defer db.Close()
+	whatsapp_delete_device(container, deviceJid)
+	log.Infof("Removed device %s from shared whatsmeow store (server-side unlink not possible while disconnected).", deviceJid.String())
+}
+
+/*
+ * whatsapp_delete_device removes exactly one device's rows (keyed by JID) from the shared store.
+ * This is the per-JID delete that keeps other WhatsApp accounts in the same whatsmeow.db intact.
+ */
+func whatsapp_delete_device(container *sqlstore.Container, deviceJid types.JID) {
+	if container == nil {
+		return
+	}
+	ctx := context.TODO()
+	device, err := container.GetDevice(ctx, deviceJid)
+	if err != nil || device == nil {
+		// no such device (already gone / never paired) — nothing to delete
+		return
+	}
+	_ = device.Delete(ctx) // Device.Delete -> Container.DeleteDevice(device): removes only this JID
+}
+
+/*
+ * whatsapp_open_container opens the SHARED whatsmeow store using the exact same address resolution
+ * as login() (the "database-address" account option, $purple_user_dir/$username substitution and the
+ * legacy _foreign_keys=on rewrite). Caller owns the returned *sql.DB and must Close() it.
+ */
+func whatsapp_open_container(account *PurpleAccount, purple_user_dir string, username string) (*sqlstore.Container, *sql.DB, error) {
+	dbLog := PurpleLogger(account, "Database")
+	address := purple_get_string(account, C.GOWHATSAPP_DATABASE_ADDRESS_OPTION, C.GOWHATSAPP_DATABASE_ADDRESS_DEFAULT)
+	address = strings.Replace(address, "$purple_user_dir", purple_user_dir, -1)
+	address = strings.Replace(address, "$username", username, -1)
+	address = strings.Replace(address, "_foreign_keys=on", "_pragma=foreign_keys(1)", -1)
+	dialect := "sqlite"
+	maxOpenConns := 1
+	if strings.HasPrefix(address, "postgres:") {
+		dialect = "postgres"
+		maxOpenConns = 0
+		address = strings.Replace(address, "postgres:", "", -1)
+	}
+	db, err := sql.Open(dialect, address)
+	if err != nil {
+		return nil, nil, err
+	}
+	if maxOpenConns > 0 {
+		db.SetMaxOpenConns(maxOpenConns)
+	}
+	container := sqlstore.NewWithDB(db, dialect, dbLog)
+	if err := container.Upgrade(context.TODO()); err != nil {
+		db.Close()
+		return nil, nil, err
+	}
+	return container, db, nil
 }
 
 /*

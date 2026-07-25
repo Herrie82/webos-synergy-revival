@@ -84,6 +84,15 @@ func gowhatsapp_go_logout(account *PurpleAccount) {
 	}
 }
 
+//export gowhatsapp_go_account_removed
+// Fired from the libpurple "account-removed" signal (see glue/init.c) when a WhatsApp account is
+// DELETED on webOS. Unlinks this device server-side (if a live client exists) and removes ONLY this
+// account's row from the SHARED whatsmeow.db — never the whole file. credentials = the account's
+// "credentials" setting ("deviceJID|registrationId"), used to find the exact device to delete.
+func gowhatsapp_go_account_removed(account *PurpleAccount, purple_user_dir *C.char, username *C.char, credentials *C.char) {
+	whatsapp_account_removed(account, C.GoString(purple_user_dir), C.GoString(username), C.GoString(credentials))
+}
+
 //export gowhatsapp_go_send_message
 func gowhatsapp_go_send_message(account *PurpleAccount, who *C.char, message *C.char, is_group C.int) int {
 	handler, ok := handlers[account]
@@ -251,6 +260,15 @@ func gowhatsapp_go_query_groups(account *PurpleAccount) {
 	} else {
 		purple_error(account, "Cannot get list of groups: Not connected.", ERROR_TRANSIENT)
 	}
+}
+
+//export gowhatsapp_go_fetch_newsletter_history
+func gowhatsapp_go_fetch_newsletter_history(account *PurpleAccount, jidStr *C.char) {
+	handler, ok := handlers[account]
+	if !ok || jidStr == nil {
+		return
+	}
+	go handler.fetch_newsletter_history(C.GoString(jidStr))
 }
 
 //export gowhatsapp_go_get_contacts

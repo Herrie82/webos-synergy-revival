@@ -6,6 +6,7 @@ require (
 	github.com/alfg/mp4 v0.0.0-20210728035756-55ea58c08aeb
 	github.com/lib/pq v1.12.3
 	github.com/mdp/qrterminal/v3 v3.0.0
+	github.com/purpshell/meowcaller v0.0.0-20260717112041-9769d5aaaeca
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20260716095330-85d99080dee8
 	google.golang.org/protobuf v1.36.11
@@ -18,9 +19,17 @@ require (
 	github.com/beeper/poly1305 v0.0.0-20250815183548-d4eede7bbf3c // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/icholy/digest v1.1.0 // indirect
 	github.com/imroc/req/v3 v3.56.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/pion/datachannel v1.6.0 // indirect
+	github.com/pion/dtls/v3 v3.1.2 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/opus v0.1.0 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/sctp v1.9.4 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.57.1 // indirect
 	github.com/refraction-networking/utls v1.8.1 // indirect
@@ -41,7 +50,7 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect

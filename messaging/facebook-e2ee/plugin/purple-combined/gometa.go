@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,38 @@ func gometa_go_login(account *PurpleAccount, purpleUserDir *C.char, username *C.
 func gometa_go_close(account *PurpleAccount) {
 	if h, ok := gometaHandlers[account]; ok {
 		h.close()
+	}
+}
+
+//export gometa_go_account_removed
+// Fired from the libpurple "account-removed" signal (see glue/init.c) when a Facebook-E2EE account is
+// DELETED on webOS. Closes any live client and deletes ONLY this account's per-account E2EE store.
+func gometa_go_account_removed(account *PurpleAccount, purpleUserDir *C.char, username *C.char) {
+	gometaAccountRemoved(account, C.GoString(purpleUserDir), C.GoString(username))
+}
+
+// gometaAccountRemoved tears down a deleted Facebook-E2EE account: it closes any live messagix + E2EE
+// (whatsmeow) client for THIS account, then deletes only this account's per-account E2EE store
+// (gometa-e2ee-<username>.db and its -wal/-shm sidecars). The DB path embeds the account username
+// (the FB email, exactly as connectE2EE builds it), so removal is strictly scoped to this account and
+// never touches another account's store. Unlike WhatsApp's shared whatsmeow.db, this per-account file
+// is safe to delete whole. (The messagix E2EE whatsmeow client has MessengerConfig set, so it cannot
+// Logout() server-side — deleting the local Signal store is the correct teardown here.)
+func gometaAccountRemoved(account *PurpleAccount, purpleUserDir, username string) {
+	if h, ok := gometaHandlers[account]; ok {
+		h.close() // disconnect e2ee + messagix client, cancel ctx, drop from registry
+	}
+	if username == "" {
+		return
+	}
+	dbPath := filepath.Join(purpleUserDir, "gometa-e2ee-"+username+".db")
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			// Best-effort: log to stderr only. Do NOT route through gometaReportError/gometa_process_message
+			// here — those defer a dispatch (purple_timeout_add) that reads the account pointer, but the
+			// account is destroyed synchronously right after this "account-removed" signal returns.
+			fmt.Fprintf(os.Stderr, "gometa: could not remove E2EE store %s: %v\n", p, err)
+		}
 	}
 }
 

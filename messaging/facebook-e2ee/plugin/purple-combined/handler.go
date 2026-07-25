@@ -29,6 +29,8 @@ type Handler struct {
 	client           *whatsmeow.Client
 	deferredReceipts map[types.JID]map[types.JID][]types.MessageID // holds ID and sender of a received message so the receipt can be sent later.
 	cachedMessages   []CachedMessage                               // for looking up reactions and quotes
+	newsletterSeen      map[types.MessageID]bool // dedup WhatsApp Channel posts (live delivery vs history replay)
+	newsletterSeenOrder []types.MessageID        // FIFO order for bounding newsletterSeen
 	pictureRequests  chan ProfilePictureRequest
 	httpClient       *http.Client // for executing picture requests
 	blocklist        *types.Blocklist
@@ -70,6 +72,9 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 	case *events.Connected:
 		// connected – start downloading profile pictures now.
 		go handler.profile_picture_downloader()
+		// webOS: fetch the real names of followed WhatsApp Channels (newsletters) so they show a title
+		// instead of the raw "<id>@newsletter" JID. Also creates their buddies so quiet channels appear.
+		go handler.fetch_newsletter_names()
 		handler.handle_connected()
 		blocklist, err := cli.GetBlocklist(context.TODO())
 		if err == nil {

@@ -76,9 +76,20 @@ GHashTable * gowhatsapp_chat_info_defaults(PurpleConnection *pc, const char *cha
  */
 void gowhatsapp_join_chat(PurpleConnection *pc, GHashTable *data) {
     const char *remoteJid = g_hash_table_lookup(data, "name");
+    if (remoteJid == NULL) {
+        // webOS: the transport keys channel joins (openChannel -> serv_join_chat) by "id", not "name".
+        remoteJid = g_hash_table_lookup(data, "id");
+    }
     if (remoteJid != NULL) {
         // add chat to buddy list (optional)
         PurpleAccount *account = purple_connection_get_account(pc);
+        // webOS: a WhatsApp Channel (newsletter) has no MUC to enter - fetch its recent history on
+        // demand instead. The replayed posts route back through the normal message path into the
+        // "WhatsApp Channels" server thread (see handle_newsletter.go / LibpurpleAdapter routing).
+        if (g_str_has_suffix(remoteJid, "@newsletter")) {
+            gowhatsapp_go_fetch_newsletter_history(account, (char *)remoteJid);
+            return;
+        }
         const char *topic = g_hash_table_lookup(data, "topic");
         if (purple_account_get_bool(account, GOWHATSAPP_UPDATE_BUDDY_ON_MESSAGE_OPTION, TRUE)) {
             gowhatsapp_ensure_group_chat_in_blist(account, remoteJid, topic);
