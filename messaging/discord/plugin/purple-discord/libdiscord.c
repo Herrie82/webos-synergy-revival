@@ -415,6 +415,11 @@ typedef struct {
 	                                     overlapping history fetch (fast newest-batch vs forward catch-up)
 	                                     or a re-opened channel doesn't write the same message twice */
 	GHashTable *result_callbacks;   /* Result ID -> Callback function */
+	GHashTable *msgid_to_channel;   /* webOS: msg_id(str) -> channel_id(str) for every message we deliver,
+	                                   so an OUTBOUND reaction (react from the app) can target the message's
+	                                   ACTUAL channel. The app's reaction "peer" is unreliable (sometimes the
+	                                   sender's username, sometimes the channel display name), so we never
+	                                   trust it - we look the channel up by the reacted message's id here. */
 	GQueue *received_message_queue; /* A store of the last 10 received message id's for de-dup */
 
 	GHashTable *new_users;
@@ -2911,6 +2916,15 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 	guint64 id = to_int(json_object_get_string_member(data, "channel_id"));
 	guint64 channel_id;
 	gchar *channel_id_s;
+
+	/* webOS: remember which channel this message belongs to, so an outbound reaction can target the
+	 * message's real channel regardless of the (unreliable) peer the app supplies. Capped so a long
+	 * session can't grow it without bound - reactions target recent messages. */
+	if (msg_id != 0 && id != 0 && da->msgid_to_channel != NULL) {
+		if (g_hash_table_size(da->msgid_to_channel) > 8000)
+			g_hash_table_remove_all(da->msgid_to_channel);
+		g_hash_table_replace(da->msgid_to_channel, from_int(msg_id), from_int(id));
+	}
 
 	const gchar *content = json_object_get_string_member(data, "content");
 	const gchar *timestamp_str = json_object_get_string_member(data, "timestamp");
@@ -6396,9 +6410,23 @@ discord_webos_send_reaction_cb(PurpleAccount *account, const char *targetId, con
 
 	/* Resolve the channel snowflake: a 1:1 DM peer is a buddy name mapped in one_to_ones_rev; a guild
 	 * channel peer is already the channel snowflake (the same value the transport stored as channelName). */
+	/* Resolve the channel the reaction must go to. AUTHORITATIVE source: the channel this exact message
+	 * was delivered to (msgid_to_channel). The app's `peer` is unreliable (it can be the sender's
+	 * username or the channel display name), so only fall back to it when we have no record of the msg. */
 	guint64 channel_id = 0;
+	const gchar *bymsg = da->msgid_to_channel ? g_hash_table_lookup(da->msgid_to_channel, targetId) : NULL;
 	const gchar *dm = g_hash_table_lookup(da->one_to_ones_rev, peer);
-	channel_id = dm ? to_int(dm) : to_int(peer);
+	if (bymsg != NULL) {
+		channel_id = to_int(bymsg);              /* the message's real channel - always correct */
+	} else if (dm != NULL) {
+		channel_id = to_int(dm);                 /* DM buddy tracked in one_to_ones_rev */
+	} else if (*peer >= '0' && *peer <= '9') {
+		channel_id = to_int(peer);               /* peer is already a channel snowflake */
+	} else {
+		PurpleIMConversation *im = purple_conversations_find_im_with_account(peer, da->account);
+		if (im != NULL)
+			channel_id = discord_get_channel_id_from_conv(da, PURPLE_CONVERSATION(im));
+	}
 	if (channel_id == 0)
 		return;
 
@@ -6477,6 +6505,7 @@ discord_login(PurpleAccount *account)
 	da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	discord_load_received_ids(da);   /* webOS: restore dedup set so a re-login doesn't re-backfill */
 	da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	da->msgid_to_channel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->received_message_queue = g_queue_new();
 
 	/* TODO make these the roots of all discord data */
@@ -6587,6 +6616,10 @@ discord_close(PurpleConnection *pc)
 	da->received_message_ids = NULL;
 	g_hash_table_unref(da->result_callbacks);
 	da->result_callbacks = NULL;
+	if (da->msgid_to_channel != NULL) {
+		g_hash_table_unref(da->msgid_to_channel);
+		da->msgid_to_channel = NULL;
+	}
 
 	g_hash_table_unref(da->new_users);
 	da->new_users = NULL;
@@ -7413,6 +7446,8 @@ discord_start_socket(DiscordAccount *da)
 	}
 	if (da->result_callbacks == NULL)
 		da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->msgid_to_channel == NULL)
+		da->msgid_to_channel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	if (da->received_message_queue == NULL)
 		da->received_message_queue = g_queue_new();
 	if (da->new_users == NULL)
