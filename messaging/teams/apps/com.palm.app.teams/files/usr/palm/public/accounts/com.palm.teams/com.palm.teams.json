@@ -58,6 +58,15 @@
                     "&#128591;": ""
                 }
             }
+        },
+        {
+            "capability": "CONTACTS",
+            "id": "com.palm.teams.contacts",
+            "implementation": "palm://com.palm.imlibpurple/",
+            "readOnlyData": true,
+            "db_kinds": {
+                "contact": "com.palm.contact.libpurple:1"
+            }
         }
     ]
 }]
