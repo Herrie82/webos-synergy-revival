@@ -52,22 +52,9 @@ enyo.kind({
                 // cookie RowGroups are appended in create()
             ]}
         ]},
-        { className: "accounts-footer-shadow" },
-        { name: "removeBox", className: "box-center", showing: false, components: [
-            { name: "removeButton", kind: "Button", caption: "Remove Account",
-              className: "enyo-button-negative accounts-btn", onclick: "confirmRemove" }
-        ]},
         { kind: "Toolbar", className: "enyo-toolbar-light", components: [
             { kind: "Button", name: "cancelButton", caption: "Cancel", className: "accounts-toolbar-btn", onclick: "cancel" }
         ]},
-        { kind: "ModalDialog", name: "confirmDialog", lazy: false, caption: "Remove Account", components: [
-            { className: "enyo-paragraph", content: "Are you sure you want to remove this account and all associated data from your device? Data from this account will be erased from all applications." },
-            { kind: "HFlexBox", components: [
-                { kind: "Button", caption: "Cancel", flex: 0.8, className: "enyo-button-light", onclick: "closeConfirm" },
-                { kind: "Button", name: "confirmRemoveBtn", caption: "Remove Account", flex: 1, className: "enyo-button-negative", onclick: "doRemove" }
-            ]}
-        ]},
-        { kind: "PalmService", name: "acctService", service: "palm://com.palm.service.accounts/", onSuccess: "removeDone", onFailure: "removeDone" },
         { kind: "CrossAppResult" }
     ],
 
@@ -87,6 +74,11 @@ enyo.kind({
         this.$.box.createComponent(
             { kind: "ActivityButton", name: "signInButton", caption: "Sign In", disabled: true, active: false,
               className: "enyo-button-dark accounts-btn", onclick: "performSignIn" }, { owner: this });
+        // Standard framework Remove Account (with keep-data option), directly below Sign In; shown only
+        // when editing an existing account. init() with no capability => full-account deleteAccount.
+        this.$.box.createComponent(
+            { name: "removeAccountButton", kind: "Accounts.RemoveAccount", className: "accounts-btn",
+              showing: false, style: "padding-top:6px;", onAccountsRemove_Done: "removeDone" }, { owner: this });
         this.render();
         this.handleLaunch(enyo.windowParams || {});
     },
@@ -104,7 +96,11 @@ enyo.kind({
         // Re-auth of an existing account also offers Remove (this flow bypasses the framework
         // account-detail view, the only other place with a Remove button).
         this.accountId = (params.account && (params.account._id || params.account.id)) || params.accountId || null;
-        if (this.accountId) { this.$.removeBox.show(); }
+        // Editing an existing account -> offer the standard Remove Account button (keep-data option).
+        if (this.accountId && params.account) {
+            this.$.removeAccountButton.init(params.account);
+            this.$.removeAccountButton.show();
+        }
         if (params.account && params.account.username) {
             this.$.username.setValue(params.account.username);
             this.$.username.setDisabled(true);
@@ -142,20 +138,9 @@ enyo.kind({
         this.$.crossAppResult.sendResult(result);
     },
 
-    confirmRemove: function() {
-        this.$.confirmDialog.openAtCenter();
-    },
-    closeConfirm: function() {
-        this.$.confirmDialog.close();
-    },
-    doRemove: function() {
-        if (!this.accountId) { this.closeConfirm(); return; }
-        this.$.acctService.call({ accountId: this.accountId }, { method: "deleteAccount" });
-    },
-    // deleteAccount can return returnValue:false + "Account has been deleted" even on
-    // success, so do not branch on it - the account is gone either way; close + exit.
+    // Fired by Accounts.RemoveAccount (onAccountsRemove_Done) once the framework handled the confirm
+    // dialog (incl. the keep-data option) and the deleteAccount call. Return to the Accounts app.
     removeDone: function() {
-        this.$.confirmDialog.close();
         this.$.crossAppResult.sendResult({ returnValue: false });
     },
     cancel: function() {
