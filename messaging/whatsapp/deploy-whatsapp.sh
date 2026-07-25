@@ -53,6 +53,30 @@ else
   echo "   !! not built — run ./build-whatsapp.sh first (see README.md)"
 fi
 
+echo "== 4b. WhatsApp calling: grant com.palm.whatsapp.call in the imlibpurple role + activation service =="
+# Calling now runs IN this plugin (glue/call.c) on the shared messaging session — no separate
+# wacallm process. The account manifest (step 2) already points PHONE at com.palm.whatsapp.call.
+# The imlibpurpletransport role (com.palm.imlibpurple.json) must ALLOW the plugin to own the
+# com.palm.whatsapp.call bus name — same as it already does for telegram.call/signal.call. A
+# separate role file does NOT work; the name must be in imtransport's own role.
+IMROLES="$PKG/../imlibpurpleservice/imlibpurpleservice/files/ls2/roles"
+nr "mount -o remount,rw /dev/mapper/store-root / || true"
+novacom put "file:///usr/share/ls2/roles/prv/com.palm.imlibpurple.json" < "$IMROLES/prv/com.palm.imlibpurple.json"
+novacom put "file:///usr/share/ls2/roles/pub/com.palm.imlibpurple.json" < "$IMROLES/pub/com.palm.imlibpurple.json"
+novacom put "file:///usr/share/dbus-1/system-services/com.palm.whatsapp.call.service" < "$PKG/calling/dbus-1/system-services/com.palm.whatsapp.call.service"
+nr "rm -f /usr/share/ls2/roles/pub/com.palm.whatsapp.call.json"  # superseded by the imlibpurple role grant
+echo "== 4c. retire the standalone wacallm mediator (it owned com.palm.whatsapp) =="
+nr "kill \$(pidof wacallm-luna) 2>/dev/null || true"
+nr "rm -f /usr/share/dbus-1/system-services/com.palm.whatsapp.service /usr/share/ls2/roles/prv/com.palm.whatsapp.json /usr/share/ls2/roles/pub/com.palm.whatsapp.json"
+nr "ls-control scan-services 2>/dev/null || true"
+nr "mount -o remount,ro /dev/mapper/store-root / || true"
+
+echo "== 4d. restart imlibpurpletransport so the plugin loads calling + registers com.palm.whatsapp.call =="
+# SIGTERM only (never -9: that corrupts the PmLog init semaphore); clear a stale sem before respawn.
+nr "kill \$(pidof imlibpurpletransport) 2>/dev/null || true"
+sleep 2
+nr "rm -f /dev/shm/sem.PmLogLib"
+
 echo "== 5. rescan apps + accounts =="
 nr "luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' || true"
 nr "for p in \$(pidof accounts.js 2>/dev/null); do kill \$p; done 2>/dev/null || true"

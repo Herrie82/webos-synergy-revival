@@ -34,9 +34,13 @@ second companion to get logged out.
 mount -o remount,rw /
 # 1. plugin (.so) — the messaging prpl, now with calling
 cp libwhatsmeow.so /usr/lib/purple/libwhatsmeow.so     # (device path of the prpl)
-# 2. LS2 role + activation service for the new bus name
-cp ls2/roles/pub/com.palm.whatsapp.call.json /usr/share/ls2/roles/pub/
+# 2. Let imtransport own the new bus name: com.palm.whatsapp.call must be in the imlibpurple
+#    role's allowedNames+permissions (same as telegram.call/signal.call). A SEPARATE role file
+#    does NOT work — LS2 keys the role by exeName, so the grant lives in imtransport's own role.
+cp ../imlibpurpleservice/imlibpurpleservice/files/ls2/roles/prv/com.palm.imlibpurple.json /usr/share/ls2/roles/prv/
+cp ../imlibpurpleservice/imlibpurpleservice/files/ls2/roles/pub/com.palm.imlibpurple.json /usr/share/ls2/roles/pub/
 cp dbus-1/system-services/com.palm.whatsapp.call.service /usr/share/dbus-1/system-services/
+# NB: ls-hubd loads roles at BOOT — reboot (or restart the LS2 hub) after changing a role file.
 # 3. account manifest with the re-pointed PHONE implementation
 cp com.palm.whatsapp.json /usr/palm/public/accounts/com.palm.whatsapp/com.palm.whatsapp.json
 
