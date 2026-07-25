@@ -7432,6 +7432,8 @@ discord_start_socket(DiscordAccount *da)
 	 * failed" and the account is half-dead: cannot send or sync, servers/channels never appear. Re-
 	 * create any table a close cleared so the reconnect has a usable account. discord_login allocates
 	 * these before the initial socket, so on first connect they are non-NULL and skipped here. */
+	if (da->cookie_table == NULL)
+		da->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	if (da->one_to_ones == NULL)
 		da->one_to_ones = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	if (da->one_to_ones_rev == NULL)

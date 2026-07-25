@@ -6,7 +6,7 @@ require (
 	github.com/alfg/mp4 v0.0.0-20210728035756-55ea58c08aeb
 	github.com/lib/pq v1.12.3
 	github.com/mdp/qrterminal/v3 v3.0.0
-	github.com/purpshell/meowcaller v0.0.0-20260724092103-1ac278769bdc
+	github.com/purpshell/meowcaller v0.0.0-20260717112041-9769d5aaaeca
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20260716095330-85d99080dee8
 	google.golang.org/protobuf v1.36.11
