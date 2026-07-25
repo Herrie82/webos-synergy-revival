@@ -2863,6 +2863,20 @@ discord_treat_room_as_small(DiscordAccount *da, guint64 room_id, DiscordGuild *g
 
 static void discord_thread_parent_cb(DiscordAccount *da, JsonNode *node, gpointer user_data);
 
+/* webOS reactions: stash the network message id (a Discord snowflake) on the conversation right
+ * before we write a message, so the transport (incoming_message_cb) persists it as the row's
+ * serviceMessageId. A later MESSAGE_REACTION_ADD/REMOVE that targets this id can then attach an
+ * inline reaction badge to the stored row (the cross-prpl "webos-im-reaction" signal matches on
+ * serviceMessageId). The string is g_strdup'd here and freed by the transport after it reads it.
+ * Mirrors the Telegram/WhatsApp prpls. */
+static void
+discord_stash_webos_msgid(PurpleConversation *conv, guint64 msg_id)
+{
+	if (conv != NULL && msg_id != 0) {
+		purple_conversation_set_data(conv, "webos-msg-id", from_int(msg_id));
+	}
+}
+
 static guint64
 discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_type)
 {
@@ -3253,6 +3267,7 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				}
 
 				if (escaped_content && *escaped_content) {
+					discord_stash_webos_msgid(conv, msg_id);
 					msg = purple_message_new_outgoing(username, escaped_content, flags);
 					purple_message_set_time(msg, timestamp);
 					purple_conversation_write_message(conv, msg);
@@ -3284,6 +3299,11 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 			}
 
 			if (escaped_content && *escaped_content && msg_type != MESSAGE_CALL) {
+				/* webOS reactions: stash on the existing IM conv (if open) so the received DM records a
+				 * serviceMessageId. serv_got_im would create a fresh conv on first-ever message, which we
+				 * cannot pre-stash - that first message just won't be reaction-targetable (acceptable). */
+				PurpleConversation *imconv = conv ? conv : PURPLE_CONVERSATION(purple_conversations_find_im_with_account(merged_username, da->account));
+				discord_stash_webos_msgid(imconv, msg_id);
 				purple_serv_got_im(da->pc, merged_username, escaped_content, flags, timestamp);
 			} else if (msg_type == MESSAGE_CALL) {
 				gchar *call_txt = g_strdup_printf(_("%s started a call"), merged_username);
@@ -3468,12 +3488,17 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				 * sent_message_ids), exactly like the DM self path, so an app-sent channel message is
 				 * not written a second time on top of the app's own local copy. */
 				if (!nonce || !g_hash_table_remove(da->sent_message_ids, nonce)) {
+					discord_stash_webos_msgid(conv, msg_id);
 					PurpleMessage *pmsg = purple_message_new_outgoing(name, escaped_content, flags);
 					purple_message_set_time(pmsg, timestamp);
 					purple_conversation_write_message(conv, pmsg);
 					purple_message_destroy(pmsg);
 				}
 			} else {
+				/* conv != NULL here, and serv_got_chat_in reuses this same chat conversation, so
+				 * stashing webos-msg-id on it now lets the transport record serviceMessageId for the
+				 * received channel message (needed for a reaction to attach to it). */
+				discord_stash_webos_msgid(conv, msg_id);
 				purple_serv_got_chat_in(da->pc, discord_chat_hash(channel_id), name, flags, escaped_content, timestamp);
 			}
 
@@ -4915,8 +4940,6 @@ discord_process_dispatch(DiscordAccount *da, const gchar *type, JsonObject *data
 
 	} else if (purple_strequal(type, "MESSAGE_REACTION_ADD") && purple_account_get_bool(da->account, "show-reactions", TRUE)) {
 
-		const gchar *channel_id_s = json_object_get_string_member(data, "channel_id");
-		guint64 channel_id = to_int(channel_id_s);
 		guint64 message_id = to_int(json_object_get_string_member(data, "message_id"));
 		guint64 user_id = to_int(json_object_get_string_member(data, "user_id"));
 		JsonObject *emoji = json_object_get_object_member(data, "emoji");
@@ -4926,51 +4949,36 @@ discord_process_dispatch(DiscordAccount *da, const gchar *type, JsonObject *data
 			emoji_name = "?";
 		}
 
-		DiscordReaction *reaction;
-		reaction = g_new0(DiscordReaction, 1);
-		reaction->room_id = channel_id;
-		reaction->user_id = user_id;
-		reaction->msg_time = discord_time_from_snowflake(message_id);
-		reaction->msg_txt = NULL;
-		reaction->is_me = user_id == da->self_user_id ? TRUE : FALSE;
-		reaction->count = 1;
-		reaction->reaction = (emoji_id != NULL) ? g_strdup_printf("&lt;:%s:%s&gt;", emoji_name, emoji_id) : g_strdup(emoji_name);
-		reaction->is_unreact = FALSE;
-
-		// Get array of messages because single-message endpoint is bot-only
-		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION "/channels/%" G_GUINT64_FORMAT "/messages?limit=5&after=%" G_GUINT64_FORMAT, channel_id, message_id-1);
-		discord_fetch_url(da, url, NULL, discord_react_cb, reaction);
-		g_free(url);
+		/* webOS: forward to the cross-prpl inline-badge signal ("webos-im-reaction") rather than the
+		 * old "reacted with X" system message + REST message fetch. target = the reacted message's id
+		 * (recorded as serviceMessageId when we delivered it via discord_stash_webos_msgid), emoji =
+		 * the reaction (":name:" for a custom guild emoji, else the unicode char), sender = reactor id.
+		 * The transport's im_reaction_cb merges it onto the stored row as an inline badge. */
+		gchar *emoji_str = (emoji_id != NULL) ? g_strdup_printf(":%s:", emoji_name) : g_strdup(emoji_name);
+		gchar *react_tgt = from_int(message_id);
+		gchar *react_snd = from_int(user_id);
+		purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction",
+			da->account, react_tgt, emoji_str, react_snd);
+		g_free(emoji_str);
+		g_free(react_tgt);
+		g_free(react_snd);
 
 
 	} else if (purple_strequal(type, "MESSAGE_REACTION_REMOVE") && purple_account_get_bool(da->account, "show-reactions", TRUE)) {
 
-		const gchar *channel_id_s = json_object_get_string_member(data, "channel_id");
-		guint64 channel_id = to_int(channel_id_s);
 		guint64 message_id = to_int(json_object_get_string_member(data, "message_id"));
 		guint64 user_id = to_int(json_object_get_string_member(data, "user_id"));
-		JsonObject *emoji = json_object_get_object_member(data, "emoji");
-		const gchar *emoji_name = json_object_get_string_member(emoji, "name");
-		const gchar *emoji_id = json_object_get_string_member(emoji, "id");
-		if (emoji_name == NULL) {
-			emoji_name = "?";
-		}
 
-		DiscordReaction *reaction;
-		reaction = g_new0(DiscordReaction, 1);
-		reaction->room_id = channel_id;
-		reaction->user_id = user_id;
-		reaction->msg_time = discord_time_from_snowflake(message_id);
-		reaction->msg_txt = NULL;
-		reaction->is_me = user_id == da->self_user_id ? TRUE : FALSE;
-		reaction->count = 1;
-		reaction->reaction = (emoji_id != NULL) ? g_strdup_printf("&lt;:%s:%s&gt;", emoji_name, emoji_id) : g_strdup(emoji_name);
-		reaction->is_unreact = TRUE;
-
-		// Get array of messages because single-message endpoint is bot-only
-		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION "/channels/%" G_GUINT64_FORMAT "/messages?limit=5&after=%" G_GUINT64_FORMAT, channel_id, message_id-1);
-		discord_fetch_url(da, url, NULL, discord_react_cb, reaction);
-		g_free(url);
+		/* webOS: forward a reaction REMOVAL. An empty emoji string tells the transport's per-sender
+		 * merge (im_reaction_cb) to clear THIS sender's reaction on the target row - the WhatsApp/FB
+		 * convention. (Discord allows multiple emoji per user on a message; the per-sender model keeps
+		 * one, matching the other prpls - acceptable for v1.) */
+		gchar *react_tgt = from_int(message_id);
+		gchar *react_snd = from_int(user_id);
+		purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction",
+			da->account, react_tgt, "", react_snd);
+		g_free(react_tgt);
+		g_free(react_snd);
 
 	} else {
 		purple_debug_info("discord", "Unhandled message type '%s'\n", type);
