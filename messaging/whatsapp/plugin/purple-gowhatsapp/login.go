@@ -162,6 +162,7 @@ func login(account *PurpleAccount, purple_user_dir string, username string, cred
 	}
 	handlers[account] = &handler
 	handler.LoadCachedMessages(filepath.Join(purple_user_dir, username+".json"))
+	handler.LoadNewsletterSeen(filepath.Join(purple_user_dir, username+".nlseen.json"))
 	handler.client.AddEventHandler(handler.eventHandler)
 
 	// webOS: attach the WhatsApp-calling engine (meowcaller) to THIS shared session so the
@@ -271,5 +272,6 @@ func (handler *Handler) close(account *PurpleAccount, purple_user_dir string, us
 	}
 	handler.client.Disconnect()
 	handler.SaveCachedMessages(filepath.Join(purple_user_dir, username+".json"))
+	handler.SaveNewsletterSeen(filepath.Join(purple_user_dir, username+".nlseen.json"))
 	delete(handlers, account)
 }

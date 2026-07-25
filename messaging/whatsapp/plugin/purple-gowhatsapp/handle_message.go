@@ -41,6 +41,16 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 		handler.log.Infof("Ignoring SenderKeyDistributionMessage.")
 		return
 	}
+	// WhatsApp Channels: a post arrives both live (offline sync on connect) and again via
+	// fetch_newsletter_history's replay when the channel is opened, so it would be stored twice. Skip a
+	// post we've already delivered (keyed by the WhatsApp message id, which is stable across both paths).
+	// SKDM is dropped above; reactions have their own id and are excluded so they still get through.
+	if info.MessageSource.Chat.Server == "newsletter" && message.GetReactionMessage() == nil {
+		if handler.newsletterAlreadySeen(info.ID) {
+			handler.log.Infof("Skipping already-delivered WhatsApp Channel post %s.", info.ID)
+			return
+		}
+	}
 	text := ""
 	if info.MessageSource.Chat == types.StatusBroadcastJID {
 		if purple_get_bool(handler.account, C.GOWHATSAPP_IGNORE_STATUS_BROADCAST_OPTION, false) {
