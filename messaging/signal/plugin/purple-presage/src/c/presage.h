@@ -39,6 +39,10 @@ void presage_rust_place_call(PurpleAccount *, RustRuntimePtr, RustChannelPtr, co
 // webOS reactions (SEND): transmit a reaction the user placed from the app. (peer, target sent timestamp, emoji, remove flag)
 void presage_rust_send_reaction(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *peer, uint64_t target_ts, const char *emoji, int remove);
 
+// connection.c - per-account store teardown: hooked to libpurple's "account-removed" signal at plugin
+// load; deletes <purple_user_dir()>/presage/<username>.db3 (+ sqlite sidecars) for the removed account.
+void presage_account_removed_cb(PurpleAccount *account, void *unused);
+
 // call.c - Signal calling (signaling-only): the com.palm.signal.call LS2 service that rings the stock
 // Phone app on an incoming Signal call. presage_handle_call_state is called from the Rust receive loop.
 void callLunaInit(PurpleAccount *account);
