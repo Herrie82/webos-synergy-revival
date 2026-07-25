@@ -1,0 +1,10 @@
+{
+    "role": {
+        "exeName": "/usr/bin/imlibpurpletransport",
+        "type": "regular",
+        "allowedNames": ["com.palm.whatsapp.call"]
+    },
+    "permissions": [
+        { "service": "com.palm.whatsapp.call", "inbound": ["*"], "outbound": ["*"] }
+    ]
+}

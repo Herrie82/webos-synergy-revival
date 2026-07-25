@@ -73,7 +73,7 @@
         {
             "capability": "PHONE",
             "id": "com.palm.whatsapp.call",
-            "implementation": "palm://com.palm.whatsapp/",
+            "implementation": "palm://com.palm.whatsapp.call/",
             "serviceName": "type_whatsapp",
             "wanAllowed": true,
             "wifiAllowed": true,

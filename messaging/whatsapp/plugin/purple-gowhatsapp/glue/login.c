@@ -1,5 +1,6 @@
 #include "gowhatsapp.h"
 #include "libwhatsmeow.h" // for gowhatsapp_go_login
+#include "call.h"         // for whatsapp_call_luna_init (WhatsApp voice calling)
 
 void
 gowhatsapp_login(PurpleAccount *account)
@@ -64,6 +65,11 @@ gowhatsapp_login(PurpleAccount *account)
     g_free(proxy_address);
     
     gowhatsapp_receipts_init(pc);
+
+    // Register the com.palm.whatsapp.call luna-service so the stock Phone app can place/
+    // receive WhatsApp calls over this same session (the Go side attached meowcaller to the
+    // shared whatsmeow client in startCalling). Idempotent across accounts/reconnects.
+    whatsapp_call_luna_init();
 }
 
 void

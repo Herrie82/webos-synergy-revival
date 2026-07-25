@@ -70,6 +70,9 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 	case *events.Connected:
 		// connected – start downloading profile pictures now.
 		go handler.profile_picture_downloader()
+		// webOS: fetch the real names of followed WhatsApp Channels (newsletters) so they show a title
+		// instead of the raw "<id>@newsletter" JID. Also creates their buddies so quiet channels appear.
+		go handler.fetch_newsletter_names()
 		handler.handle_connected()
 		blocklist, err := cli.GetBlocklist(context.TODO())
 		if err == nil {
@@ -136,22 +139,15 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 			handler.prune_devices(*cli.Store.ID)
 		}
 	case *events.CallOffer:
-		bcm := evt.BasicCallMeta
-		chat := handler.lidToPn(bcm.From, "handling call offer")
-		sender := handler.lidToPn(bcm.CallCreator, "handling call offer")
-		text := "This contact is trying to call you, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), false, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil)
+		// Incoming 1:1 call. meowcaller (attached in startCalling) handles the offer and
+		// drives the stock Phone app via OnIncomingCall — nothing to post to the chat.
 	case *events.CallOfferNotice:
-		// same as CallOffer, but is a group
-		bcm := evt.BasicCallMeta
-		chat := handler.lidToPn(bcm.From, "handling call offer notice")
-		sender := handler.lidToPn(bcm.CallCreator, "handling call offer notice")
-		text := "This contact is trying to make you notice a call, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), true, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil)
+		// Incoming group call notice. Group calling is not surfaced to the Phone app;
+		// meowcaller ignores it. Stay silent (no "not supported" chat spam).
 	case *events.CallRelayLatency:
-		// related to calls. ignore silently.
+		// related to calls, consumed by meowcaller. ignore silently.
 	case *events.CallTerminate:
-		// related to calls. ignore silently.
+		// related to calls, consumed by meowcaller. ignore silently.
 	//case *events.JoinedGroup:
 	// TODO
 	// received when being added to a group directly

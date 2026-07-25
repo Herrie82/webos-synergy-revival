@@ -20,6 +20,13 @@ GLIB_STAGING=/home/herrie/webos/wpe/staging-glibc-252     # glib + opus/ogg/opus
 GO=${GO:-/home/herrie/webos/gotool/go125/bin/go}          # Go 1.25+ (whatsmeow go.mod requires 1.25.5)
 TC=/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125
 
+# luna-service2 + PmLog headers for the in-plugin com.palm.whatsapp.call service (glue/call.c),
+# and ALSA (from the glib staging) for its audio bridge. Link the LS2 stub .so — the real
+# liblunaservice resolves at load inside imlibpurpletransport (same as signal/purple-presage).
+LUNA_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/include/public
+PMLOG_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
+LSSTUB=$REPO/build-output/imtransport/lib/liblunaservice.so
+
 source /home/herrie/webos/wpe/env-glibc-gcc125.sh 2>/dev/null || true
 export PATH=$TC/bin:$PATH
 : "${CC:=arm-unknown-linux-gnueabi-gcc}"
@@ -44,11 +51,12 @@ echo "=== STAGE 2: compile C glue ==="
 # NB: include $BUILD (for the go-generated libwhatsmeow.h) and $SRC (root bridge.h/constants.h);
 # do NOT add gdk-pixbuf to the path so pixbuf.c takes its no-pixbuf fallback.
 GCFLAGS="$CFLAGS $CPPFLAGS -fPIC -DPURPLE_PLUGINS -DPLUGIN_VERSION=$VERSION \
-	-I$GLUE -I$SRC -I$BUILD -I$PURPLE/include $(pkg-config --cflags purple glib-2.0) -I$GLIB_STAGING/include -I$GLIB_STAGING/include/opus"
+	-I$GLUE -I$SRC -I$BUILD -I$PURPLE/include $(pkg-config --cflags purple glib-2.0) -I$GLIB_STAGING/include -I$GLIB_STAGING/include/opus \
+	-I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC"
 OBJS=()
-# glue/*.c
+# glue/*.c   (call.c = the com.palm.whatsapp.call LS2 service + ALSA/audiod bridge)
 for s in init login qrcode bridge process_message display_message groups blist \
-         send_message handle_attachment send_file presence options receipt pixbuf commands; do
+         send_message handle_attachment send_file presence options receipt pixbuf commands call; do
 	echo "  CC glue/$s.c"; $CC $GCFLAGS -c "$GLUE/$s.c" -o "$BUILD/glue_$s.o"; OBJS+=("$BUILD/glue_$s.o")
 done
 # root C files compiled into the plugin too (per glue/CMakeLists): ../bridge.c is required again
@@ -61,6 +69,7 @@ echo "=== STAGE 3: link libwhatsmeow.so ==="
 $CC -shared -fPIC $LDFLAGS -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
 	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" \
 	-L"$PURPLE/lib" -L"$GLIB_STAGING/lib" $(pkg-config --libs purple glib-2.0) \
+	"$LSSTUB" -lasound \
 	-lopusfile -lopus -logg -lpthread -ldl -lm -lresolv
 
 echo "=== Stripping ==="

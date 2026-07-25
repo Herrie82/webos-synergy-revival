@@ -164,6 +164,11 @@ func login(account *PurpleAccount, purple_user_dir string, username string, cred
 	handler.LoadCachedMessages(filepath.Join(purple_user_dir, username+".json"))
 	handler.client.AddEventHandler(handler.eventHandler)
 
+	// webOS: attach the WhatsApp-calling engine (meowcaller) to THIS shared session so the
+	// stock Phone app can place/receive calls without a separate wacallm companion. Must run
+	// before Connect() so meowcaller's low-level <call> interception is in place first.
+	handler.startCalling()
+
 	if proxy_address != "" {
 		handler.client.SetProxyAddress(proxy_address)
 	}
