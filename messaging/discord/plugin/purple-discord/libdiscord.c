@@ -7391,6 +7391,37 @@ discord_start_socket(DiscordAccount *da)
 
 	da->heartbeat_ack_pending = FALSE; /* webOS #1: fresh connection starts with no outstanding ACK */
 
+	/* webOS #1 FIX: a reconnect (OP_RECONNECT/op7, the 5-min restart, the heartbeat-ACK watchdog, ...)
+	 * calls us DIRECTLY, without re-running discord_login. If a discord_close ran in between (a full
+	 * disconnect - common during a reboot's flaky first connect), it g_hash_table_unref'd and NULLed
+	 * these tables and nothing re-created them. The socket would then come back up ("logged in") but
+	 * every message-processing / dedup access hits "g_hash_table_*: assertion 'hash_table != NULL'
+	 * failed" and the account is half-dead: cannot send or sync, servers/channels never appear. Re-
+	 * create any table a close cleared so the reconnect has a usable account. discord_login allocates
+	 * these before the initial socket, so on first connect they are non-NULL and skipped here. */
+	if (da->one_to_ones == NULL)
+		da->one_to_ones = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->one_to_ones_rev == NULL)
+		da->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->last_message_id_dm == NULL)
+		da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->sent_message_ids == NULL)
+		da->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
+	if (da->received_message_ids == NULL) {
+		da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		discord_load_received_ids(da);   /* restore the persisted dedup set */
+	}
+	if (da->result_callbacks == NULL)
+		da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->received_message_queue == NULL)
+		da->received_message_queue = g_queue_new();
+	if (da->new_users == NULL)
+		da->new_users = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_user);
+	if (da->new_guilds == NULL)
+		da->new_guilds = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_guild);
+	if (da->group_dms == NULL)
+		da->group_dms = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_channel);
+
 	if (da->heartbeat_timeout) {
 		g_source_remove(da->heartbeat_timeout);
 	}
