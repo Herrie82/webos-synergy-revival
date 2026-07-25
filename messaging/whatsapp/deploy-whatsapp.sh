@@ -56,18 +56,25 @@ else
   echo "   !! not built — run ./build-whatsapp.sh first (see README.md)"
 fi
 
-echo "== 4b. WhatsApp calling: grant com.palm.whatsapp.call in the imlibpurple role + activation service =="
-# Calling now runs IN this plugin (glue/call.c) on the shared messaging session — no separate
-# wacallm process. The account manifest (step 2) already points PHONE at com.palm.whatsapp.call.
-# The imlibpurpletransport role (com.palm.imlibpurple.json) must ALLOW the plugin to own the
-# com.palm.whatsapp.call bus name — same as it already does for telegram.call/signal.call. A
-# separate role file does NOT work; the name must be in imtransport's own role.
+echo "== 4b. WhatsApp calling: grant com.palm.whatsapp.call in the imlibpurple role =="
+# Calling runs IN this plugin (glue/call.c) on the shared messaging session — no separate wacallm
+# process. The account manifest (step 2) already points PHONE at com.palm.whatsapp.call. The
+# imlibpurpletransport role (com.palm.imlibpurple.json) must ALLOW the plugin to own the
+# com.palm.whatsapp.call bus name — same as telegram.call/signal.call. A separate role file does NOT
+# work; the name must be in imtransport's own role. The RESIDENT transport registers that name itself,
+# so no DBus activation .service is needed for it (see the neuter below).
 IMROLES="$PKG/../imlibpurpleservice/imlibpurpleservice/files/ls2/roles"
 nr "mount -o remount,rw /dev/mapper/store-root / || true"
 novacom put "file:///usr/share/ls2/roles/prv/com.palm.imlibpurple.json" < "$IMROLES/prv/com.palm.imlibpurple.json"
 novacom put "file:///usr/share/ls2/roles/pub/com.palm.imlibpurple.json" < "$IMROLES/pub/com.palm.imlibpurple.json"
-novacom put "file:///usr/share/dbus-1/system-services/com.palm.whatsapp.call.service" < "$PKG/calling/dbus-1/system-services/com.palm.whatsapp.call.service"
 nr "rm -f /usr/share/ls2/roles/pub/com.palm.whatsapp.call.json"  # superseded by the imlibpurple role grant
+# NEUTER the on-demand LS2 activation services so ONLY the upstart-resident transport ever runs. The
+# on-demand .service path spawns a SECOND, non-resident transport that collides with the resident one
+# ("Attempted to register for a service name that already exists: com.palm.imlibpurple") and churns
+# 100+ collisions/boot, knocking accounts offline. Calling reaches the resident transport's own
+# in-plugin com.palm.whatsapp.call registration, so the .call activation services are pure liability.
+# (Standalone: messaging/imlibpurpleservice/neuter-activation-services.sh. Reboot for ls-hubd to drop them.)
+nr "for s in com.palm.imlibpurple.service com.palm.whatsapp.call.service com.palm.telegram.call.service com.palm.signal.call.service; do [ -f /usr/share/dbus-1/system-services/\$s ] && mv /usr/share/dbus-1/system-services/\$s /usr/share/dbus-1/system-services/\$s.disabled && echo \"  neutered \$s\"; done; true"
 echo "== 4c. retire the standalone wacallm mediator (it owned com.palm.whatsapp) =="
 nr "kill \$(pidof wacallm-luna) 2>/dev/null || true"
 nr "rm -f /usr/share/dbus-1/system-services/com.palm.whatsapp.service /usr/share/ls2/roles/prv/com.palm.whatsapp.json /usr/share/ls2/roles/pub/com.palm.whatsapp.json"
