@@ -3247,6 +3247,20 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 		}
 	}
 
+	/* webOS reactions on OUR OWN app-sent messages: this is an echo of a message we sent from the
+	 * TouchPad if its nonce is one we're still tracking. The per-branch nonce checks below consume that
+	 * nonce to suppress the double-delivery (the app already shows the message locally); here we only
+	 * PEEK (contains, not remove) and stamp the message's real network id onto our Outbox row via the
+	 * outbox-id signal, so a reaction targeting this sent message can attach (mirrors WhatsApp/gometa).
+	 * Covers both DMs and guild channels. */
+	if (author_id == da->self_user_id && nonce && *nonce &&
+			g_hash_table_contains(da->sent_message_ids, nonce)) {
+		gchar *outbox_id = from_int(msg_id);
+		purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
+				da->account, outbox_id, content ? content : "");
+		g_free(outbox_id);
+	}
+
 	if (channel_id_s && g_hash_table_contains(da->one_to_ones, channel_id_s)) {
 		/* private message */
 
@@ -6356,12 +6370,71 @@ discord_save_received_ids(DiscordAccount *da)
 	g_ptr_array_free(arr, TRUE);   /* frees the array, not the strings (owned by the hash table) */
 }
 
+/* webOS reactions (SEND): the transport emits "webos-im-send-reaction" (registered process-wide) when
+ * the user reacts, or removes a reaction, from the TouchPad. It fires for EVERY account, so we filter
+ * by protocol id and route to Discord's reactions REST endpoint. Params (5): account,
+ * targetServiceMessageId (the reacted message's snowflake, = the serviceMessageId we stored when it
+ * arrived), emoji (already decoded to UTF-8, supplied even on removal), peer (the thread the transport
+ * uses: a channel snowflake for a guild channel, or the buddy name for a 1:1 DM), removeFlag
+ * ("1" = remove my reaction, else add). */
+static void
+discord_webos_send_reaction_cb(PurpleAccount *account, const char *targetId, const char *emoji,
+		const char *peer, const char *removeFlag, void *data)
+{
+	(void) data;
+	if (account == NULL || targetId == NULL || *targetId == '\0' || peer == NULL)
+		return;
+	if (!purple_strequal(purple_account_get_protocol_id(account), DISCORD_PLUGIN_ID))
+		return;
+
+	PurpleConnection *pc = purple_account_get_connection(account);
+	if (pc == NULL)
+		return;
+	DiscordAccount *da = purple_connection_get_protocol_data(pc);
+	if (da == NULL)
+		return;
+
+	/* Resolve the channel snowflake: a 1:1 DM peer is a buddy name mapped in one_to_ones_rev; a guild
+	 * channel peer is already the channel snowflake (the same value the transport stored as channelName). */
+	guint64 channel_id = 0;
+	const gchar *dm = g_hash_table_lookup(da->one_to_ones_rev, peer);
+	channel_id = dm ? to_int(dm) : to_int(peer);
+	if (channel_id == 0)
+		return;
+
+	gboolean remove = (removeFlag != NULL && *removeFlag == '1');
+	/* PUT with an empty body adds my (@me) reaction; DELETE removes it. Discord's reactions API takes
+	 * the URL-encoded unicode emoji (the reaction picker sends unicode; astral chars are decoded by the
+	 * transport before this). */
+	gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
+			"/channels/%" G_GUINT64_FORMAT "/messages/%s/reactions/%s/%%40me",
+			channel_id, targetId, purple_url_encode(emoji ? emoji : ""));
+	discord_fetch_url_with_method(da, remove ? "DELETE" : "PUT", url, remove ? NULL : "{}", NULL, NULL);
+	g_free(url);
+}
+
+/* Connect once (process-wide) to the transport's send-reaction signal. The signal lives on
+ * purple_conversations_get_handle(), so a single connect covers every Discord account in this process.
+ * Guarded so repeated logins don't double-connect. */
+static void
+discord_connect_send_reaction_once(void)
+{
+	static gboolean s_connected = FALSE;
+	if (s_connected)
+		return;
+	s_connected = TRUE;
+	purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction",
+			purple_get_core(), PURPLE_CALLBACK(discord_webos_send_reaction_cb), NULL);
+}
+
 void
 discord_login(PurpleAccount *account)
 {
 	DiscordAccount *da;
 	PurpleConnection *pc = purple_account_get_connection(account);
 	PurpleConnectionFlags pc_flags;
+
+	discord_connect_send_reaction_once();
 
 	if (!strchr(purple_account_get_username(account), '@')) {
 		purple_connection_error(pc, PURPLE_CONNECTION_ERROR_INVALID_USERNAME, _("Username needs to be an email address"));
