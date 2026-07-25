@@ -60,7 +60,6 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.signal.contacts",
-            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
@@ -70,7 +69,6 @@
         {
             "capability": "PHONE",
             "id": "com.palm.signal.call",
-            "alwaysOn": true,
             "loc_shortName": "Signal",
             "implementation": "palm://com.palm.signal.call/",
             "serviceName": "type_signal"

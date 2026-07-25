@@ -67,7 +67,6 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.telegram.contacts",
-            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
@@ -77,7 +76,6 @@
         {
             "capability": "PHONE",
             "id": "com.palm.telegram.call",
-            "alwaysOn": true,
             "loc_shortName": "Telegram",
             "implementation": "palm://com.palm.telegram.call/",
             "serviceName": "type_telegram"

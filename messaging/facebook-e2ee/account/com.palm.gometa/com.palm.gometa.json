@@ -60,7 +60,6 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.gometa.contacts",
-            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
