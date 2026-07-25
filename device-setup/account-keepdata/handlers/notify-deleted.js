@@ -101,7 +101,11 @@ function notifyAccountDeletedCommandAssistant() {
 							accountId: args.accountId,
 							// keepData forwarded from deleteAccount so the capability handler can keep or wipe
 							// the account's on-device data. Absent/false => wipe (historical default).
-							keepData: args.keepData
+							keepData: args.keepData,
+							// alias + templateId let the handler record a friendly label for a kept account
+							// (com.palm.imretaineddata) so the user can later find + delete its retained data.
+							alias: account.alias,
+							templateId: account.templateId
 						}).then(onDeletes[i], function(f){
 							var r = f.result;
 							if (r.returnValue || r === true) {
