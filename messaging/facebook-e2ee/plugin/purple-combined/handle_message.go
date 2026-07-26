@@ -9,6 +9,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -30,6 +32,33 @@ func GetAnyPollCreationMessage(message *waE2E.Message) *waE2E.PollCreationMessag
 		return message.PollCreationMessage
 	}
 	return nil
+}
+
+// write_link_preview_thumbnail persists an ExtendedTextMessage's inline link-preview JPEG thumbnail
+// to the account's attachment directory and returns a file:// URL for it (or "" on failure / when the
+// attachment path isn't configured). The directory is the static prefix of the account's
+// attachment-path-template (everything before the first "$" placeholder) - the same dir real
+// downloaded attachments land in - so the Messaging app can load it as an inline <img>. The file is
+// named by a content hash so an identical thumbnail is written once and re-render is idempotent.
+func (handler *Handler) write_link_preview_thumbnail(data []byte) string {
+	tmpl := purple_get_string(handler.account, C.GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_OPTION, C.GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_DEFAULT)
+	prefix := strings.SplitN(tmpl, "$", 2)[0]
+	if prefix == "" {
+		return "" // no attachment path configured (or template starts with a placeholder) - skip
+	}
+	dir := filepath.Dir(prefix + "x") // keep the full directory even when the prefix ends in "/"
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	local := filepath.Join(dir, fmt.Sprintf("linkpreview_%x.jpg", sum[:16]))
+	if err := os.WriteFile(local, data, 0o644); err != nil {
+		return ""
+	}
+	return "file://" + local
 }
 
 func (handler *Handler) handle_message(message *waE2E.Message, info types.MessageInfo, evt *events.Message) {
@@ -100,6 +129,17 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 					}
 				}
 				text += etmText
+			}
+			// webOS: WhatsApp link-preview posts (news channels like BBC News) arrive as an
+			// ExtendedTextMessage with a URL preview + an inline JPEG thumbnail, NOT an image
+			// attachment - so previously only the headline text showed. Write the preview thumbnail to
+			// the attachment dir and prepend its file:// URL so the Messaging app renders it inline
+			// above the headline (same picture+caption layout as real media). GetJPEGThumbnail is empty
+			// for plain/quoted ExtendedTextMessages, so this only fires for actual link previews.
+			if thumb := etm.GetJPEGThumbnail(); len(thumb) > 0 {
+				if u := handler.write_link_preview_thumbnail(thumb); u != "" {
+					text = u + "\n" + text
+				}
 			}
 		}
 
