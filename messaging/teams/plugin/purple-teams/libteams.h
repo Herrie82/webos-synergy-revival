@@ -275,6 +275,8 @@ struct _TeamsAccount {
 	guint trouter_ping_timeout;
 	guint trouter_command_count;
 	guint trouter_registration_timeout;
+	guint trouter_reconnect_timeout;   /* webOS: backoff timer for trouter reconnect (anti-storm) */
+	guint trouter_reconnect_backoff;   /* webOS: current backoff seconds, doubles on repeat failure */
 	JsonObject *trouter_socket_obj;
 
 	//devicecode login

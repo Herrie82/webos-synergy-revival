@@ -492,7 +492,8 @@ teams_got_vm_download_info(TeamsAccount *sa, JsonNode *node, gpointer user_data)
 	obj = json_node_get_object(node);
 	
 	files = json_object_get_array_member(obj, "files");
-	file = json_array_get_object_element(files, 0);
+	/* webOS: guarded macro can yield NULL - bound the index-0 access (raw call asserts on NULL). */
+	file = (json_array_get_length(files) >= 1) ? json_array_get_object_element(files, 0) : NULL;
 	if (file != NULL) {
 		status = json_object_get_string_member(file, "status");
 		if (status && g_str_equal(status, "ok")) {
@@ -2056,12 +2057,17 @@ teams_get_friend_suggestions_cb(TeamsAccount *sa, JsonNode *node, gpointer user_
 	GSList *users_to_fetch = NULL;
 	guint index, length;
 
-	if (node == NULL)
+	if (node == NULL || json_node_get_node_type(node) != JSON_NODE_OBJECT)
 		return;
 
 	obj = json_node_get_object(node);
 	groups = json_object_get_array_member(obj, "Groups");
-	firstgroup = json_array_get_object_element(groups, 0);
+	/* webOS: "Groups" can be absent/empty (guarded macro -> NULL) - bound the index-0 access
+	 * (raw json_array_get_object_element asserts 'array != NULL' - the residual suggestions-fetch
+	 * criticals). No groups -> nothing to suggest. */
+	firstgroup = (json_array_get_length(groups) >= 1) ? json_array_get_object_element(groups, 0) : NULL;
+	if (firstgroup == NULL)
+		return;
 	suggestions = json_object_get_array_member(firstgroup, "Suggestions");
 	length = json_array_get_length(suggestions);
 	
@@ -2412,13 +2418,25 @@ teams_got_skype_contacts_cb(TeamsAccount *sa, JsonNode *node, gpointer user_data
 	GSList *users_to_fetch = NULL;
 	guint index, length;
 
-	if (node == NULL || json_node_get_node_type(node) != JSON_NODE_OBJECT)
+	if (node == NULL || json_node_get_node_type(node) != JSON_NODE_OBJECT) {
+		/* webOS diag: buddies=0 traced here - the skype contacts response wasn't a JSON object
+		 * (empty body / HTTP error / different shape). */
+		purple_debug_warning("teams", "skype_contacts: response is not a JSON object (node=%p) - 0 buddies\n", node);
 		return;
+	}
 	obj = json_node_get_object(node);
-	if (!json_object_has_member(obj, "contacts"))
+	if (!json_object_has_member(obj, "contacts")) {
+		GList *mk = json_object_get_members(obj), *it;
+		GString *keys = g_string_new("");
+		for (it = mk; it; it = it->next) g_string_append_printf(keys, "%s ", (const gchar *) it->data);
+		purple_debug_warning("teams", "skype_contacts: no 'contacts' member - 0 buddies; top-level keys: [%s]\n", keys->str);
+		g_string_free(keys, TRUE);
+		g_list_free(mk);
 		return;
+	}
 	contacts = json_object_get_array_member(obj, "contacts");
 	length = json_array_get_length(contacts);
+	purple_debug_info("teams", "skype_contacts: %u contact(s) in response\n", length);
 
 	for (index = 0; index < length; index++) {
 		JsonObject *contact = json_array_get_object_element(contacts, index);

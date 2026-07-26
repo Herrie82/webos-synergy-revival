@@ -46,6 +46,11 @@ teams_trouter_stop(TeamsAccount *sa)
 		purple_timeout_remove(sa->trouter_registration_timeout);
 		sa->trouter_registration_timeout = 0;
 	}
+	/* webOS: cancel a pending backoff reconnect too, so a deliberate stop stays stopped. */
+	if (sa->trouter_reconnect_timeout) {
+		purple_timeout_remove(sa->trouter_reconnect_timeout);
+		sa->trouter_reconnect_timeout = 0;
+	}
 	if (sa->trouter_surl) {
 		g_free(sa->trouter_surl);
 		sa->trouter_surl = NULL;
@@ -121,6 +126,38 @@ teams_trouter_send_authentication(TeamsAccount *sa)
 	json_object_unref(obj);
 }
 
+/* webOS anti-storm: consumer/TFL trouter is flaky and can close/error immediately after
+ * connecting. Upstream reconnected instantly, which - combined with empty trouter-info
+ * responses - spun a tight loop that flooded json_decode/NULL-deref criticals and degraded
+ * the whole account (messages stop sending after ~10 min). Reconnect on a doubling backoff
+ * (5s..300s) instead; incoming messages still arrive via the 8s poll while trouter is down. */
+static gboolean
+teams_trouter_reconnect_cb(gpointer user_data)
+{
+	TeamsAccount *sa = user_data;
+	sa->trouter_reconnect_timeout = 0;
+	if (!PURPLE_CONNECTION_IS_VALID(sa->pc)) {
+		return G_SOURCE_REMOVE;
+	}
+	teams_trouter_begin(sa);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+teams_trouter_schedule_reconnect(TeamsAccount *sa)
+{
+	if (sa->trouter_reconnect_timeout) {
+		return; /* already scheduled - don't stack timers */
+	}
+	if (sa->trouter_reconnect_backoff < 5) {
+		sa->trouter_reconnect_backoff = 5;
+	} else if (sa->trouter_reconnect_backoff < 300) {
+		sa->trouter_reconnect_backoff *= 2;
+	}
+	purple_debug_info("teams", "Trouter: scheduling reconnect in %us (backoff)\n", sa->trouter_reconnect_backoff);
+	sa->trouter_reconnect_timeout = purple_timeout_add_seconds(sa->trouter_reconnect_backoff, teams_trouter_reconnect_cb, sa);
+}
+
 static void
 teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsocketOp op, const guchar *msg, size_t len)
 {
@@ -129,20 +166,21 @@ teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsoc
 	purple_debug_info("teams", "Trouter WS: %d %.*s\n", op, (int) len, msg);
 	if (op == PURPLE_WEBSOCKET_OPEN) {
 		purple_debug_info("teams", "Trouter WS: Opened\n");
+		sa->trouter_reconnect_backoff = 0; /* webOS: healthy connection - reset backoff */
 		return;
 	} else if (op == PURPLE_WEBSOCKET_CLOSE) {
 		purple_debug_info("teams", "Trouter WS: Closed\n");
 		// _CLOSE calls abort internally, bypass to prevent double-free
 		sa->trouter_socket = NULL;
-		// Reopen the connection
-		teams_trouter_begin(sa);
+		// webOS: reopen on a backoff, not instantly, to avoid the reconnect storm
+		teams_trouter_schedule_reconnect(sa);
 		return;
 	} else if (op == PURPLE_WEBSOCKET_ERROR) {
 		purple_debug_info("teams", "Trouter WS: Error\n");
 		// _ERROR calls abort internally, bypass to prevent double-free
 		sa->trouter_socket = NULL;
-		// Reopen the connection
-		teams_trouter_begin(sa);
+		// webOS: reopen on a backoff, not instantly, to avoid the reconnect storm
+		teams_trouter_schedule_reconnect(sa);
 		return;
 	} else if (op == PURPLE_WEBSOCKET_PING) {
 		purple_debug_info("teams", "Trouter WS: Ping\n");
@@ -182,9 +220,16 @@ teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsoc
 		}
 		if (!colon_to_go) {
 			JsonObject *request = json_decode_object((const gchar *) &msg[i], len - i);
-			JsonObject *response = json_object_new();
+			JsonObject *response;
 			gchar *response_str, *response_msg;
-			
+
+			/* webOS: ignore a malformed/empty 3: frame instead of NULL-derefing request below. */
+			if (request == NULL) {
+				purple_debug_info("teams", "Trouter 3: frame did not decode, ignoring\n");
+				return;
+			}
+			response = json_object_new();
+
 			json_object_set_int_member(response, "id", json_object_get_int_member(request, "id"));
 			json_object_set_int_member(response, "status", 200);
 			json_object_set_string_member(response, "body", "");
@@ -208,8 +253,18 @@ teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsoc
 			}
 
 			JsonObject *body_obj = json_decode_object(body, strlen(body));
-			JsonObject *orig_body = json_object_ref(body_obj);
-			
+			JsonObject *orig_body;
+
+			/* webOS: an empty/unparseable frame body decodes to NULL - clean up and stop, don't
+			 * ref/deref NULL (part of the json_decode 'root' + 'object != NULL' flood). */
+			if (body_obj == NULL) {
+				purple_debug_info("teams", "Trouter 3: frame body did not decode, ignoring\n");
+				g_free(body);
+				json_object_unref(request);
+				return;
+			}
+			orig_body = json_object_ref(body_obj);
+
 			if (json_object_has_member(body_obj, "cp")) {
 				const gchar *cp = json_object_get_string_member(body_obj, "cp");
 				gsize cp_len;
@@ -406,11 +461,11 @@ teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsoc
 		}
 		if (!colon_to_go) {
 			JsonObject *obj = json_decode_object((const gchar *) &msg[i], len - i);
-			const gchar *name = json_object_get_string_member(obj, "name");
+			const gchar *name = json_object_get_string_member(obj, "name"); /* guarded macro: NULL-safe */
 			if (purple_strequal(name, "trouter.message_loss")) {
 				teams_trouter_register_one(sa, "TeamsCDLWebWorker", "TeamsCDLWebWorker_1.9", sa->trouter_surl, NULL);
 			}
-			json_object_unref(obj);
+			if (obj) json_object_unref(obj); /* webOS: empty 5: frame decodes to NULL */
 		}
 
 	} else if (msg[0] == '6') {
@@ -679,6 +734,16 @@ teams_trouter_info_cb(PurpleHttpConnection *http_conn, PurpleHttpResponse *respo
 	data = purple_http_response_get_data(response, &len);
 	obj = json_decode_object(data, len);
 
+	/* webOS: a failed/empty trouter-info response decodes to NULL. Upstream then ref'd and
+	 * dereferenced it (json_object_ref/get_members) - the storm of json_decode 'root' +
+	 * 'object != NULL' criticals we saw. Bail and retry on a backoff instead of NULL-derefing. */
+	if (obj == NULL) {
+		purple_debug_info("teams", "Trouter: empty/invalid info response, backing off\n");
+		g_string_free(url, TRUE);
+		teams_trouter_schedule_reconnect(sa);
+		return;
+	}
+
 	if (sa->trouter_socket_obj) {
 		json_object_unref(sa->trouter_socket_obj);
 	}
@@ -705,13 +770,17 @@ teams_trouter_info_cb(PurpleHttpConnection *http_conn, PurpleHttpResponse *respo
 	}
 	g_string_append_printf(url, "%ssocket.io/1/?v=v4&", socketio);
 	// Loop over each of the connect params to add to the url
-	list = json_object_get_members(connectparams);
-	for (iter = list; iter; iter = iter->next) {
-		const gchar *key = iter->data;
-		const gchar *value = json_object_get_string_member(connectparams, key);
-		g_string_append_printf(url, "%s=%s&", key, purple_url_encode(value));
+	// webOS: connectparams can be absent (guarded macro returns NULL) - don't pass NULL to
+	// json_object_get_members (asserts). No params just yields a bare (harmless) url.
+	if (connectparams != NULL) {
+		list = json_object_get_members(connectparams);
+		for (iter = list; iter; iter = iter->next) {
+			const gchar *key = iter->data;
+			const gchar *value = json_object_get_string_member(connectparams, key);
+			g_string_append_printf(url, "%s=%s&", key, purple_url_encode(value));
+		}
+		g_list_free(list);
 	}
-	g_list_free(list);
 	g_string_append_printf(url, "tc=%s&", purple_url_encode("{\"cv\":\"" TEAMS_TROUTER_TCCV "\",\"ua\":\"TeamsCDL\",\"hr\":\"\",\"v\":\"" TEAMS_CLIENTINFO_VERSION "\"}"));
 	g_string_append_printf(url, "con_num=%" G_GINT64_FORMAT "_%d&", 1234567890123, 1);
 	g_string_append_printf(url, "epid=%s&", purple_url_encode(sa->endpoint));
