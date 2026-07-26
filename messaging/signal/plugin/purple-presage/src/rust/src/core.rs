@@ -45,6 +45,7 @@ async fn run<C: presage::store::Store + 'static>(
             recipient,
             message,
             xfer,
+            reply_to_ts,
         } => {
             // Resolve a phone-number recipient to the contact's UUID (see resolve_phone_to_uuid). If
             // there is no matching Signal contact, report it in the conversation and keep the loop
@@ -85,7 +86,7 @@ async fn run<C: presage::store::Store + 'static>(
                 }
             }
             // now do the actual sending and error-handling
-            match crate::send::send(&mut manager, recipient, message.clone(), xfer).await {
+            match crate::send::send(&mut manager, recipient, message.clone(), xfer, reply_to_ts).await {
                 Ok(sent_ts) => {
                     // NOTE: for Spectrum, send-acknowledgements should be PURPLE_MESSAGE_SEND only (without PURPLE_MESSAGE_REMOTE_SEND)
                     msg.flags = crate::bridge_structs::PurpleMessageFlags::PURPLE_MESSAGE_SEND;

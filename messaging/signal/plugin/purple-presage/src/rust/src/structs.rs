@@ -9,6 +9,9 @@ pub enum Cmd {
         recipient: Recipient,
         message: Option<String>,
         xfer: *const crate::bridge_structs::PurpleXfer,
+        // webOS replies: the reply target's serviceMessageId (its sent timestamp, in ms); 0 == not a
+        // reply. send() looks the quoted message up by this timestamp to build the Signal Quote.
+        reply_to_ts: u64,
     },
     // webOS reactions (SEND): transmit a reaction the user placed from the app. `recipient` is the
     // conversation peer (contact UUID / phone / group key); `target_ts` is the reacted-to message's

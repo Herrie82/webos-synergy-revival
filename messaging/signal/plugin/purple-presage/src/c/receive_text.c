@@ -1,4 +1,5 @@
 #include "presage.h"
+#include <string.h> // strchr
 
 /* webOS reactions: emit the cross-prpl "webos-im-reaction" signal for a Signal reaction. Called from
  * the Rust receive loop (worker thread), so - like presage_append_message - copy the strings and hop
@@ -66,12 +67,46 @@ void presage_handle_text(PurpleConnection *connection, const char *who, const ch
     presage_display_text(connection, who, name, group, flags, timestamp_ms, body);
 }
 
-void presage_display_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags flags, uint64_t timestamp_ms, const char *text) {
+/* webOS replies: the Rust receive layer sentinel-encodes an inline quote into the body as
+ *   \x01 <id> \x1f <from> \x1f <text> \x02 <reply body>
+ * Split it out here so we can stash webos-quoted-* on the conversation (the transport renders those
+ * as an inline reply card) and show only the reply body. Returns a newly-allocated reply body; on
+ * *q_id/*q_from/*q_text returns newly-allocated fields (or NULL). Caller frees all four. */
+static char *presage_extract_quote(const char *text, char **q_id, char **q_from, char **q_text) {
+    *q_id = NULL; *q_from = NULL; *q_text = NULL;
+    if (text == NULL) return g_strdup("");
+    if (text[0] != '\x01') return g_strdup(text);
+    const char *stx = strchr(text, '\x02');
+    if (stx == NULL) return g_strdup(text); // malformed - show as-is rather than lose the body
+    char *header = g_strndup(text + 1, stx - (text + 1));
+    char **parts = g_strsplit(header, "\x1f", 3);
+    if (parts[0] && *parts[0]) *q_id   = g_strdup(parts[0]);
+    if (parts[1] && *parts[1]) *q_from = g_strdup(parts[1]);
+    if (parts[2] && *parts[2]) *q_text = g_strdup(parts[2]);
+    g_strfreev(parts);
+    g_free(header);
+    return g_strdup(stx + 1);
+}
+
+/* Stash the extracted quote on the conversation, right where webos-msg-id is stashed, so the
+ * transport's incoming_message_cb reads webos-quoted-{id,from,text} during serv_got_im/chat_in. */
+static void presage_stash_quote(PurpleConversation *conv, const char *q_id, const char *q_from, const char *q_text) {
+    if (conv == NULL) return;
+    if (q_id   && *q_id)   purple_conversation_set_data(conv, "webos-quoted-id",   g_strdup(q_id));
+    if (q_from && *q_from) purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(q_from));
+    if (q_text && *q_text) purple_conversation_set_data(conv, "webos-quoted-text", g_strdup(q_text));
+}
+
+void presage_display_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags flags, uint64_t timestamp_ms, const char *rawtext) {
     PurpleAccount *account = purple_connection_get_account(connection);
+
+    // webOS replies: pull any sentinel-encoded quote out of the body before display/threading.
+    char *q_id = NULL, *q_from = NULL, *q_text = NULL;
+    char *text = presage_extract_quote(rawtext, &q_id, &q_from, &q_text);
 
     // in Signal, timestamps are milliseconds, but purple wants seconds
     time_t timestamp_seconds = timestamp_ms/1000;
-    
+
     if (group == NULL) {
         // direct message
         presage_blist_update_buddy(account, who, name); // add to blist first for aliasing
@@ -90,6 +125,7 @@ void presage_display_text(PurpleConnection *connection, const char *who, const c
                 char idbuf[32]; g_snprintf(idbuf, sizeof idbuf, "%llu", (unsigned long long)timestamp_ms);
                 purple_conversation_set_data(conv, "webos-msg-id", g_strdup(idbuf));
             }
+            presage_stash_quote(conv, q_id, q_from, q_text); // webOS replies: outgoing carbon reply card
             purple_conv_im_write(purple_conversation_get_im_data(conv), who, text, flags, timestamp_seconds);
         } else {
             // webOS reactions: stash the Signal message id (its sent timestamp in ms) so the
@@ -99,6 +135,7 @@ void presage_display_text(PurpleConnection *connection, const char *who, const c
             if (rconv == NULL) rconv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account, who);
             { char idbuf[32]; g_snprintf(idbuf, sizeof idbuf, "%llu", (unsigned long long)timestamp_ms);
               purple_conversation_set_data(rconv, "webos-msg-id", g_strdup(idbuf)); }
+            presage_stash_quote(rconv, q_id, q_from, q_text); // webOS replies: incoming reply card
             purple_serv_got_im(connection, who, text, flags, timestamp_seconds);
         }
     } else {
@@ -128,8 +165,10 @@ void presage_display_text(PurpleConnection *connection, const char *who, const c
         if (!(flags & PURPLE_MESSAGE_SEND)) {
             PurpleConversation *gconv = purple_find_chat(connection, g_str_hash(group));
             if (gconv) { char idbuf[32]; g_snprintf(idbuf, sizeof idbuf, "%llu", (unsigned long long)timestamp_ms);
-                purple_conversation_set_data(gconv, "webos-msg-id", g_strdup(idbuf)); }
+                purple_conversation_set_data(gconv, "webos-msg-id", g_strdup(idbuf));
+                presage_stash_quote(gconv, q_id, q_from, q_text); } // webOS replies: incoming group reply card
         }
         purple_serv_got_chat_in(connection, g_str_hash(group), who, flags, text, timestamp_seconds);
     }
+    g_free(text); g_free(q_id); g_free(q_from); g_free(q_text);
 }

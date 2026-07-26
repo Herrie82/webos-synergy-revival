@@ -131,6 +131,7 @@ pub unsafe extern "C" fn presage_rust_send(
     c_destination: *const std::os::raw::c_char,
     c_message: *const std::os::raw::c_char,
     xfer: *const crate::bridge_structs::PurpleXfer,
+    reply_to_ts: u64,
 ) {
     let destination = std::ffi::CStr::from_ptr(c_destination).to_str().unwrap();
     let recipient = classify_recipient(destination);
@@ -144,6 +145,8 @@ pub unsafe extern "C" fn presage_rust_send(
                     None
                 },
                 xfer: xfer,
+                // webOS replies: the reply target's serviceMessageId (sent timestamp, ms); 0 == none.
+                reply_to_ts: reply_to_ts,
             };
             send_cmd(account, rt, tx, cmd);
         }

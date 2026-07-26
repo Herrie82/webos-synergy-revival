@@ -29,7 +29,7 @@ void presage_rust_main(PurpleAccount *, RustRuntimePtr, char *);
 void presage_rust_destroy(RustRuntimePtr);
 void presage_rust_whoami(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
 void presage_rust_exit(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
-void presage_rust_send(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *, const char *, PurpleXfer *);
+void presage_rust_send(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *, const char *, PurpleXfer *, uint64_t reply_to_ts);
 void presage_rust_get_attachment(PurpleAccount *, RustRuntimePtr, RustChannelPtr, RustAttachmentPtr, PurpleXfer *);
 void presage_rust_drop_attachment(RustAttachmentPtr);
 void presage_rust_get_group_members(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);

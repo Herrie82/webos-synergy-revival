@@ -1,4 +1,40 @@
 /*
+ * webOS chatthread fix: set the `phone_number` blist attribute for every stored contact BEFORE the
+ * account is reported connected.
+ *
+ * getWebosUsername (transport) keys a Signal buddy's webOS ims.value on this attribute: +E.164 when
+ * present, else the raw ACI UUID. The transport enumerates buddies (getFullBuddyList) as soon as it
+ * sees `connected:1`, but the full forward_contacts() only runs later on Received::Contacts, which
+ * waits for the PRIMARY phone to answer request_contacts(). If the enumeration wins that race the
+ * ims.value is written as the ACI, while phone-addressed incoming/outgoing messages resolve to
+ * +E.164 -> the chatthreader's Person.findByIM(address, "type_signal") misses and spawns a duplicate
+ * "+<number>" conversation instead of merging into the contact's thread.
+ *
+ * This closes the race by reading the phone numbers straight from the PERSISTENT local store (no
+ * network, no primary round-trip) and priming the attribute up front. Only phone_number is set here;
+ * display names are left to forward_contacts(). Idempotent - forward_contacts re-runs later.
+ */
+pub async fn prime_contact_phone_numbers<C: presage::store::Store + 'static>(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    manager: &mut presage::Manager<C, presage::manager::Registered>,
+) {
+    let contacts: Vec<presage::model::contacts::Contact> = match manager.store().contacts().await {
+        Err(_) => return,
+        Ok(contacts) => contacts.flatten().collect(),
+    };
+    for presage::model::contacts::Contact { uuid, phone_number, .. } in contacts {
+        if let Some(pn) = phone_number {
+            crate::bridge::append_message(crate::bridge::Message {
+                account: account,
+                who: Some(uuid.to_string()),
+                phone_number: Some(pn.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/*
  * Reads all the contacts from the local store and forwards them to purple.
  *
  * The store is populated once during linking. Entries may be added and updated when receiving messages.

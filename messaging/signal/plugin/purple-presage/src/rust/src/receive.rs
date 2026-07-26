@@ -59,6 +59,8 @@ async fn format_data_message<C: presage::store::Store>(
         presage::libsignal_service::content::DataMessage {
             quote:
                 Some(presage::proto::data_message::Quote {
+                    id: quote_id,
+                    author_aci: quote_author,
                     text: Some(quoted_text),
                     body_ranges: quoted_text_ranges,
                     ..
@@ -69,9 +71,16 @@ async fn format_data_message<C: presage::store::Store>(
         } => {
             let quote = pidgin_flavoured_html_from_body_with_ranges(quoted_text.to_owned(), quoted_text_ranges, get_alias);
             let firstline = quote.split("\n").next().unwrap_or("<message body missing>");
-            // TODO: add ellipsis if quoted_text contains more than one line
             let body = pidgin_flavoured_html_from_body_with_ranges(body_override.unwrap_or(body.to_owned()), body_ranges, get_alias);
-            Some(format!("> {firstline}\n\n{body}"))
+            // webOS replies: rather than folding "> …" into the body, sentinel-encode the quoted
+            // original so the C layer (presage_display_text) can split it out and stash it as
+            // webos-quoted-{id,from,text} on the conversation -- the transport renders those as an
+            // inline reply card (mirrors Telegram/WhatsApp/Signal-send). Wire format:
+            //   \x01 <id> \x1f <from> \x1f <text> \x02 <reply body>
+            // \x01/\x02/\x1f are control chars that never occur in real message text.
+            let qid = quote_id.map(|v| v.to_string()).unwrap_or_default();
+            let qfrom = quote_author.as_ref().map(|a| get_alias(a.to_owned())).unwrap_or_default();
+            Some(format!("\u{1}{qid}\u{1f}{qfrom}\u{1f}{firstline}\u{2}{body}"))
         }
         // Reaction
         presage::libsignal_service::content::DataMessage {
@@ -654,6 +663,14 @@ pub async fn handle_received<S: presage::store::Store + Clone + 'static>(
         presage::model::messages::Received::QueueEmpty => {
             // this happens once after all old messages have been received and processed
             crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("finished catching up.\n"));
+
+            // webOS chatthread fix: prime every stored contact's phone_number attribute from the
+            // persistent store BEFORE reporting connected, so the transport's getFullBuddyList (fired
+            // on connected) writes each Signal buddy's ims.value as +E.164 rather than the raw ACI.
+            // Otherwise phone-addressed messages fail Person.findByIM(type_signal) in the chatthreader
+            // and spawn duplicate "+<number>" conversations. Queued before connected:1 so these run
+            // first on the main thread. See prime_contact_phone_numbers().
+            crate::contacts::prime_contact_phone_numbers(account, manager).await;
 
             // now that the initial sync has completed, the account can be regarded as "connected" since it is ready to send messages
             // see https://github.com/whisperfish/presage/blob/3f55d5f/presage/src/manager/registered.rs#L574 which says:

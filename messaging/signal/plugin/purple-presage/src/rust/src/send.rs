@@ -60,6 +60,7 @@ pub async fn send<C: presage::store::Store + 'static>(
     recipient: crate::structs::Recipient,
     body: Option<String>,
     xfer: *const crate::bridge_structs::PurpleXfer,
+    reply_to_ts: u64,
 ) -> Result<u64, anyhow::Error> {
     // Returns the message's sent timestamp (its serviceMessageId, in ms). The caller emits this back
     // to the transport via "webos-im-outbox-id" so a later reaction can target the user's own message.
@@ -107,6 +108,37 @@ pub async fn send<C: presage::store::Store + 'static>(
     } else {
         body
     };
+
+    // webOS replies: if the app supplied a reply target (the quoted message's sent timestamp), look
+    // that message up in the store and attach a Signal Quote so the reply threads on other clients.
+    // This is the structured counterpart to the "@needle:" stopgap above; when both are present this
+    // (explicit target) wins. 0 == not a reply.
+    if reply_to_ts != 0 {
+        let thread = match recipient {
+            crate::structs::Recipient::Contact(uuid) => presage::store::Thread::Contact(presage::libsignal_service::protocol::ServiceId::Aci(uuid.into())),
+            crate::structs::Recipient::ContactByPhone(_) => unreachable!("phone recipient is resolved to a UUID before send()"),
+            crate::structs::Recipient::Group(key) => presage::store::Thread::Group(key),
+        };
+        if let Ok(Some(quoted_message)) = manager.store().message(&thread, reply_to_ts).await {
+            let quoted_body = match &quoted_message.body {
+                presage::libsignal_service::content::ContentBody::DataMessage(dm) => dm.body.clone(),
+                presage::libsignal_service::content::ContentBody::SynchronizeMessage(sm) => {
+                    sm.sent.as_ref().and_then(|sent| sent.message.as_ref().and_then(|dm| dm.body.clone()))
+                }
+                _ => None,
+            };
+            let author = quoted_message.metadata.sender.raw_uuid();
+            data_message.quote = Some(presage::proto::data_message::Quote {
+                id: Some(reply_to_ts),
+                author_aci_binary: Some(author.as_bytes().to_vec()),
+                author_aci: Some(author.to_string()),
+                text: quoted_body,
+                attachments: vec![], // TODO
+                body_ranges: vec![],
+                r#type: Some(0), // type: NORMAL
+            });
+        }
+    }
 
     if xfer != std::ptr::null_mut() {
         let path = crate::bridge::xfer_get_local_filename(xfer);
