@@ -420,6 +420,10 @@ typedef struct {
 	                                   ACTUAL channel. The app's reaction "peer" is unreliable (sometimes the
 	                                   sender's username, sometimes the channel display name), so we never
 	                                   trust it - we look the channel up by the reacted message's id here. */
+	GHashTable *webos_quote_cache;  /* webOS replies: msg_id(str) -> "author\x1ftext" for every message we
+	                                   deliver, so an incoming reply (whose Discord payload carries only a
+	                                   message_reference id, not the full referenced_message) can rebuild the
+	                                   quoted original's author + text. Bounded. */
 	GQueue *received_message_queue; /* A store of the last 10 received message id's for de-dup */
 
 	GHashTable *new_users;
@@ -2887,42 +2891,92 @@ discord_stash_webos_msgid(PurpleConversation *conv, guint64 msg_id)
 	}
 }
 
-/* webOS replies: when an incoming message quotes another (Discord referenced_message), stash the
- * quoted original's author/text/id on the same conversation as webos-msg-id, so the transport records
- * a proper inline quote card (the Messaging app renders it above the reply) instead of nothing. The
- * quoted-id matches the webos-msg-id format (decimal snowflake string). No-op when not a reply. Strings
- * are g_strdup'd here and freed by the transport after it reads them. Mirrors the Telegram prpl. */
+/* webOS replies: remember every delivered message's author + text by id, so an incoming reply - whose
+ * Discord gateway payload usually carries only a `message_reference` id (not the full referenced_message)
+ * - can rebuild the quoted original. Bounded. */
 static void
-discord_stash_webos_quote(PurpleConversation *conv, DiscordAccount *da, DiscordGuild *guild, DiscordChannel *channel, JsonObject *referenced_message)
+discord_cache_quote_content(DiscordAccount *da, guint64 msg_id, const gchar *author, const gchar *content)
 {
-	if (conv == NULL || referenced_message == NULL) {
+	if (da == NULL || da->webos_quote_cache == NULL || msg_id == 0) {
 		return;
 	}
-	const gchar *quoted_id = json_object_get_string_member(referenced_message, "id");
-	if (quoted_id == NULL || *quoted_id == '\0') {
+	gchar *plain = content ? g_strdup(content) : g_strdup("");
+	for (gchar *p = plain; *p != '\0'; p++) {
+		if (*p == '\n' || *p == '\r' || *p == '\x1f') {
+			*p = ' ';
+		}
+	}
+	gchar *val = g_strdup_printf("%s\x1f%s", author ? author : "", plain);
+	g_free(plain);
+	if (g_hash_table_size(da->webos_quote_cache) > 4000) {
+		g_hash_table_remove_all(da->webos_quote_cache);
+	}
+	g_hash_table_replace(da->webos_quote_cache, from_int(msg_id), val);
+}
+
+/* webOS replies: when an incoming message is a reply, stash the quoted original's author/text/id on the
+ * conversation (like webos-msg-id) so the transport renders an inline quote card. Discord may include the
+ * full `referenced_message` inline, or (more often over the gateway) just a `message_reference` id - in
+ * which case we recover author + text from our own content cache. No-op when not a reply. Strings are
+ * g_strdup'd here and freed by the transport after it reads them. */
+static void
+discord_stash_webos_quote(PurpleConversation *conv, DiscordAccount *da, DiscordGuild *guild, DiscordChannel *channel, JsonObject *data)
+{
+	if (conv == NULL || data == NULL) {
 		return;
 	}
 
-	JsonObject *reply_author = json_object_get_object_member(referenced_message, "author");
-	DiscordUser *reply_user = discord_upsert_user(da->new_users, reply_author);
-	gchar *reply_name = discord_get_display_name_or_unk(da, guild, channel, reply_user, reply_author);
+	const gchar *quoted_id = NULL;
+	gchar *quoted_from = NULL; /* owned */
+	gchar *quoted_text = NULL; /* owned */
 
-	const gchar *raw = json_object_get_string_member(referenced_message, "content");
-	gchar *quoted_text;
-	if (raw && *raw) {
-		quoted_text = discord_replace_mentions_bare(da, guild, g_strdup(raw));
+	JsonObject *referenced_message = json_object_get_object_member(data, "referenced_message");
+	if (referenced_message != NULL) {
+		quoted_id = json_object_get_string_member(referenced_message, "id");
+		JsonObject *reply_author = json_object_get_object_member(referenced_message, "author");
+		DiscordUser *reply_user = discord_upsert_user(da->new_users, reply_author);
+		quoted_from = discord_get_display_name_or_unk(da, guild, channel, reply_user, reply_author);
+		const gchar *raw = json_object_get_string_member(referenced_message, "content");
+		quoted_text = (raw && *raw) ? discord_replace_mentions_bare(da, guild, g_strdup(raw)) : g_strdup(_("[attachment]"));
 	} else {
-		quoted_text = g_strdup(_("[attachment]"));
+		/* gateway reply: only a message_reference id -> recover author + text from our cache */
+		JsonObject *mref = json_object_get_object_member(data, "message_reference");
+		if (mref == NULL || !json_object_has_member(mref, "message_id")) {
+			return;
+		}
+		quoted_id = json_object_get_string_member(mref, "message_id");
+		if (quoted_id == NULL || *quoted_id == '\0') {
+			return;
+		}
+		const gchar *cached = da->webos_quote_cache ? g_hash_table_lookup(da->webos_quote_cache, quoted_id) : NULL;
+		if (cached != NULL) {
+			gchar **parts = g_strsplit(cached, "\x1f", 2);
+			quoted_from = g_strdup(parts[0] ? parts[0] : "");
+			quoted_text = g_strdup((parts[1] && *parts[1]) ? parts[1] : _("[message]"));
+			g_strfreev(parts);
+		} else {
+			quoted_from = g_strdup("");
+			quoted_text = g_strdup(_("[message]"));
+		}
 	}
-	/* single-line it for the compact quote card */
-	for (gchar *p = quoted_text; *p != '\0'; p++) {
+
+	if (quoted_id == NULL || *quoted_id == '\0') {
+		g_free(quoted_from);
+		g_free(quoted_text);
+		return;
+	}
+	for (gchar *p = quoted_text; p != NULL && *p != '\0'; p++) {
 		if (*p == '\n' || *p == '\r') {
 			*p = ' ';
 		}
 	}
 
 	purple_conversation_set_data(conv, "webos-quoted-text", quoted_text);
-	purple_conversation_set_data(conv, "webos-quoted-from", reply_name);
+	if (quoted_from != NULL && *quoted_from != '\0') {
+		purple_conversation_set_data(conv, "webos-quoted-from", quoted_from);
+	} else {
+		g_free(quoted_from);
+	}
 	purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(quoted_id));
 }
 
@@ -3376,7 +3430,8 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				 * cannot pre-stash - that first message just won't be reaction-targetable (acceptable). */
 				PurpleConversation *imconv = conv ? conv : PURPLE_CONVERSATION(purple_conversations_find_im_with_account(merged_username, da->account));
 				discord_stash_webos_msgid(imconv, msg_id);
-				discord_stash_webos_quote(imconv, da, guild, channel, referenced_message);
+				discord_stash_webos_quote(imconv, da, guild, channel, data);
+				discord_cache_quote_content(da, msg_id, merged_username, escaped_content);
 				purple_serv_got_im(da->pc, merged_username, escaped_content, flags, timestamp);
 			} else if (msg_type == MESSAGE_CALL) {
 				gchar *call_txt = g_strdup_printf(_("%s started a call"), merged_username);
@@ -3572,7 +3627,8 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				 * stashing webos-msg-id on it now lets the transport record serviceMessageId for the
 				 * received channel message (needed for a reaction to attach to it). */
 				discord_stash_webos_msgid(conv, msg_id);
-				discord_stash_webos_quote(conv, da, guild, channel, referenced_message);
+				discord_stash_webos_quote(conv, da, guild, channel, data);
+				discord_cache_quote_content(da, msg_id, name, escaped_content);
 				purple_serv_got_chat_in(da->pc, discord_chat_hash(channel_id), name, flags, escaped_content, timestamp);
 			}
 
@@ -6554,6 +6610,7 @@ discord_login(PurpleAccount *account)
 	discord_load_received_ids(da);   /* webOS: restore dedup set so a re-login doesn't re-backfill */
 	da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->msgid_to_channel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	da->webos_quote_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->received_message_queue = g_queue_new();
 
 	/* TODO make these the roots of all discord data */
@@ -6667,6 +6724,10 @@ discord_close(PurpleConnection *pc)
 	if (da->msgid_to_channel != NULL) {
 		g_hash_table_unref(da->msgid_to_channel);
 		da->msgid_to_channel = NULL;
+	}
+	if (da->webos_quote_cache != NULL) {
+		g_hash_table_unref(da->webos_quote_cache);
+		da->webos_quote_cache = NULL;
 	}
 
 	g_hash_table_unref(da->new_users);
@@ -7499,6 +7560,8 @@ discord_start_socket(DiscordAccount *da)
 		da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	if (da->msgid_to_channel == NULL)
 		da->msgid_to_channel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (da->webos_quote_cache == NULL)
+		da->webos_quote_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	if (da->received_message_queue == NULL)
 		da->received_message_queue = g_queue_new();
 	if (da->new_users == NULL)
