@@ -42,10 +42,26 @@ for f in images/whatsapp-32x32.png images/whatsapp-48x48.png; do
 done
 nr "mount -o remount,ro /dev/mapper/store-root / || true"
 
-echo "== 3. stage opus/ogg/opusfile runtime libs into backend/lib =="
+echo "== 3. stage opus/ogg/opusfile runtime libs into backend/lib (size-verified) =="
+# A dropped novacom connection ("unexpected EOF from server") mid-`put` leaves a TRUNCATED (often
+# 0-byte) file on the device with NO error. A 0-byte libopus.so.0 / libopusfile.so.0 then makes the
+# loader reject EVERY plugin that needs it ("libopus.so.0: file too short") -> libtelegram-tdlib.so
+# AND libwhatsmeow.so silently fail to register their prpl -> the transport aborts at that account's
+# login. So verify the on-device byte count matches the source and retry; hard-fail if it can't.
 nr "mkdir -p $BACKEND_LIB"
+put_verify() {  # $1 = local source (follows symlinks), $2 = device dest path
+  local want got; want=$(wc -c < "$1" 2>/dev/null)
+  [ -n "$want" ] && [ "$want" -gt 0 ] || { echo "  !! source $1 missing/empty - skip"; return 1; }
+  local t; for t in 1 2 3; do
+    novacom put "file://$2" < "$1"
+    got=$(nr "wc -c < $2 2>/dev/null" | tr -cd '0-9')
+    [ "$got" = "$want" ] && { echo "  staged $(basename "$2") ($want bytes)"; return 0; }
+    echo "  !! $(basename "$2") truncated on-device ($got != $want) - retry $t/3 (novacom EOF?)"
+  done
+  echo "  !!! FAILED to stage $(basename "$2") intact - plugins needing it will NOT load"; return 1
+}
 for L in libopusfile.so.0 libopus.so.0 libogg.so.0; do
-  [ -f "$STAGING/lib/$L" ] && novacom put "file://$BACKEND_LIB/$L" < "$STAGING/lib/$L" && echo "  staged $L"
+  [ -f "$STAGING/lib/$L" ] && put_verify "$STAGING/lib/$L" "$BACKEND_LIB/$L"
 done
 
 echo "== 4. drop libwhatsmeow.so into the live backend plugin dir =="
