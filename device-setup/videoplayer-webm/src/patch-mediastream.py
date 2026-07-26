@@ -17,7 +17,7 @@ MIN_NEW = ('if(/\\.(webm|mkv)(\\?|#|$)/i.test(url)){this.player.removeAttribute(
            'while(this.player.firstChild){this.player.removeChild(this.player.firstChild);}'
            'var _msrc=this.player.ownerDocument.createElement("source");'
            '_msrc.setAttribute("src",url);_msrc.setAttribute("type","video/ogg");'
-           'this.player.appendChild(_msrc);}else{this.player.src=url;}')
+           'this.player.appendChild(_msrc);this.player.load();}else{this.player.src=url;}')
 
 PRETTY_OLD = "\t\tthis.player.src = url;"
 PRETTY_NEW = ("\t\t// WebKit's supportsType() rejects video/webm; hand it a <source> mime it accepts\n"
@@ -30,6 +30,7 @@ PRETTY_NEW = ("\t\t// WebKit's supportsType() rejects video/webm; hand it a <sou
               "\t\t\t_msrc.setAttribute('src', url);\n"
               "\t\t\t_msrc.setAttribute('type', 'video/ogg');\n"
               "\t\t\tthis.player.appendChild(_msrc);\n"
+              "\t\t\tthis.player.load(); // dynamically-appended <source> needs an explicit load() (setting .src auto-loads; appendChild does not)\n"
               "\t\t} else {\n"
               "\t\t\tthis.player.src = url;\n"
               "\t\t}")
