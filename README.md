@@ -70,7 +70,7 @@ badges · **Voice / Video call** = calls. Each capability is shown as **Send / R
 | **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
@@ -81,12 +81,13 @@ Notes:
 - **Replies** render as an inline quote card above the message (not the raw `> …` / `┌──@name`
   text the networks fold in) and work **both ways**: incoming replies show the quoted original, and
   replies you compose **from the Messaging app thread on the network** so other clients see them
-  linked to the original — **confirmed end-to-end on device for Telegram, Discord, WhatsApp and
-  Teams** (including replies to your **own** sent messages). Each prpl stashes the quoted
+  linked to the original — **confirmed end-to-end on device for Telegram, Discord, WhatsApp, Teams
+  and Facebook** (including replies to your **own** sent messages). Each prpl stashes the quoted
   `text`/`from`/`id` on the conversation (`webos-quoted-*`) which the transport persists; the reverse
   path stashes `webos-reply-to` so the prpl sets the network's native reply (Telegram `reply_to`,
-  Discord `message_reference`, WhatsApp `ContextInfo`, Teams inline `<blockquote …/Reply>`).
-  **Facebook** and **Signal** replies are not done yet.
+  Discord `message_reference`, WhatsApp `ContextInfo`, Teams inline `<blockquote …/Reply>`, Facebook
+  `MessageApplication.QuotedMessage` on E2EE threads / `ReplyMetaData` on plaintext). Only **Signal**
+  (currently disabled) is without replies.
 - **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
   line) and work **both ways**: reactions others place on your messages are received as badges, and
   reactions you place **from the Messaging app are transmitted to the network** (add / change /
