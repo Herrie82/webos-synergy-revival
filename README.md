@@ -55,26 +55,38 @@ same verified plumbing.
 ## Messaging / IM connectors
 
 Synergy **IM** account providers, each bridging a `libpurple` protocol plugin into the stock
-Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Images / Audio / Video**
-= attachments · **Reactions** = inline reaction badges (both on received and on your own messages)
-· **Voice / Video call** = calls. ✅ works · 🟡 partial / built-not-yet-verified ·
-❔ not documented as verified on webOS · ❌ none.
+Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Replies** = inline quote
+card + threaded reply · **Images / Audio / Video** = attachments · **Reactions** = inline reaction
+badges · **Voice / Video call** = calls. Each capability is shown as **Send / Receive** (for calls:
+**place / answer**). ✅ works · 🟡 partial / built-not-yet-verified · ❔ not yet verified on webOS
+· ❌ none · ⛔ built but currently disabled.
 
-| Connector | Plugin | Auth | IM | Images | Audio | Video | Reactions | Voice call | Video call |
-|---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| **Teams** | `purple-teams` | OAuth device-code → refresh_token | ✅ | ❔ | ❔ | ❔ | ✅ | ❌ | ❌ |
-| **Telegram** | `tdlib-purple` (TDLib + libtgvoip) | phone + login code | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
-| **Signal** | `purple-presage` (Rust presage) | phone register / device link | ✅ | ✅ | ❔ | ❔ | ✅ | 🟡 | ❌ |
-| **Discord** | `purple-discord` (+ libqrencode) | email+pw / QR / paste-token | ✅ | ✅ | ❔ | ❔ | ❌ | 🟡 | ❌ |
-| **WhatsApp** | `purple-gowhatsapp` (whatsmeow, Go) + `wacallm` | phone + QR / pairing code | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ❌ |
-| **Google Chat** | `purple-googlechat` (+ protobuf-c) | 5 pasted browser cookies | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** | `purple-gometa` (mautrix-meta, Go) | email + password + 2FA code (in Messaging chat) | ✅ | ✅ | ❔ | ❔ | ✅ | ❌ | ❌ |
+| Connector | IM || Replies || Images || Audio || Video || Reactions || Voice call || Video call ||
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **(direction)** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Place** | **Answ** | **Place** | **Answ** |
+| **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ |
+| **Signal** ⛔ (`purple-presage`) | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ |
+| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
-  libpurple 2.14 + ssl-openssl (Teams-port) backend. **WhatsApp** (IM + calls) and **Signal** (IM)
-  are verified end-to-end on device; Teams is the reference deployment; the rest are built but most
-  have not yet been ticked off end-to-end on device.
+  libpurple 2.14 + ssl-openssl (Teams-port) backend. **Teams, Telegram, Discord, WhatsApp and
+  Facebook** are the active connectors verified end-to-end on device (IM + reactions + replies);
+  **WhatsApp** also has working voice calls. **Signal** is built but currently disabled (see below);
+  **Google Chat** is built but largely untested on device.
+- **Replies** render as an inline quote card above the message (not the raw `> …` / `┌──@name`
+  text the networks fold in) and work **both ways**: incoming replies show the quoted original, and
+  replies you compose **from the Messaging app thread on the network** so other clients see them
+  linked to the original — **confirmed end-to-end on device for Telegram, Discord, WhatsApp and
+  Teams** (including replies to your **own** sent messages). Each prpl stashes the quoted
+  `text`/`from`/`id` on the conversation (`webos-quoted-*`) which the transport persists; the reverse
+  path stashes `webos-reply-to` so the prpl sets the network's native reply (Telegram `reply_to`,
+  Discord `message_reference`, WhatsApp `ContextInfo`, Teams inline `<blockquote …/Reply>`).
+  **Facebook** and **Signal** replies are not done yet.
 - **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
   line) and work **both ways**: reactions others place on your messages are received as badges, and
   reactions you place **from the Messaging app are transmitted to the network** (add / change /
@@ -89,12 +101,15 @@ Notes:
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
-- **Signal**: IM **works on device** (send/receive). Calling is second-most advanced: incoming
-  calls ring the Phone app (signaling staged on device) and the SRTP-GCM + Opus **media loopback
-  passes on device**; a real two-way call is still unverified.
+- **Signal** is **currently disabled** (⛔): `libpresage` SIGABRT-crash-loops the whole transport on
+  login (uncaught "Couldn't find prpl" panic), taking every account offline, so the plugin is set
+  aside on device pending a transport try/catch + a presage panic fix. IM had previously been
+  verified end-to-end; calling was second-most advanced (incoming ring + SRTP-GCM/Opus media
+  loopback passed on device). Nothing Signal is loadable until the crash-loop is resolved.
 - **WhatsApp**: IM works, image/audio/video **attachments are confirmed on device**, and **voice
-  calls work on device** via the `wacallm` media bridge — incoming/outgoing calls connect, and both
-  directions carry audio (mic capture works). What remains is **audio-quality tuning**. No video
+  calls work on device** — calling now runs **inside `purple-combined`** (the `meowcaller` MLow/SRTP
+  path) on the same messaging session, so one pairing does messaging + calling and the standalone
+  `wacallm` companion is retired. Incoming/outgoing calls connect with two-way audio. No video
   calls. (Telegram image attachments are also confirmed on device.)
 - **Discord** calling is a **compiles/links/self-tests-on-ARM scaffold** (incl. the mandatory
   DAVE E2EE stack) that has **never completed a live voice handshake**.
