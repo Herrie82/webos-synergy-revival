@@ -47,6 +47,7 @@ INCLUDES="
   -I$DEPS/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
   -I$TIDY/include
   -I$COMPAT
+  -I$GLIB_STAGING/include
   $GLIB_CFLAGS
 "
 
@@ -82,6 +83,7 @@ $CXX $CXXFLAGS $OBJS -o "$OUT" \
   $LIBDIRS $RPATHLINK -Wl,--allow-shlib-undefined \
   -lmojodb -lmojocore -lmojoluna -llunaservice \
   -lpurple -ltidy -lrt -lpthread \
+  -lopus -logg \
   $GLIB_LIBS
 
 echo "=== Done: $OUT ==="
