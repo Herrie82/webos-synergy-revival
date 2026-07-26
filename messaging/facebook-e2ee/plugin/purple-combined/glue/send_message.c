@@ -2,7 +2,7 @@
 #include "libwhatsmeow.h"
 
 static int
-send_message(PurpleConnection *pc, const gchar *who, const gchar *message, gboolean is_group) {
+send_message(PurpleConnection *pc, const gchar *who, const gchar *message, gboolean is_group, const gchar *reply_to) {
     char *msg = NULL;
     if (purple_account_get_bool(purple_connection_get_account(pc), GOWHATSAPP_BRIDGE_COMPATIBILITY_OPTION, FALSE)) {
         // Bridge Mode: Spectrum allegedly does not do HTML and bitlbee is probably plain-text anyways, so use message as it is, preserving new-lines
@@ -15,7 +15,8 @@ send_message(PurpleConnection *pc, const gchar *who, const gchar *message, gbool
     }
     PurpleAccount *account = purple_connection_get_account(pc);
     char *w = (char *)who; // cgo does not suport const
-    int ret = gowhatsapp_go_send_message(account, w, msg, is_group);
+    char *r = (char *)(reply_to ? reply_to : ""); // webOS replies: "" == not a reply
+    int ret = gowhatsapp_go_send_message(account, w, msg, is_group, r);
     g_free(msg);
     return ret;
 }
@@ -25,7 +26,16 @@ gowhatsapp_send_im(PurpleConnection *pc, const gchar *who, const gchar *message,
     if (is_command(message)) {
         return execute_command(pc, message, who, NULL);
     } else {
-        return send_message(pc, who, message, FALSE);
+        // webOS replies: the transport stashes the reply target's serviceMessageId (whatsmeow StanzaID)
+        // as "webos-reply-to" on the conversation before serv_send_im; read + clear it and pass it down.
+        PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, who, purple_connection_get_account(pc));
+        gchar *reply_to = conv ? (gchar *)purple_conversation_get_data(conv, "webos-reply-to") : NULL;
+        int ret = send_message(pc, who, message, FALSE, reply_to);
+        if (reply_to != NULL) {
+            purple_conversation_set_data(conv, "webos-reply-to", NULL);
+            g_free(reply_to);
+        }
+        return ret;
     }
 }
 
@@ -40,7 +50,13 @@ gowhatsapp_send_chat(
             if (is_command(message)) {
                 return execute_command(pc, message, who, conv);
             } else {
-                int ret = send_message(pc, who, message, TRUE);
+                // webOS replies: read + clear the reply target the transport stashed on this chat conv.
+                gchar *reply_to = (gchar *)purple_conversation_get_data(conv, "webos-reply-to");
+                int ret = send_message(pc, who, message, TRUE, reply_to);
+                if (reply_to != NULL) {
+                    purple_conversation_set_data(conv, "webos-reply-to", NULL);
+                    g_free(reply_to);
+                }
                 if (ret > 0) {
                     // Group chats need an explicit local echo since the implicit echo is implemented for direct messages only.
                     // See https://keep.imfreedom.org/pidgin/pidgin/file/v2.14.12/libpurple/conversation.c#l191.

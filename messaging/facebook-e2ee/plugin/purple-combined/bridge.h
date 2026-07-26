@@ -59,6 +59,9 @@ struct gowhatsapp_message {
     char *remoteJid; /// conversation identifier (may be a single contact or a group)
     char *senderJid; /// message author's identifier (useful in group chats)
     char *messageId; /// message ID
+    char *quotedText; /// webOS replies: replied-to original's text (NULL if not a reply)
+    char *quotedFrom; /// webOS replies: replied-to original's author display name
+    char *quotedId; /// webOS replies: replied-to original's message ID (== StanzaID)
     char *text; /// the message payload (interpretation depends on type)
     char *pairing_code; /// 6-character pairing code
     char *pairing_qrdata; /// the pairing QR-code raw data

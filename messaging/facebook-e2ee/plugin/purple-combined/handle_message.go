@@ -104,19 +104,30 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 		}
 	}
 	text += message.GetConversation()
+	var quotedText, quotedFrom, quotedId string
 	{
 		etm := message.ExtendedTextMessage
 		if etm != nil {
 			// message containing quote or link to group
 			// link messages have message.Conversation set to nil anyway
 			// it should be safe to overwrite here
-			// quoted message repeats the text
+			// webOS replies: capture the quoted-original as STRUCTURED data (author/text/StanzaID) so the
+			// transport renders an inline quote card, instead of folding "> ..." into the message body.
 			ci := etm.ContextInfo
 			if ci != nil {
 				cm := ci.QuotedMessage
-				if cm != nil && cm.Conversation != nil {
-					quotelines := strings.Split(*cm.Conversation, "\n")
-					text = "> " + strings.Join(quotelines, "\n> ") + "\n"
+				if cm != nil {
+					quotedId = ci.GetStanzaID()
+					if p := ci.GetParticipant(); p != "" {
+						if pjid, err := types.ParseJID(p); err == nil {
+							quotedFrom = purple_get_alias(handler.account, handler.lidToPn(pjid, "resolving quote author").ToNonAD().String())
+						}
+					}
+					qt := cm.GetConversation()
+					if qt == "" {
+						qt = cm.GetExtendedTextMessage().GetText()
+					}
+					quotedText = strings.ReplaceAll(strings.ReplaceAll(qt, "\r", " "), "\n", " ")
 				}
 			}
 			if etm.Text != nil {
@@ -249,7 +260,7 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 			text = "[EDIT] " + text
 		}
 		// note: info.PushName always denotes the sender (not the chat)
-		purple_display_text_message(handler.account, info.MessageSource.Chat.ToNonAD().String(), info.MessageSource.IsGroup, false, info.MessageSource.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID)
+		purple_display_text_message(handler.account, info.MessageSource.Chat.ToNonAD().String(), info.MessageSource.IsGroup, false, info.MessageSource.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID, quotedText, quotedFrom, quotedId)
 	}
 	if !isEdit { // edited messages contain the changed texts, but attachments are absent since they cannot be changed
 		handler.handle_attachment(message, info.ID, info.MessageSource, info.Timestamp)

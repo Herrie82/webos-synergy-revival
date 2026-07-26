@@ -1,8 +1,24 @@
 #include "gowhatsapp.h"
 #include "constants.h"
 
+/* webOS replies: stash the quoted-original (text/from/id) on a conversation right beside webos-msg-id,
+ * so the transport records an inline quote card instead of the "> ..." fold we used to put in the body.
+ * No-op when the message is not a reply. Strings are g_strdup'd here and freed by the transport. */
+static void gowhatsapp_stash_webos_quote(PurpleConversation *conv, const gchar *quotedText, const gchar *quotedFrom, const gchar *quotedId) {
+    if (conv == NULL || quotedText == NULL || *quotedText == '\0') {
+        return;
+    }
+    purple_conversation_set_data(conv, "webos-quoted-text", g_strdup(quotedText));
+    if (quotedFrom != NULL && *quotedFrom != '\0') {
+        purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(quotedFrom));
+    }
+    if (quotedId != NULL && *quotedId != '\0') {
+        purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(quotedId));
+    }
+}
+
 void gowhatsapp_display_text_message(
-    PurpleAccount *account, 
+    PurpleAccount *account,
     const gchar * senderJid,
     const gchar * remoteJid,
     const gchar * text,
@@ -12,6 +28,9 @@ void gowhatsapp_display_text_message(
     const gchar * name,
     PurpleMessageFlags flags,
     const gchar * messageId,
+    const gchar * quotedText,
+    const gchar * quotedFrom,
+    const gchar * quotedId,
     const gboolean escape
 ) {
     g_return_if_fail(account != NULL);
@@ -75,6 +94,9 @@ void gowhatsapp_display_text_message(
         if (gconv != NULL && (flags & PURPLE_MESSAGE_RECV) && messageId != NULL && *messageId != '\0') {
             purple_conversation_set_data(gconv, "webos-msg-id", g_strdup(messageId));
         }
+        if (gconv != NULL && (flags & PURPLE_MESSAGE_RECV)) {
+            gowhatsapp_stash_webos_quote(gconv, quotedText, quotedFrom, quotedId);
+        }
         purple_serv_got_chat_in(connection, g_str_hash(remoteJid), senderJid, flags, text_with_id, timestamp);
     } else {
         if (flags & PURPLE_MESSAGE_SEND) {
@@ -91,6 +113,7 @@ void gowhatsapp_display_text_message(
             if ((flags & PURPLE_MESSAGE_REMOTE_SEND) && messageId != NULL && *messageId != '\0') {
                 purple_conversation_set_data(conv, "webos-msg-id", g_strdup(messageId));
             }
+            gowhatsapp_stash_webos_quote(conv, quotedText, quotedFrom, quotedId);
             purple_conv_im_write(purple_conversation_get_im_data(conv), remoteJid, text_with_id, flags, timestamp);
         } else {
             if (purple_account_get_bool(account, GOWHATSAPP_UPDATE_BUDDY_ON_MESSAGE_OPTION, TRUE)) {
@@ -103,6 +126,7 @@ void gowhatsapp_display_text_message(
             if (messageId != NULL && *messageId != '\0') {
                 purple_conversation_set_data(conv, "webos-msg-id", g_strdup(messageId));
             }
+            gowhatsapp_stash_webos_quote(conv, quotedText, quotedFrom, quotedId);
             purple_serv_got_im(connection, remoteJid, text_with_id, flags, timestamp);
         }
     }

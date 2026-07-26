@@ -69,7 +69,7 @@ func (handler *Handler) prepare_reply(chat types.JID, text string) (bool, *Cache
  *
  * Returns true on success.
  */
-func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, message string) bool {
+func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, message string, replyTo string) bool {
 	msg := &waE2E.Message{Conversation: &message}
 	expiration_days := purple_get_int(handler.account, C.GOWHATSAPP_EXPIRATION_OPTION, 0)
 	expiration_seconds := uint32(expiration_days) * 24 * 60 * 60
@@ -84,6 +84,14 @@ func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, mes
 		}
 	}
 	is_reply, cached_message, message := handler.prepare_reply(recipient, message)
+	// webOS replies: the Messaging app sends the reply target's serviceMessageId out-of-band
+	// (webos-reply-to) rather than the "?reply <id>" text command. Resolve it from the cache and quote it.
+	if !is_reply && replyTo != "" {
+		cached_message = handler.lookup_cached_message_by_id(replyTo)
+		if cached_message != nil {
+			is_reply = true
+		}
+	}
 	if is_reply {
 		if cached_message == nil {
 			purple_display_system_message(handler.account, recipient.ToNonAD().String(), isGroup, "Unable to prepare reply: Quoted message not found in cache.")
@@ -117,7 +125,7 @@ func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, mes
 			ownJid := handler.client.Store.ID.ToNonAD().String()
 			recipientJid := recipient.ToNonAD().String()
 			msgID := send_response.ID
-			purple_display_text_message(handler.account, recipientJid, isGroup, true, ownJid, nil, send_response.Timestamp, message, &msgID)
+			purple_display_text_message(handler.account, recipientJid, isGroup, true, ownJid, nil, send_response.Timestamp, message, &msgID, "", "", "")
 		}
 		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
 		// webOS outbox-id: hand the server id of this app-sent message to the transport so its Outbox
@@ -183,7 +191,7 @@ func (handler *Handler) send_reaction(peer string, targetId string, emoji string
  *
  * Returns true on success.
  */
-func (handler *Handler) send_message(who string, message string, isGroup bool) bool {
+func (handler *Handler) send_message(who string, message string, isGroup bool, replyTo string) bool {
 	recipient, err := parseJID(who)
 	if err != nil {
 		purple_error(handler.account, fmt.Sprintf("%#v", err), ERROR_FATAL)
@@ -192,17 +200,18 @@ func (handler *Handler) send_message(who string, message string, isGroup bool) b
 		// I am interacting with this recipient. Mark all messages they have sent as "read".
 		handler.mark_read_if_on_answer(recipient)
 		// now do the actual sending
-		if handler.is_link_only_message(message) {
+		if handler.is_link_only_message(message) && replyTo == "" {
 			// this is a link-only message – try to send the linked file, if compatible
+			// (a reply must keep its quote metadata, so replies always go the text path)
 			if handler.send_link_message(recipient, isGroup, message) {
 				return true
 			} else {
 				// sending the link message failed. just send as a normal text message
-				return handler.send_text_message(recipient, isGroup, message)
+				return handler.send_text_message(recipient, isGroup, message, replyTo)
 			}
 		} else {
 			// this is a normal message
-			return handler.send_text_message(recipient, isGroup, message)
+			return handler.send_text_message(recipient, isGroup, message, replyTo)
 		}
 	}
 }

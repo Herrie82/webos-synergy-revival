@@ -145,14 +145,14 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 		chat := handler.lidToPn(bcm.From, "handling call offer")
 		sender := handler.lidToPn(bcm.CallCreator, "handling call offer")
 		text := "This contact is trying to call you, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), false, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil)
+		purple_display_text_message(handler.account, chat.ToNonAD().String(), false, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil, "", "", "")
 	case *events.CallOfferNotice:
 		// same as CallOffer, but is a group
 		bcm := evt.BasicCallMeta
 		chat := handler.lidToPn(bcm.From, "handling call offer notice")
 		sender := handler.lidToPn(bcm.CallCreator, "handling call offer notice")
 		text := "This contact is trying to make you notice a call, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), true, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil)
+		purple_display_text_message(handler.account, chat.ToNonAD().String(), true, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil, "", "", "")
 	case *events.CallRelayLatency:
 		// related to calls. ignore silently.
 	case *events.CallTerminate:
@@ -173,7 +173,7 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 		info := evt.Info
 		source := info.MessageSource
 		text := fmt.Sprintf("sent an undecryptable %s message. Check the message on your main device.", evt.UnavailableType)
-		purple_display_text_message(handler.account, source.Chat.ToNonAD().String(), source.IsGroup, false, source.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID)
+		purple_display_text_message(handler.account, source.Chat.ToNonAD().String(), source.IsGroup, false, source.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID, "", "", "")
 	default:
 		log.Warnf("Event type not handled: %#v", rawEvt)
 	}

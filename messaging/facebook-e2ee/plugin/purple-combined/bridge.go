@@ -94,20 +94,23 @@ func gowhatsapp_go_account_removed(account *PurpleAccount, purple_user_dir *C.ch
 }
 
 //export gowhatsapp_go_send_message
-func gowhatsapp_go_send_message(account *PurpleAccount, who *C.char, message *C.char, is_group C.int) int {
+func gowhatsapp_go_send_message(account *PurpleAccount, who *C.char, message *C.char, is_group C.int, reply_to *C.char) int {
 	handler, ok := handlers[account]
 	if ok {
+		// webOS replies: reply_to = the serviceMessageId (whatsmeow StanzaID) of the message this one
+		// replies to, "" for a normal message. Resolved to a QuotedMessage in send_text_message.
+		replyTo := C.GoString(reply_to)
 		setting := purple_get_string(handler.account, C.GOWHATSAPP_ECHO_OPTION, C.GOWHATSAPP_ECHO_CHOICE_ON_SUCCESS)
 		if setting == C.GoString(C.GOWHATSAPP_ECHO_CHOICE_INTERNAL) {
 			// blocking mode
-			if handler.send_message(C.GoString(who), C.GoString(message), Cint_to_bool(is_group)) {
+			if handler.send_message(C.GoString(who), C.GoString(message), Cint_to_bool(is_group), replyTo) {
 				return 1 // indicate success for purple
 			} else {
 				return -1 // indicate error for purple
 			}
 		} else {
 			// non-blocking mode
-			go handler.send_message(C.GoString(who), C.GoString(message), Cint_to_bool(is_group))
+			go handler.send_message(C.GoString(who), C.GoString(message), Cint_to_bool(is_group), replyTo)
 			if setting == C.GoString(C.GOWHATSAPP_ECHO_CHOICE_IMMEDIATELY) {
 				// indicate immediate success, message is echoed back into conversation by purple
 				return 1
@@ -443,7 +446,7 @@ func purple_disconnected(account *PurpleAccount) {
  * This will display a text message.
  * Single participants and group chats.
  */
-func purple_display_text_message(account *PurpleAccount, remoteJid string, isGroup bool, isOutgoing bool, senderJid string, pushName *string, timestamp time.Time, text string, id *string) {
+func purple_display_text_message(account *PurpleAccount, remoteJid string, isGroup bool, isOutgoing bool, senderJid string, pushName *string, timestamp time.Time, text string, id *string, quotedText string, quotedFrom string, quotedId string) {
 	cmessage := C.struct_gowhatsapp_message{
 		account:    account,
 		msgtype:    C.char(C.gowhatsapp_message_type_text),
@@ -459,6 +462,16 @@ func purple_display_text_message(account *PurpleAccount, remoteJid string, isGro
 	}
 	if id != nil {
 		cmessage.messageId = C.CString(*id)
+	}
+	// webOS replies: carry the structured quote (if this message replies to another) to the C stash.
+	if quotedText != "" {
+		cmessage.quotedText = C.CString(quotedText)
+		if quotedFrom != "" {
+			cmessage.quotedFrom = C.CString(quotedFrom)
+		}
+		if quotedId != "" {
+			cmessage.quotedId = C.CString(quotedId)
+		}
 	}
 	C.gowhatsapp_process_message_bridge(cmessage)
 }
