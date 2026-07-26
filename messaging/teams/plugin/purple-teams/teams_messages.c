@@ -256,22 +256,27 @@ teams_clean_chat_name(TeamsAccount *sa, gchar *chatname)
  * "surprised"); a few known Skype aliases fold onto the same emoji.
  * ------------------------------------------------------------------------------------ */
 typedef struct {
-	const gchar *key;    /* Teams emotion key */
-	const gchar *emoji;  /* UTF-8 Unicode emoji */
+	const gchar *key;      /* Teams emotion key */
+	const gchar *emoji;    /* raw UTF-8 Unicode emoji - for the OUTGOING reverse lookup (app -> key) */
+	const gchar *display;  /* HTML-entity form the Messaging app's emojify() renders - for the INCOMING
+	                        * reaction-set. The transport's encodeAstralEntities() only encodes ASTRAL
+	                        * code points, so a raw BMP emoji (U+2764 heart) survives raw and the app
+	                        * shows nothing; emit the pre-encoded entity (incl. the U+FE0F VS16 the
+	                        * picker uses for the heart) so ALL incoming reactions render. */
 } TeamsEmotionMap;
 
 static const TeamsEmotionMap teams_emotion_map[] = {
-	{ "like",      "\xF0\x9F\x91\x8D" }, /* U+1F44D  thumbs up   */
-	{ "yes",       "\xF0\x9F\x91\x8D" }, /* alias   -> thumbs up  */
-	{ "heart",     "\xE2\x9D\xA4"     }, /* U+2764   red heart    */
-	{ "love",      "\xE2\x9D\xA4"     }, /* alias   -> red heart   */
-	{ "laugh",     "\xF0\x9F\x98\x86" }, /* U+1F606  laughing     */
-	{ "cheeky",    "\xF0\x9F\x98\x86" }, /* alias   -> laughing    */
-	{ "sad",       "\xF0\x9F\x98\xA2" }, /* U+1F622  crying        */
-	{ "angry",     "\xF0\x9F\x98\xA0" }, /* U+1F620  angry         */
-	{ "surprised", "\xF0\x9F\x98\xAE" }, /* U+1F62E  astonished    */
-	{ "raiseHands", "\xF0\x9F\x99\x8F" }, /* U+1F64F folded hands (picker 🙏) */
-	{ "applause",  "\xF0\x9F\x91\x8F" }, /* U+1F44F  clapping     */
+	{ "like",      "\xF0\x9F\x91\x8D", "&#128077;"        }, /* U+1F44D  thumbs up   */
+	{ "yes",       "\xF0\x9F\x91\x8D", "&#128077;"        }, /* alias   -> thumbs up  */
+	{ "heart",     "\xE2\x9D\xA4",     "&#10084;&#65039;" }, /* U+2764(+VS16) red heart - BMP: needs this */
+	{ "love",      "\xE2\x9D\xA4",     "&#10084;&#65039;" }, /* alias   -> red heart   */
+	{ "laugh",     "\xF0\x9F\x98\x86", "&#128518;"        }, /* U+1F606  laughing     */
+	{ "cheeky",    "\xF0\x9F\x98\x86", "&#128518;"        }, /* alias   -> laughing    */
+	{ "sad",       "\xF0\x9F\x98\xA2", "&#128546;"        }, /* U+1F622  crying        */
+	{ "angry",     "\xF0\x9F\x98\xA0", "&#128544;"        }, /* U+1F620  angry         */
+	{ "surprised", "\xF0\x9F\x98\xAE", "&#128558;"        }, /* U+1F62E  astonished    */
+	{ "raiseHands", "\xF0\x9F\x99\x8F", "&#128591;"       }, /* U+1F64F folded hands (picker 🙏) */
+	{ "applause",  "\xF0\x9F\x91\x8F", "&#128079;"        }, /* U+1F44F  clapping     */
 };
 
 static const gchar *
@@ -283,6 +288,20 @@ teams_emotion_key_to_emoji(const gchar *key)
 	for (i = 0; i < G_N_ELEMENTS(teams_emotion_map); i++) {
 		if (g_ascii_strcasecmp(key, teams_emotion_map[i].key) == 0)
 			return teams_emotion_map[i].emoji;
+	}
+	return NULL;
+}
+
+/* Incoming reactions: the HTML-entity form the Messaging app renders (see the .display note above). */
+static const gchar *
+teams_emotion_key_to_display(const gchar *key)
+{
+	guint i;
+	if (key == NULL)
+		return NULL;
+	for (i = 0; i < G_N_ELEMENTS(teams_emotion_map); i++) {
+		if (g_ascii_strcasecmp(key, teams_emotion_map[i].key) == 0)
+			return teams_emotion_map[i].display;
 	}
 	return NULL;
 }
@@ -353,7 +372,9 @@ teams_emit_reaction_set(TeamsAccount *sa, const gchar *msgid, JsonArray *emotion
 	for (i = 0; i < len; i++) {
 		JsonObject *emotion = json_array_get_object_element(emotions, i);
 		const gchar *key = json_object_get_string_member(emotion, "key");
-		const gchar *emoji = teams_emotion_key_to_emoji(key);
+		/* Emit the app-renderable HTML-entity form (.display), NOT the raw UTF-8 (.emoji): the
+		 * transport doesn't encode BMP emoji, so a raw heart (U+2764) would never render. */
+		const gchar *emoji = teams_emotion_key_to_display(key);
 		JsonArray *users = json_object_has_member(emotion, "users")
 			? json_object_get_array_member(emotion, "users") : NULL;
 		guint count = users ? json_array_get_length(users) : 0;
@@ -363,6 +384,8 @@ teams_emit_reaction_set(TeamsAccount *sa, const gchar *msgid, JsonArray *emotion
 		g_string_append_printf(serialized, "%u %s\n", count, emoji);
 	}
 
+	purple_debug_info("teams", "webos: reaction-set on msg %s -> [%s]\n",
+			msgid, serialized->str);
 	purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction-set",
 		sa->account, msgid, serialized->str, (const gchar *)NULL);
 	g_string_free(serialized, TRUE);
