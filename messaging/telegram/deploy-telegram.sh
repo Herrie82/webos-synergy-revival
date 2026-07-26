@@ -13,7 +13,11 @@ set -e
 PKG="$(cd "$(dirname "$0")" && pwd)"
 NR="novacom run file://bin/sh"
 BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
-PRPL="$PKG/src/purple-telegram/libtelegram.so"
+# The Telegram prpl is now the tdlib-purple build (libtelegram-tdlib.so from build-prpl.sh), which
+# REPLACED the retired tgl-based src/purple-telegram/libtelegram.so. Deploy ONLY the tdlib .so and
+# purge any other libtelegram*.so on-device (step 3) — see the crash note there.
+PRPL="$PKG/plugin/tdlib-purple/build-arm/libtelegram-tdlib.stripped.so"
+PRPL_NAME="libtelegram-tdlib.so"
 
 echo "== 1. push custom setup app com.palm.app.telegram =="
 APPDIR=/media/cryptofs/apps/usr/palm/applications/com.palm.app.telegram
@@ -34,12 +38,19 @@ for f in images/telegram-32x32.png images/telegram-48x48.png; do
 done
 $NR -- -c "mount -o remount,ro / || true"
 
-echo "== 3. drop libtelegram.so into the live backend plugin dir =="
+echo "== 3. drop the tdlib prpl into the live backend plugin dir (purge any stale telegram .so first) =="
 if [ -f "$PRPL" ]; then
   $NR -- -c "mkdir -p $BACKEND_PURPLE2"
-  novacom put "file://$BACKEND_PURPLE2/libtelegram.so" < "$PRPL"
+  # CRITICAL: keep EXACTLY ONE telegram plugin. Two .so both registering "prpl-telegram" (e.g. the
+  # retired tgl libtelegram.so lingering next to the tdlib libtelegram-tdlib.so) leave the prpl
+  # UNREGISTERED -> at Telegram login the transport hits purple_find_prpl()==NULL -> uncaught
+  # Util::getProtocolInfo MojoException -> terminate -> the WHOLE transport CRASH-LOOPS (every account
+  # goes down, not just Telegram). So remove every libtelegram*.so that isn't the one we deploy.
+  $NR -- -c "for f in $BACKEND_PURPLE2/libtelegram*.so; do [ -e \"\$f\" ] || continue; [ \"\$f\" = \"$BACKEND_PURPLE2/$PRPL_NAME\" ] || { rm -f \"\$f\" && echo \"  purged stale \$f\"; }; done; true"
+  novacom put "file://$BACKEND_PURPLE2/$PRPL_NAME" < "$PRPL"
+  echo "  deployed $PRPL_NAME ($(wc -c < "$PRPL") bytes)"
 else
-  echo "   !! $PRPL not built yet — run the build first (see README.md), then patch per PATCH-AUTH.md"
+  echo "   !! $PRPL not built yet — run ./build-prpl.sh first (see README.md), then patch per PATCH-AUTH.md"
 fi
 
 echo "== 3b. ensure libtelegram.so runtime deps are in backend/lib =="
