@@ -94,6 +94,14 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 	}
 	info.MessageSource.Chat = handler.lidToPn(info.MessageSource.Chat, "handling message chat")
 	info.MessageSource.Sender = handler.lidToPn(info.MessageSource.Sender, "handling message sender")
+	// Dedup WhatsApp Channel (newsletter) posts: they reach us TWICE - whatsmeow offline-syncs recent
+	// posts as live messages on connect, AND fetch_newsletter_history replays the last 50 when the
+	// channel is opened in the Servers tab. The WhatsApp message id is stable across both paths, so
+	// skip a post we've already delivered (otherwise every channel post shows up doubled). The seen set
+	// is loaded at login and saved on close (newsletter_seen.go), so a reopen next session won't re-dup.
+	if info.MessageSource.Chat.Server == types.NewsletterServer && handler.newsletterAlreadySeen(info.ID) {
+		return
+	}
 	isEdit := false
 	{
 		if pm := message.GetProtocolMessage(); pm != nil {

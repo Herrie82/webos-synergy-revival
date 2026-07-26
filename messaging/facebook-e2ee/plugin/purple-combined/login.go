@@ -388,5 +388,6 @@ func (handler *Handler) close(account *PurpleAccount, purple_user_dir string, us
 	}
 	handler.client.Disconnect()
 	handler.SaveCachedMessages(filepath.Join(purple_user_dir, username+".json"))
+	handler.SaveNewsletterSeen(filepath.Join(purple_user_dir, username+".nlseen.json"))
 	delete(handlers, account)
 }

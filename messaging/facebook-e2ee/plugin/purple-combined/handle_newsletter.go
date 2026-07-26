@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
@@ -37,12 +39,65 @@ func (handler *Handler) fetch_newsletter_names() {
 			continue
 		}
 		name := meta.ThreadMeta.Name.Text
-		if name == "" {
-			continue
+		if name != "" {
+			// meta.ID is the "<id>@newsletter" JID; purple_update_name creates/aliases the buddy under it.
+			purple_update_name(handler.account, meta.ID.String(), name)
 		}
-		// meta.ID is the "<id>@newsletter" JID; purple_update_name creates/aliases the buddy under it.
-		purple_update_name(handler.account, meta.ID.String(), name)
+		// webOS: also set the channel ICON. Newsletters aren't regular contacts, so the contact
+		// avatar path (events.Picture -> GetProfilePictureInfo) never fires for them - but the picture
+		// URL is right here in the metadata. Set it so BBC/Dumpert/etc. show their logo.
+		handler.set_newsletter_icon(meta)
 	}
+}
+
+// set_newsletter_icon downloads a subscribed Channel's icon from its metadata and pushes it through
+// purple_set_profile_picture (the same sink contact avatars use). Prefers the small preview (matches
+// the default PREVIEW icon setting), falling back to the full picture; both carry a directly
+// downloadable URL. Best-effort: a missing/failed icon just leaves the channel iconless.
+func (handler *Handler) set_newsletter_icon(meta *types.NewsletterMetadata) {
+	// The subscribed-channels LIST query does NOT fetch the picture (it sends no fetch_full_image), so
+	// meta's Preview/Picture URLs are empty. Re-query THIS channel with GetNewsletterInfo, which sets
+	// fetch_full_image=true and returns a populated, directly-downloadable picture URL.
+	full, err := handler.client.GetNewsletterInfo(context.TODO(), meta.ID)
+	if err != nil || full == nil {
+		handler.log.Warnf("newsletter icon: GetNewsletterInfo(%s) failed: %#v", meta.ID.String(), err)
+		return
+	}
+	// The metadata's picture URL is empty; only a signed direct_path is provided. Prefer the small
+	// preview (192x192, ideal for an icon), fall back to the full picture. If a URL is ever present,
+	// HTTP GET it; otherwise download by direct_path via the media connection - profile pictures are
+	// unencrypted, so DownloadMediaWithOnlyPath needs no keys.
+	url := full.ThreadMeta.Preview.URL
+	dp := full.ThreadMeta.Preview.DirectPath
+	id := full.ThreadMeta.Preview.ID
+	if url == "" && dp == "" && full.ThreadMeta.Picture != nil {
+		url = full.ThreadMeta.Picture.URL
+		dp = full.ThreadMeta.Picture.DirectPath
+		id = full.ThreadMeta.Picture.ID
+	}
+	var data []byte
+	if url != "" {
+		resp, gerr := http.Get(url)
+		if gerr != nil {
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return
+		}
+		data, _ = io.ReadAll(resp.Body)
+	} else if dp != "" {
+		data, err = handler.client.DownloadMediaWithOnlyPath(context.TODO(), dp)
+		if err != nil {
+			handler.log.Warnf("newsletter icon: download for %s failed: %#v", meta.ID.String(), err)
+			return
+		}
+	}
+	if len(data) == 0 {
+		return
+	}
+	handler.log.Infof("Set WhatsApp Channel icon for %s, %d bytes.", full.ThreadMeta.Name.Text, len(data))
+	purple_set_profile_picture(handler.account, meta.ID.String(), data, "", id)
 }
 
 /*
