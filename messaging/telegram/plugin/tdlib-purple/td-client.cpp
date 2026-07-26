@@ -408,6 +408,28 @@ std::string PurpleTdClient::getBaseDatabasePath()
     return std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + config::configSubdir;
 }
 
+// webOS: the default database_directory == files_directory lives under purple_user_dir()
+// = /var/preferences (a tiny ~62MB partition). BOTH the sqlite database AND the unbounded media
+// cache are redirected to the large (24GB) /media/cryptofs partition, as sibling per-username dirs.
+// Keep these two builders authoritative: sendTdlibParameters() creates them and the account-removed
+// store-teardown hook removes them, so both must agree byte-for-byte.
+std::string PurpleTdClient::getDatabaseDir(const char *username)
+{
+    return std::string("/media/cryptofs/.purple-tdlib-db") + G_DIR_SEPARATOR_S + username;
+}
+
+std::string PurpleTdClient::getFilesDir(const char *username)
+{
+    return std::string("/media/cryptofs/.purple-tdlib-files") + G_DIR_SEPARATOR_S + username;
+}
+
+void PurpleTdClient::logOut()
+{
+    // Fire-and-forget: unlinks this device server-side. The client is about to be torn down and its
+    // store wiped, so there is no meaningful response to process.
+    m_transceiver.sendQuery(td::td_api::make_object<td::td_api::logOut>(), nullptr);
+}
+
 void PurpleTdClient::sendTdlibParameters()
 {
     // webOS Teams port / tdlib 1.8.x: td_api::tdlibParameters was removed; setTdlibParameters
@@ -422,8 +444,8 @@ void PurpleTdClient::sendTdlibParameters()
     // (verified: WebKit runs WAL DBs there); vfat /media/internal must NOT hold the DB (no
     // reliable fcntl locking / -shm mmap). Keep DB and media as sibling dirs; create up front
     // so TDLib can use them immediately.
-    std::string databaseDir = std::string("/media/cryptofs/.purple-tdlib-db") + G_DIR_SEPARATOR_S + username;
-    std::string filesDir = std::string("/media/cryptofs/.purple-tdlib-files") + G_DIR_SEPARATOR_S + username;
+    std::string databaseDir = getDatabaseDir(username);
+    std::string filesDir = getFilesDir(username);
     g_mkdir_with_parents(databaseDir.c_str(), 0700);
     g_mkdir_with_parents(filesDir.c_str(), 0700);
     purple_debug_misc(config::pluginId, "Account %s using database directory %s, files directory %s\n",

@@ -20,6 +20,13 @@ public:
     static void setLogLevel(int level);
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
     static std::string getBaseDatabasePath();
+    // webOS per-account store paths: the tdlib sqlite DB and the (unbounded) media cache live under
+    // /media/cryptofs, keyed on the account username. sendTdlibParameters() and the account-removed
+    // store-teardown hook both build the paths through these so they always match exactly.
+    static std::string getDatabaseDir(const char *username);
+    static std::string getFilesDir(const char *username);
+    // webOS: unlink this device server-side (Telegram sessions list) before its local store is wiped.
+    void logOut();
     int  sendMessage(const char *buddyName, const char *message, int64_t replyToMsgId = 0);
     // webOS reactions (SEND): add (remove=false) or remove (remove=true) MY `emoji` reaction on a
     // message via TDLib add/removeMessageReaction. Called from the webos-im-send-reaction handler.

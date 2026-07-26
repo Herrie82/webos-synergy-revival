@@ -5,6 +5,7 @@
 #include "format.h"
 #include "buildopt.h"
 #include <purple.h>
+#include <glib/gstdio.h>
 
 #include <cstdint>
 #include <functional>
@@ -970,8 +971,73 @@ static PurplePluginProtocolInfo prpl_info = {
 #endif
 };
 
+// Recursively delete a directory tree (glib has no recursive rmdir). Best-effort: keeps going on
+// per-entry failures. Does not descend into symlinked directories (unlinks the link itself).
+static void removeDirRecursive(const std::string &path)
+{
+    GDir *dir = g_dir_open(path.c_str(), 0, NULL);
+    if (dir) {
+        const gchar *name;
+        while ((name = g_dir_read_name(dir)) != NULL) {
+            std::string child = path + G_DIR_SEPARATOR_S + name;
+            if (g_file_test(child.c_str(), G_FILE_TEST_IS_DIR) &&
+                !g_file_test(child.c_str(), G_FILE_TEST_IS_SYMLINK))
+                removeDirRecursive(child);
+            else
+                g_unlink(child.c_str());
+        }
+        g_dir_close(dir);
+    }
+    g_rmdir(path.c_str());
+}
+
+// Per-account store teardown on account deletion.
+//
+// The webOS transport deletes an account via purple_accounts_delete(), which first disconnects it
+// (-> tgprpl_close -> `delete PurpleTdClient`, releasing the tdlib instance) and only THEN emits
+// libpurple's "account-removed" signal. Without this hook the per-username tdlib sqlite DB (session
+// keys) and the unbounded media cache under /media/cryptofs are left orphaned. We remove both,
+// keyed strictly on the removed account's own username so one account's deletion never touches
+// another's store. Paths are built through PurpleTdClient::get{Database,Files}Dir() so they match
+// sendTdlibParameters() exactly.
+static void tgprpl_account_removed_cb(PurpleAccount *account, gpointer unused)
+{
+    (void)unused;
+    if (!account)
+        return;
+    // The signal fires process-wide for EVERY prpl - only act on Telegram accounts.
+    if (g_strcmp0(purple_account_get_protocol_id(account), config::pluginId) != 0)
+        return;
+
+    const char *username = purple_account_get_username(account);
+    if (!username || !*username)
+        return;
+
+    // Normally the account is already disconnected before this fires, so getTdClient() is NULL and
+    // we simply wipe the on-disk store. Guard the "client still live" case anyway: log out first so
+    // the device is unlinked from the Telegram account server-side before local keys are destroyed.
+    PurpleTdClient *tdClient = getTdClient(account);
+    if (tdClient) {
+        purple_debug_info(config::pluginId, "account-removed: logging out %s before store teardown\n",
+                          username);
+        tdClient->logOut();
+    }
+
+    std::string databaseDir = PurpleTdClient::getDatabaseDir(username);
+    std::string filesDir    = PurpleTdClient::getFilesDir(username);
+    purple_debug_info(config::pluginId, "account-removed: removing tdlib store for %s (%s ; %s)\n",
+                      username, databaseDir.c_str(), filesDir.c_str());
+    removeDirRecursive(databaseDir);
+    removeDirRecursive(filesDir);
+}
+
 static gboolean tgprpl_load (PurplePlugin *plugin)
 {
+    // Per-account store teardown: hook "account-removed" (emitted by purple_accounts_delete) so a
+    // deleted Telegram account's tdlib DB + media cache are not orphaned. Handle is the plugin.
+    purple_signal_connect(purple_accounts_get_handle(), "account-removed", plugin,
+                          PURPLE_CALLBACK(tgprpl_account_removed_cb), NULL);
+
     purple_cmd_register("kick", "s", PURPLE_CMD_P_PLUGIN,
                         (PurpleCmdFlag)(PURPLE_CMD_FLAG_CHAT | PURPLE_CMD_FLAG_PRPL_ONLY),
                         config::pluginId, tgprpl_cmd_kick,
