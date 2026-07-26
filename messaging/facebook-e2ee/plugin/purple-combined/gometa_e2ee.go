@@ -100,6 +100,22 @@ func (h *gometaHandler) e2eeEventHandler(rawEvt any) {
 		h.logger.Info().Msg("E2EE socket connected")
 	case *events.LoggedOut:
 		h.logger.Warn().Msg("E2EE socket logged out")
+	case *events.Receipt:
+		// webOS delivery/read receipts on E2EE (encrypted Messenger) threads: these arrive as
+		// whatsmeow receipts on this socket (FB E2EE rides WhatsApp's transport), NOT as the messagix
+		// LSUpdate*Receipt tables handled in parseTable. evt.MessageIDs are the OTIDs we surfaced as
+		// serviceMessageId, so key on them directly (same by-id path as WhatsApp).
+		var status string
+		if evt.Type == waTypes.ReceiptTypeRead || evt.Type == waTypes.ReceiptTypeReadSelf {
+			status = "read"
+		} else if evt.Type == waTypes.ReceiptTypeDelivered {
+			status = "delivered"
+		}
+		if status != "" {
+			for _, mid := range evt.MessageIDs {
+				purple_handle_receipt(h.account, string(mid), status)
+			}
+		}
 	default:
 		// Surface anything we don't handle (e.g. if reactions ever arrive as a distinct event type
 		// rather than an FBMessage) so it's visible in the log instead of silently dropped.
