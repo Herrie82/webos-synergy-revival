@@ -28,6 +28,8 @@
 #include "teams_util.h"
 
 #include "http.h"
+
+#include <stdio.h> // webOS: fopen/fwrite to persist received media to a WebKit-readable file
 #include "util.h"
 #include "xfer.h"
 #include "image-store.h"
@@ -302,53 +304,83 @@ typedef struct SkypeImgMsgContext_ {
 static void
 teams_got_imagemessage(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
 {
-	gint icon_id;
 	gchar *msg_tmp;
 	const gchar *url_text;
 	gsize len;
-	PurpleImage *image;
-	PurpleMessageFlags flags = PURPLE_MESSAGE_NO_LOG | PURPLE_MESSAGE_IMAGES;
-	
+	PurpleMessageFlags flags = PURPLE_MESSAGE_NO_LOG;
+
 	SkypeImgMsgContext *ctx = user_data;
 	PurpleConversation *conv = ctx->conv;
 	PurpleConnection *pc = purple_conversation_get_connection(conv);
-	TeamsAccount *sa = purple_connection_get_protocol_data(pc);
-	
+	TeamsAccount *sa = pc ? purple_connection_get_protocol_data(pc) : NULL;
+
 	time_t ts = ctx->composetimestamp;
 	gchar* ctx_from = ctx->from;
 	ctx->from = NULL;
 	g_free(ctx);
-	
-	// Conversation could have been closed before we retrieved the image
-	if (!purple_conversation_is_valid(conv)) {
+
+	// Bail if the account was freed by a re-login flap, or the conversation was closed, before this
+	// (authenticated) media download returned. teams_account_is_live is a pointer check (no deref).
+	if (!teams_account_is_live(sa) || !purple_conversation_is_valid(conv)) {
 		g_free(ctx_from);
 		return;
 	}
-	
+
 	url_text = purple_http_response_get_data(response, &len);
-	
+
 	if (!url_text || !len || url_text[0] == '{' || url_text[0] == '<') {
 		g_free(ctx_from);
 		return;
 	}
-	
+
 	if (!purple_http_response_is_successful(response)) {
 		g_free(ctx_from);
 		return;
 	}
-	
-	image = purple_image_new_from_data(g_memdup2(url_text, len), len);
-	icon_id = purple_image_store_add(image);
-	msg_tmp = g_strdup_printf("<img id='%d'>", icon_id);
-	
+
+	// webOS: persist the (authenticated - fetched with the skype_token cookie) media to a WebKit-
+	// readable file and surface it as a file:// URL in the message body. The transport renders that
+	// inline (image) or with the audio player (voice note), the SAME path as remote image URLs --
+	// whereas a libpurple imgstore <img id=N> is DROPPED by incoming_message_cb, and handing the app
+	// the raw authenticated ASM URL shows an unloadable link (and, for audio, storm-spawns
+	// media-pipeline on the failing fetch, exhausting fds). Detect the type from the magic bytes.
+	const guchar *b = (const guchar *) url_text;
+	const gchar *ext = ".bin";
+	if      (len >= 3  && b[0]==0xFF && b[1]==0xD8 && b[2]==0xFF)                                   ext = ".jpg";
+	else if (len >= 4  && b[0]==0x89 && b[1]=='P'  && b[2]=='N'  && b[3]=='G')                      ext = ".png";
+	else if (len >= 6  && b[0]=='G'  && b[1]=='I'  && b[2]=='F')                                    ext = ".gif";
+	else if (len >= 12 && b[0]=='R'  && b[1]=='I'  && b[2]=='F'  && b[3]=='F' && b[8]=='W'  && b[9]=='E' && b[10]=='B' && b[11]=='P') ext = ".webp";
+	else if (len >= 4  && b[0]=='O'  && b[1]=='g'  && b[2]=='g'  && b[3]=='S')                      ext = ".ogg";
+	else if (len >= 3  && b[0]=='I'  && b[1]=='D'  && b[2]=='3')                                    ext = ".mp3";
+	else if (len >= 12 && b[0]=='R'  && b[1]=='I'  && b[2]=='F'  && b[3]=='F' && b[8]=='W'  && b[9]=='A' && b[10]=='V' && b[11]=='E') ext = ".wav";
+	else if (len >= 8  && b[4]=='f'  && b[5]=='t'  && b[6]=='y'  && b[7]=='p')                      ext = ".m4a"; // ISO-BMFF (m4a/aac)
+
+	gchar *hash = g_compute_checksum_for_data(G_CHECKSUM_SHA1, b, len);
+	g_mkdir_with_parents("/media/internal/.im-attachments/teams", 0755);
+	gchar *path = g_strdup_printf("/media/internal/.im-attachments/teams/%s%s", hash, ext);
+	g_free(hash);
+
+	FILE *f = fopen(path, "wb");
+	if (f == NULL) {
+		purple_debug_error("teams", "failed to save received media to %s\n", path);
+		g_free(path);
+		g_free(ctx_from);
+		return;
+	}
+	fwrite(url_text, 1, len, f);
+	fclose(f);
+
+	msg_tmp = g_strdup_printf("file://%s", path);
+	g_free(path);
+
 	if (sa && teams_is_user_self(sa, ctx_from)) {
 		flags |= PURPLE_MESSAGE_SEND;
 	} else {
 		flags |= PURPLE_MESSAGE_RECV;
 	}
-	
+
 	purple_conversation_write_img_message(conv, ctx_from, msg_tmp, flags, ts);
-	
+
 	g_free(msg_tmp);
 	g_free(ctx_from);
 }
@@ -386,25 +418,20 @@ teams_download_uri_to_conv(TeamsAccount *sa, const gchar *uri, PurpleConversatio
 		purple_http_request_header_set_printf(request, "Cookie", "skypetoken_asm=%s", sa->skype_token);
 	}
 	
-	purple_http_request_header_set(request, "Accept", "image/*");
+	purple_http_request_header_set(request, "Accept", "*/*"); // webOS: also allow audio/* voice notes, not just image/*
 	SkypeImgMsgContext *ctx = g_new(SkypeImgMsgContext, 1);
 	ctx->composetimestamp = ts;
 	ctx->conv = conv;
 	ctx->from = g_strdup(from);
 	purple_http_request(sa->pc, request, teams_got_imagemessage, ctx);
 	purple_http_request_unref(request);
-	
-	if (teams_is_user_self(sa, from)) {
-		flags |= PURPLE_MESSAGE_SEND;
-	} else {
-		flags |= PURPLE_MESSAGE_RECV;
-	}
 
-	text = g_strdup_printf("<a href=\"%s\">Click here to view full version</a>", url);
-	purple_conversation_write_img_message(conv, from, text, flags, ts);
-	
+	// webOS: no synchronous "Click here to view full version" link -- teams_got_imagemessage now saves
+	// the download to a file:// the app renders inline (image) / plays (audio). The bare link was the
+	// "weird link" the user saw, and for audio it let the app storm-spawn media-pipeline on the
+	// unloadable authenticated URL.
+	(void) flags;
 	g_free(url);
-	g_free(text);
 }
 
 void
