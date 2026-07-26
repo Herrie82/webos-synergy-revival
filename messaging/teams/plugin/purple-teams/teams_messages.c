@@ -364,38 +364,44 @@ teams_stash_webos_quote(PurpleConversation *conv, gchar **html)
 {
 	if (conv == NULL || html == NULL || *html == NULL)
 		return;
-	gchar *qstart = strstr(*html, "<quote");
+	/* Teams personal wraps a reply as: <blockquote itemscope itemtype="http://schema.skype.com/Reply"
+	 * itemid="<quoted msg id>"><strong itemprop="mri" itemid="<mri>">Author</strong>
+	 * <span itemprop="time" .../><p itemprop="preview">quoted text</p></blockquote><p>reply body</p> */
+	gchar *qstart = strstr(*html, "<blockquote");
 	if (qstart == NULL)
 		return;
-	gchar *qend = strstr(qstart, "</quote>");
+	gchar *qend = strstr(qstart, "</blockquote>");
 	if (qend == NULL)
 		return;
 
-	gsize quotelen = (qend - qstart) + strlen("</quote>");
+	gsize quotelen = (qend - qstart) + strlen("</blockquote>");
 	gchar *quotexml = g_strndup(qstart, quotelen);
 	PurpleXmlNode *qnode = purple_xmlnode_from_str(quotexml, -1);
 	g_free(quotexml);
 	if (qnode != NULL) {
-		const gchar *authorname = purple_xmlnode_get_attrib(qnode, "authorname");
-		const gchar *messageid = purple_xmlnode_get_attrib(qnode, "messageid");
-		gchar *qtext = purple_xmlnode_get_data(qnode); /* quoted text, excludes <legacyquote> children */
+		const gchar *itemid = purple_xmlnode_get_attrib(qnode, "itemid"); /* the quoted message's id */
+		PurpleXmlNode *strong = purple_xmlnode_get_child(qnode, "strong");
+		PurpleXmlNode *preview = purple_xmlnode_get_child(qnode, "p");
+		gchar *qfrom = strong ? purple_xmlnode_get_data(strong) : NULL;   /* author display name */
+		gchar *qtext = preview ? purple_xmlnode_get_data(preview) : NULL; /* quoted text */
 		if (qtext != NULL && *qtext != '\0') {
 			for (gchar *p = qtext; *p != '\0'; p++) {
 				if (*p == '\n' || *p == '\r')
 					*p = ' ';
 			}
 			purple_conversation_set_data(conv, "webos-quoted-text", g_strdup(qtext));
-			if (authorname && *authorname)
-				purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(authorname));
-			if (messageid && *messageid)
-				purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(messageid));
+			if (qfrom && *qfrom)
+				purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(qfrom));
+			if (itemid && *itemid)
+				purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(itemid));
 		}
+		g_free(qfrom);
 		g_free(qtext);
 		purple_xmlnode_free(qnode);
 	}
 
-	/* strip the quote block: keep only the reply body after </quote> */
-	gchar *body = g_strdup(qend + strlen("</quote>"));
+	/* strip the quote block: keep only the reply body after </blockquote> */
+	gchar *body = g_strdup(qend + strlen("</blockquote>"));
 	g_strchug(body);
 	g_free(*html);
 	*html = body;
@@ -455,14 +461,18 @@ teams_build_quote_block(TeamsAccount *sa, const gchar *target_id)
 	if (meta == NULL)
 		return NULL;
 	gchar **parts = g_strsplit(meta, "\x1f", 5); /* 0=authorMRI 1=authorname 2=composetime 3=conversation 4=plaintext */
-	gchar *author_esc = g_markup_escape_text(parts[0] ? parts[0] : "", -1);
+	gchar *mri_esc = g_markup_escape_text(parts[0] ? parts[0] : "", -1);
 	gchar *authorname_esc = g_markup_escape_text(parts[1] ? parts[1] : "", -1);
 	gchar *text_esc = g_markup_escape_text((parts[4]) ? parts[4] : "", -1);
-	time_t ts = (parts[2] && *parts[2]) ? purple_str_to_time(parts[2], TRUE, NULL, NULL, NULL) : time(NULL);
+	/* Match the exact Teams-personal reply markup so the message threads on other clients. */
 	gchar *block = g_strdup_printf(
-		"<quote author=\"%s\" authorname=\"%s\" timestamp=\"%" G_GINT64_FORMAT "\" conversation=\"%s\" messageid=\"%s\" messagetype=\"RichText/Html\" contenttype=\"text\"><legacyquote>&lt;%s&gt;</legacyquote>%s<legacyquote>&#10;&#10;</legacyquote></quote>",
-		author_esc, authorname_esc, (gint64)ts, parts[3] ? parts[3] : "", target_id, authorname_esc, text_esc);
-	g_free(author_esc);
+		"<blockquote itemscope=\"\" itemtype=\"http://schema.skype.com/Reply\" itemid=\"%s\">"
+		"<strong itemprop=\"mri\" itemid=\"%s\">%s</strong>"
+		"<span itemprop=\"time\" itemid=\"%s\"></span>"
+		"<p itemprop=\"preview\">%s</p>"
+		"</blockquote>",
+		target_id, mri_esc, authorname_esc, target_id, text_esc);
+	g_free(mri_esc);
 	g_free(authorname_esc);
 	g_free(text_esc);
 	g_strfreev(parts);
@@ -593,6 +603,10 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 			if (sent_id && *sent_id) {
 				purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
 					sa->account, sent_id, sent_text ? sent_text : "");
+				// webOS replies: cache our OWN app-sent message (keyed by its server id) so a later
+				// reply TO it can rebuild the <quote> block. This echo is deduped + returned below, so
+				// it never reaches the normal cache sites - cache it here.
+				teams_cache_quote_meta(sa, resource, sent_text);
 			}
 		}
 		g_strfreev(messagetype_parts);
@@ -1353,6 +1367,8 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 						// webOS replies: our own reply from another device - stash the quote on the carbon
 						// conv (and strip the inline <quote> from the visible body).
 						teams_stash_webos_quote(conv, &html);
+						// Cache our OWN sent message too, so a later reply TO it can rebuild the <quote>.
+						teams_cache_quote_meta(sa, resource, html);
 						msg = purple_message_new_outgoing(modified_convbuddyname, html, PURPLE_MESSAGE_SEND);
 						purple_message_set_time(msg, composetimestamp);
 						purple_conversation_write_message(conv, msg);
@@ -3028,6 +3044,7 @@ teams_send_message(TeamsAccount *sa, const gchar *convname, const gchar *message
 		stripped = font_stripped;
 	}
 	
+	if (strstr(stripped, "blockquote") != NULL)
 	obj = json_object_new();
 	json_object_set_string_member(obj, "clientmessageid", clientmessageid_str);
 	json_object_set_string_member(obj, "content", stripped);
