@@ -130,15 +130,31 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 				}
 				text += etmText
 			}
-			// webOS: WhatsApp link-preview posts (news channels like BBC News) arrive as an
-			// ExtendedTextMessage with a URL preview + an inline JPEG thumbnail, NOT an image
-			// attachment - so previously only the headline text showed. Write the preview thumbnail to
-			// the attachment dir and prepend its file:// URL so the Messaging app renders it inline
-			// above the headline (same picture+caption layout as real media). GetJPEGThumbnail is empty
-			// for plain/quoted ExtendedTextMessages, so this only fires for actual link previews.
-			if thumb := etm.GetJPEGThumbnail(); len(thumb) > 0 {
-				if u := handler.write_link_preview_thumbnail(thumb); u != "" {
-					text = u + "\n" + text
+			// webOS: WhatsApp link-preview posts (news channels like BBC News / Dumpert) arrive as an
+			// ExtendedTextMessage with a URL preview - an inline JPEG thumbnail + a title - NOT an image
+			// attachment, so previously only the raw body text showed. Prepend the preview card: the
+			// thumbnail (written to the attachment dir, referenced as a file:// URL the app renders
+			// inline) then the title, above the body. GetJPEGThumbnail/GetTitle are empty for
+			// plain/quoted ExtendedTextMessages, so this only fires for actual link previews.
+			{
+				preview := ""
+				if thumb := etm.GetJPEGThumbnail(); len(thumb) > 0 {
+					preview = handler.write_link_preview_thumbnail(thumb)
+				}
+				if title := etm.GetTitle(); title != "" {
+					if preview != "" {
+						preview += "\n"
+					}
+					preview += title
+				}
+				if desc := etm.GetDescription(); desc != "" {
+					if preview != "" {
+						preview += "\n"
+					}
+					preview += desc
+				}
+				if preview != "" {
+					text = preview + "\n" + text
 				}
 			}
 		}
