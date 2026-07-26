@@ -84,16 +84,18 @@ nr "mount -o remount,rw /dev/mapper/store-root / || true"
 novacom put "file:///usr/share/ls2/roles/prv/com.palm.imlibpurple.json" < "$IMROLES/prv/com.palm.imlibpurple.json"
 novacom put "file:///usr/share/ls2/roles/pub/com.palm.imlibpurple.json" < "$IMROLES/pub/com.palm.imlibpurple.json"
 nr "rm -f /usr/share/ls2/roles/pub/com.palm.whatsapp.call.json"  # superseded by the imlibpurple role grant
-# NEUTER only the on-demand .CALL activation services (VoIP). Their Exec spawns a SECOND, non-resident
-# transport that collides with the resident one; calling reaches the resident's in-plugin
-# com.palm.whatsapp.call registration, so they are pure liability.
-# *** DO NOT neuter com.palm.imlibpurple.service (the MAIN messaging service). *** Neutering it (was in
-# 9519c97) BREAKS all outgoing messages + reactions: the activitymanager fires the outbound "pending
-# messages/commands" watches by CALLING palm://com.palm.imlibpurple/sendIM /sendCommand, and with the
-# service file gone ls-hubd rejects it ("Service not listed in service files") so nothing ever sends
-# (incoming still works, masking it). See neuter-activation-services.sh for the full write-up.
-# (Standalone: messaging/imlibpurpleservice/neuter-activation-services.sh. Reboot for ls-hubd to drop them.)
-nr "for s in com.palm.whatsapp.call.service com.palm.telegram.call.service com.palm.signal.call.service; do [ -f /usr/share/dbus-1/system-services/\$s ] && mv /usr/share/dbus-1/system-services/\$s /usr/share/dbus-1/system-services/\$s.disabled && echo \"  neutered \$s\"; done; true"
+# *** DO NOT NEUTER ANY of these .service files. *** They were neutered earlier this line of work to
+# chase a transport "churn", but that was WRONG on two counts and broke real features:
+#   - com.palm.imlibpurple.service (MAIN): needed so the activitymanager can CALL sendIM/sendCommand -
+#     without it NOTHING sends (msgs + reactions stuck pending); "Service not listed in service files".
+#   - com.palm.{whatsapp,telegram,signal}.call.service (VoIP): even though the resident registers
+#     com.palm.whatsapp.call IN-PLUGIN, ls-hubd still needs the .service file to know the name for
+#     INBOUND routing - without it a caller gets "Service does not exist" and CALLS FAIL.
+# The "churn" (a second activated transport colliding on com.palm.imlibpurple) was really a symptom of
+# transport CRASHES freeing the bus name; that crash-class is now fixed by the createPurpleAccount
+# try/catch (f998f33), so with a stable resident these .service files just route to it (no activation,
+# no churn). ENSURE they are present (restore any left .disabled by the old neuter):
+nr "for s in com.palm.imlibpurple.service com.palm.whatsapp.call.service com.palm.telegram.call.service com.palm.signal.call.service; do [ -f /usr/share/dbus-1/system-services/\$s.disabled ] && mv /usr/share/dbus-1/system-services/\$s.disabled /usr/share/dbus-1/system-services/\$s && echo \"  restored \$s\"; done; true"
 echo "== 4c. retire the standalone wacallm mediator (it owned com.palm.whatsapp) =="
 nr "kill \$(pidof wacallm-luna) 2>/dev/null || true"
 nr "rm -f /usr/share/dbus-1/system-services/com.palm.whatsapp.service /usr/share/ls2/roles/prv/com.palm.whatsapp.json /usr/share/ls2/roles/pub/com.palm.whatsapp.json"
