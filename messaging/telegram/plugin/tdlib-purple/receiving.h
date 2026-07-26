@@ -13,7 +13,9 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
                      const char *text, const char *notification, uint32_t extraFlags = 0);
 void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const char *text,
                        const char *notification, time_t timestamp, PurpleMessageFlags flags,
-                       const char *serviceMessageId = NULL);
+                       const char *serviceMessageId = NULL,
+                       const char *quotedId = NULL, const char *quotedText = NULL,
+                       const char *quotedFrom = NULL);
 // webOS reactions: push the aggregated reaction summary of one message to the transport
 // ("webos-im-reaction-set" signal), which REPLACES that message's reaction badges. A NULL/empty
 // interaction_info clears them. serviceMessageId is "<chatId>:<messageId>" (matching the stash).

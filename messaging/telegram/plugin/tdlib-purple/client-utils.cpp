@@ -845,16 +845,24 @@ static void parseMessage(const char *message, std::vector<MessagePart> &parts, T
 }
 
 int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
-                    TdAccountData &account, TdTransceiver::ResponseCb response)
+                    TdAccountData &account, TdTransceiver::ResponseCb response, int64_t replyToMsgId)
 {
     std::vector<MessagePart> parts;
     parseMessage(message, parts, account);
     if (parts.size() > MAX_MESSAGE_PARTS)
         return -E2BIG;
 
+    bool first = true;
     for (const MessagePart &input: parts) {
         td::td_api::object_ptr<td::td_api::sendMessage> sendMessageRequest = td::td_api::make_object<td::td_api::sendMessage>();
         sendMessageRequest->chat_id_ = chatId.value();
+        // webOS native reply: set a real reply_to on the FIRST part only (a multi-part send shouldn't
+        // reply N times). tdlib 1.8.x uses inputMessageReplyToMessage(message_id, quote, checklist, poll).
+        if (replyToMsgId != 0 && first) {
+            sendMessageRequest->reply_to_ = td::td_api::make_object<td::td_api::inputMessageReplyToMessage>(
+                replyToMsgId, nullptr, 0, "");
+        }
+        first = false;
         char *tempFileName = NULL;
         bool  hasImage     = false;
 

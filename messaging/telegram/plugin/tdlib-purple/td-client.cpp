@@ -1115,7 +1115,7 @@ void PurpleTdClient::sendReaction(int64_t chatId, int64_t messageId, const std::
     }
 }
 
-int PurpleTdClient::sendMessage(const char *buddyName, const char *message)
+int PurpleTdClient::sendMessage(const char *buddyName, const char *message, int64_t replyToMsgId)
 {
     // webOS auth-input fallback: if we're waiting for a login code / 2FA password /
     // display name (prompted via the "Telegram" chat because there's no request UI),
@@ -1165,7 +1165,7 @@ int PurpleTdClient::sendMessage(const char *buddyName, const char *message)
     }
 
     if (chat) {
-        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse);
+        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse, replyToMsgId);
         if (ret < 0)
             return ret;
         // Message shall not be echoed: tdlib will shortly present it as a new message and it will be displayed then
@@ -1821,7 +1821,7 @@ bool PurpleTdClient::joinChat(const char *chatName)
     return conv ? true : false;
 }
 
-int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)
+int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message, int64_t replyToMsgId)
 {
     const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
 
@@ -1831,7 +1831,7 @@ int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)
         purple_debug_misc(config::pluginId, "purple id %d (chat %s) is not a group we a member of\n",
                              purpleChatId, chat->title_.c_str());
     else {
-        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse);
+        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse, replyToMsgId);
         if (ret < 0)
             return ret;
         return 0;

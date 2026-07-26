@@ -54,7 +54,7 @@ void updateSupergroupChatMembers(PurpleConvChat *purpleChat, const td::td_api::c
                                  const TdAccountData &account);
 
 int  transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
-                     TdAccountData &account, TdTransceiver::ResponseCb response);
+                     TdAccountData &account, TdTransceiver::ResponseCb response, int64_t replyToMsgId = 0);
 
 void requestRecoveryEmailConfirmation(PurpleConnection *gc, const char *emailInfo);
 

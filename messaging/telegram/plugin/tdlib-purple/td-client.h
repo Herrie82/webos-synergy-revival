@@ -20,7 +20,7 @@ public:
     static void setLogLevel(int level);
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
     static std::string getBaseDatabasePath();
-    int  sendMessage(const char *buddyName, const char *message);
+    int  sendMessage(const char *buddyName, const char *message, int64_t replyToMsgId = 0);
     // webOS reactions (SEND): add (remove=false) or remove (remove=true) MY `emoji` reaction on a
     // message via TDLib add/removeMessageReaction. Called from the webos-im-send-reaction handler.
     void sendReaction(int64_t chatId, int64_t messageId, const std::string &emoji, bool remove);
@@ -39,7 +39,7 @@ public:
     void createGroup(const char *name, int type, const std::vector<std::string> &basicGroupMembers);
     BasicGroupMembership getBasicGroupMembership(const char *purpleChatName);
     void leaveGroup(const std::string &purpleChatName, bool deleteSupergroup);
-    int  sendGroupMessage(int purpleChatId, const char *message);
+    int  sendGroupMessage(int purpleChatId, const char *message, int64_t replyToMsgId = 0);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
     // webOS: archive (true) / unarchive (false) the chat backing this conversation.

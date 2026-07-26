@@ -82,9 +82,21 @@ void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *co
     }
 }
 
+// webOS replies: stash the quoted-original (text/from/id) on a conv, mirroring the webos-msg-id stash,
+// so the transport writes it onto the message row and the Messaging UI renders an inline quote card
+// instead of the "<b>&gt; ... wrote:</b>" HTML we used to fold into the body. No-op if not a reply.
+static void stashQuote(PurpleConversation *conv, const char *quotedId, const char *quotedText, const char *quotedFrom)
+{
+    if (conv == NULL || quotedText == NULL || *quotedText == '\0') return;
+    purple_conversation_set_data(conv, "webos-quoted-text", g_strdup(quotedText));
+    if (quotedFrom && *quotedFrom) purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(quotedFrom));
+    if (quotedId && *quotedId) purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(quotedId));
+}
+
 void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const char *text,
                        const char *notification, time_t timestamp, PurpleMessageFlags flags,
-                       const char *serviceMessageId)
+                       const char *serviceMessageId,
+                       const char *quotedId, const char *quotedText, const char *quotedFrom)
 {
     PurpleConversation *conv = NULL;
 
@@ -98,16 +110,19 @@ void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const
             if (serviceMessageId && *serviceMessageId) {
                 purple_conversation_set_data(conv, "webos-msg-id", g_strdup(serviceMessageId));
             }
+            stashQuote(conv, quotedId, quotedText, quotedFrom);
             purple_conv_im_write(purple_conversation_get_im_data(conv),
                                  purple_account_get_name_for_display(account.purpleAccount),
                                  text, flags, timestamp);
         } else {
             // webOS reactions: stash this message's id on the conv BEFORE serv_got_im so the transport
             // stores it as serviceMessageId (read in incoming_message_cb); a later reaction update
-            // targets it by "<chatId>:<messageId>".
-            if (serviceMessageId && *serviceMessageId) {
+            // targets it by "<chatId>:<messageId>". Same conv is used for the reply-quote stash.
+            if ((serviceMessageId && *serviceMessageId) || (quotedText && *quotedText)) {
                 conv = getImConversation(account.purpleAccount, purpleUserName);
-                purple_conversation_set_data(conv, "webos-msg-id", g_strdup(serviceMessageId));
+                if (serviceMessageId && *serviceMessageId)
+                    purple_conversation_set_data(conv, "webos-msg-id", g_strdup(serviceMessageId));
+                stashQuote(conv, quotedId, quotedText, quotedFrom);
             }
             serv_got_im(purple_account_get_connection(account.purpleAccount), purpleUserName, text,
                         flags, timestamp);
@@ -132,7 +147,8 @@ void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const
 static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &chat,
                                 const TgMessageInfo &message, const char *text,
                                 const char *notification, PurpleMessageFlags flags,
-                                const char *serviceMessageId = NULL)
+                                const char *serviceMessageId = NULL,
+                                const char *quotedId = NULL, const char *quotedText = NULL, const char *quotedFrom = NULL)
 {
     // Again, doing what facebook plugin does
     int purpleId = account.getPurpleChatId(getId(chat));
@@ -154,10 +170,13 @@ static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &
                     who = message.incomingGroupchatSenderId + "\x1f" + who;
                 // webOS reactions: stash this message's id on the chat conv BEFORE serv_got_chat_in so
                 // the transport stores it as serviceMessageId; a later reaction update targets it.
-                if (serviceMessageId && *serviceMessageId) {
+                if ((serviceMessageId && *serviceMessageId) || (quotedText && *quotedText)) {
                     PurpleConversation *baseConv = conv ? purple_conv_chat_get_conversation(conv) : NULL;
-                    if (baseConv)
-                        purple_conversation_set_data(baseConv, "webos-msg-id", g_strdup(serviceMessageId));
+                    if (baseConv) {
+                        if (serviceMessageId && *serviceMessageId)
+                            purple_conversation_set_data(baseConv, "webos-msg-id", g_strdup(serviceMessageId));
+                        stashQuote(baseConv, quotedId, quotedText, quotedFrom);
+                    }
                 }
                 serv_got_chat_in(purple_account_get_connection(account.purpleAccount), purpleId,
                                  who.c_str(), flags, text, message.timestamp);
@@ -181,7 +200,11 @@ static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &
         sendConversationReadReceipts(account, baseConv);
 }
 
-static std::string quoteMessage(const td::td_api::message *message, TdAccountData &account)
+// webOS replies: extract the quoted-original's author name + text (single-lined) as structured data,
+// instead of formatting them into "<b>&gt; ... wrote:</b>" HTML. Used to stash webos-quoted-* so the
+// Messaging UI renders an inline quote card above the reply.
+static void extractQuotedMessage(const td::td_api::message *message, TdAccountData &account,
+                                 std::string &outName, std::string &outText)
 {
     const td::td_api::user *originalAuthor = nullptr;
     if (message)
@@ -262,8 +285,8 @@ static std::string quoteMessage(const td::td_api::message *message, TdAccountDat
     for (unsigned i = 0; i < text.size(); i++)
         if (text[i] == '\n') text[i] = ' ';
 
-    // TRANSLATOR: In-chat notification of a reply. Arguments will be username and the original text or description thereof. Please preserve the HTML.
-    return formatMessage(_("<b>&gt; {0} wrote:</b>\n&gt; {1}"), {originalName, text});
+    outName = originalName;
+    outText = text;
 }
 
 void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
@@ -275,12 +298,16 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         flags = (PurpleMessageFlags) (flags | PURPLE_MESSAGE_REMOTE_SEND);
 
     std::string newText;
+    // webOS replies: capture the quoted-original as structured data (stashed on the conv by the show*
+    // functions -> transport -> immessage -> an inline quote card) instead of folding "> ... wrote:"
+    // HTML into the body. quotedId == the original's serviceMessageId key so the UI can look it up.
+    std::string quotedName, quotedText, quotedId;
+    if (message.repliedMessageId.valid()) {
+        extractQuotedMessage(message.repliedMessage.get(), account, quotedName, quotedText);
+        quotedId = std::to_string(getId(chat).value()) + ":" + std::to_string(message.repliedMessageId.value());
+    }
     if (text) {
-        if (message.repliedMessageId.valid())
-            newText = quoteMessage(message.repliedMessage.get(), account);
         if (!message.forwardedFrom.empty()) {
-            if (!newText.empty())
-                newText += "\n";
             // TRANSLATOR: In-chat notification of forward. Argument will be a username. Please preserve the HTML.
             newText += formatMessage(_("<b>Forwarded from {}:</b>"), message.forwardedFrom);
         }
@@ -301,6 +328,9 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
     if (message.id.valid() && (!message.outgoing || !message.sentLocally))
         serviceMessageId = std::to_string(getId(chat).value()) + ":" + std::to_string(message.id.value());
     const char *svcMsgId = serviceMessageId.empty() ? NULL : serviceMessageId.c_str();
+    const char *qId   = quotedId.empty()   ? NULL : quotedId.c_str();
+    const char *qText = quotedText.empty() ? NULL : quotedText.c_str();
+    const char *qFrom = quotedName.empty() ? NULL : quotedName.c_str();
 
     const td::td_api::user *privateUser = account.getUserByPrivateChat(chat);
     if (privateUser) {
@@ -310,17 +340,17 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         // to alias, so use display name instead of idXXXXXXXXX
         if (!purple_find_buddy(account.purpleAccount, userName.c_str()))
             userName = account.getDisplayName(*privateUser);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId);
+        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId, qId, qText, qFrom);
     }
 
     SecretChatId secretChatId = getSecretChatId(chat);
     if (secretChatId.valid()) {
         std::string userName = getSecretChatBuddyName(secretChatId);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId);
+        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags, svcMsgId, qId, qText, qFrom);
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid())
-        showMessageTextChat(account, chat, message, text, notification, flags, svcMsgId);
+        showMessageTextChat(account, chat, message, text, notification, flags, svcMsgId, qId, qText, qFrom);
 }
 
 // webOS reactions: turn a message's aggregated reaction summary into the "count<SP>emoji\n..." set

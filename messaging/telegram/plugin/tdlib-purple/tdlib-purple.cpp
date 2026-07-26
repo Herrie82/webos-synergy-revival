@@ -378,11 +378,29 @@ static void tgprpl_close (PurpleConnection *gc)
     purple_connection_set_protocol_data(gc, NULL);
 }
 
+// webOS native reply: the transport stashes "webos-reply-to" = the reply target's serviceMessageId
+// ("<chatId>:<messageId>") on the conversation right before serv_send_im/serv_chat_send. Read the
+// messageId tail, clear the stash, and return it (0 if none) so the send can set a real tdlib reply_to.
+static int64_t readReplyToStash(PurpleConversation *conv)
+{
+    if (conv == NULL) return 0;
+    const char *stash = (const char *) purple_conversation_get_data(conv, "webos-reply-to");
+    if (stash == NULL || *stash == '\0') return 0;
+    const char *colon = strrchr(stash, ':');
+    int64_t msgId = colon ? g_ascii_strtoll(colon + 1, NULL, 10) : g_ascii_strtoll(stash, NULL, 10);
+    g_free((char *) stash);
+    purple_conversation_set_data(conv, "webos-reply-to", NULL);
+    return msgId;
+}
+
 static int tgprpl_send_im (PurpleConnection *gc, const char *who, const char *message, PurpleMessageFlags flags)
 {
     PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
     purple_debug_misc(config::pluginId, "tgprpl_send_im to '%s' flags=0x%x\n", who, (unsigned)flags);
-    return tdClient->sendMessage(who, message);
+    PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, who,
+                                                                     purple_connection_get_account(gc));
+    int64_t replyToMsgId = readReplyToStash(conv);
+    return tdClient->sendMessage(who, message, replyToMsgId);
 }
 
 static unsigned int tgprpl_send_typing (PurpleConnection *gc, const char *who, PurpleTypingState typing)
@@ -641,7 +659,10 @@ static int tgprpl_send_chat (PurpleConnection *gc, int id, const char *message, 
     purple_debug_misc(config::pluginId, "Sending group chat message: purple chat id %d, flags=0x%x\n",
                       id, (unsigned)flags);
     PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
-    return tdClient->sendGroupMessage(id, message);
+    // webOS native reply: read the reply target the transport stashed on this chat conversation.
+    PurpleConversation *conv = purple_find_chat(gc, id);
+    int64_t replyToMsgId = readReplyToStash(conv);
+    return tdClient->sendGroupMessage(id, message, replyToMsgId);
 }
 
 static void tgprpl_rename_buddy(PurpleConnection *gc, const char *who, const char *alias)
