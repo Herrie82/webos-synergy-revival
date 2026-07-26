@@ -18,8 +18,13 @@ static void webos_send_reaction_cb(PurpleAccount *account, const char *targetId,
     }
     const char *proto = purple_account_get_protocol_id(account);
     if (g_strcmp0(proto, GOWHATSAPP_PRPL_ID) == 0) {
+        // db8 fallback: the transport stashed the reacted-to message's ORIGINAL sender on the account
+        // right before this (synchronous) emit, so whatsmeow can set FromMe/Participant on BuildReaction
+        // without a live message-cache entry (survives transport restart / very old messages). "" if unknown.
+        const char *targetSender = purple_account_get_string(account, "webos-reaction-target-sender", "");
         gowhatsapp_go_send_reaction(account, (char *)targetId, (char *)(emoji ? emoji : ""),
-                                    (char *)(peer ? peer : ""), (char *)(removeFlag ? removeFlag : ""));
+                                    (char *)(peer ? peer : ""), (char *)(targetSender ? targetSender : ""),
+                                    (char *)(removeFlag ? removeFlag : ""));
     } else if (g_strcmp0(proto, GOMETA_PLUGIN_ID) == 0) {
         gometa_go_send_reaction(account, (char *)targetId, (char *)(emoji ? emoji : ""),
                                 (char *)(peer ? peer : ""), (char *)(removeFlag ? removeFlag : ""));

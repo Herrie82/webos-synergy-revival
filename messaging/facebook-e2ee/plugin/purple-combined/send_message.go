@@ -146,10 +146,12 @@ func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, mes
  * whatsmeow's BuildReaction/BuildMessageKey needs the ORIGINAL message's sender to set FromMe: for a
  * message I sent, FromMe must be true; for one I received, FromMe is false (and, in a group, Participant
  * is the sender). We recover the sender from the local message cache (populated on both send and
- * receive). If the target isn't cached we fall back to: own message in a 1:1 (sender = self) is the only
- * reliably-reactable case, otherwise treat it as received from the chat/peer.
+ * receive). targetSender is the db8 FALLBACK: the transport supplies the reacted-to message's original
+ * sender (from the app's message row), so a reaction still builds correctly when the cache has no entry
+ * for the target - after a transport restart/crash, or for a message older than the cache. Only if BOTH
+ * miss do we guess (1:1 -> received from peer; group -> own message).
  */
-func (handler *Handler) send_reaction(peer string, targetId string, emoji string, remove bool) {
+func (handler *Handler) send_reaction(peer string, targetId string, emoji string, targetSender string, remove bool) {
 	chat, err := parseJID(peer)
 	if err != nil {
 		purple_display_system_message(handler.account, peer, false, fmt.Sprintf("Cannot react: invalid recipient: %v", err))
@@ -161,16 +163,29 @@ func (handler *Handler) send_reaction(peer string, targetId string, emoji string
 	}
 	// Recover the reacted-to message's sender so FromMe/Participant are correct.
 	var sender types.JID
+	resolved := false
 	if cached := handler.lookup_cached_message_by_id(targetId); cached != nil {
 		sender = cached.Sender.ToNonAD()
-	} else if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
-		// 1:1 fallback: we don't know if it's ours or theirs. Default to the peer as sender
-		// (FromMe=false) — reacting to a received 1:1 message is the common case. Reacting to our own
-		// uncached 1:1 message may target the wrong side, but that only happens after a restart.
-		sender = chat.ToNonAD()
-	} else {
-		// Group fallback with no cache entry: assume it's our own message (empty sender => FromMe=true).
-		sender = types.EmptyJID
+		resolved = true
+	} else if targetSender != "" {
+		// db8 fallback: transport supplied the original sender (the app's from.addr). Works for any
+		// message regardless of cache state; whatsmeow derives FromMe from this JID vs our own.
+		if sj, perr := parseJID(targetSender); perr == nil {
+			sender = sj.ToNonAD()
+			resolved = true
+		} else {
+			handler.log.Warnf("send_reaction: unparseable targetSender %q: %v", targetSender, perr)
+		}
+	}
+	if !resolved {
+		// Neither cache nor a usable supplied sender - last-resort heuristic.
+		if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
+			// 1:1: assume a received message (sender = peer, FromMe=false), the common case.
+			sender = chat.ToNonAD()
+		} else {
+			// Group: assume it's our own message (empty sender => FromMe=true).
+			sender = types.EmptyJID
+		}
 	}
 	msg := handler.client.BuildReaction(chat, sender, types.MessageID(targetId), reaction)
 	_, err = handler.client.SendMessage(context.Background(), chat, msg)

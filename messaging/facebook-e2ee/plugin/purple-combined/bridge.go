@@ -126,14 +126,16 @@ func gowhatsapp_go_send_message(account *PurpleAccount, who *C.char, message *C.
 //export gowhatsapp_go_send_reaction
 // webOS reactions (SEND): react to a WhatsApp message. targetId = the bare whatsmeow message id
 // (info.ID, no chat prefix); emoji = the reaction (ignored when removeFlag=="1"); peer = the chat JID
-// the transport uses; removeFlag "1" removes my reaction. Runs the actual send on a goroutine.
-func gowhatsapp_go_send_reaction(account *PurpleAccount, targetId *C.char, emoji *C.char, peer *C.char, removeFlag *C.char) {
+// the transport uses; targetSender = the reacted-to message's ORIGINAL sender (db8 fallback so we can
+// build the reaction without a message-cache entry; "" if unknown); removeFlag "1" removes my reaction.
+// Runs the actual send on a goroutine.
+func gowhatsapp_go_send_reaction(account *PurpleAccount, targetId *C.char, emoji *C.char, peer *C.char, targetSender *C.char, removeFlag *C.char) {
 	handler, ok := handlers[account]
 	if !ok {
 		return
 	}
 	remove := C.GoString(removeFlag) == "1"
-	go handler.send_reaction(C.GoString(peer), C.GoString(targetId), C.GoString(emoji), remove)
+	go handler.send_reaction(C.GoString(peer), C.GoString(targetId), C.GoString(emoji), C.GoString(targetSender), remove)
 }
 
 //export gowhatsapp_go_send_file
