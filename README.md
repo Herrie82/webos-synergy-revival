@@ -67,7 +67,7 @@ badges · **Voice / Video call** = calls. Each capability is shown as **Send / R
 | **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ |
 | **Signal** (`purple-presage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ |
-| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -92,7 +92,7 @@ Notes:
 - **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
   line) and work **both ways**: reactions others place on your messages are received as badges, and
   reactions you place **from the Messaging app are transmitted to the network** (add / change /
-  remove) — **confirmed end-to-end on device for Telegram, WhatsApp, Signal and Facebook**
+  remove) — **confirmed end-to-end on device for Telegram, WhatsApp, Signal, Discord and Facebook**
   (including E2EE Messenger threads). You can also react to your **own** sent messages: the app-sent
   Outbox row is tagged with the network id (via a `webos-im-outbox-id` signal) so a reaction can
   target it. Telegram uses an aggregated/replace model and needs its picker emoji mapped to
