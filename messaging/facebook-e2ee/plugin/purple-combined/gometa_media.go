@@ -7,6 +7,7 @@ package main
 
 /*
 #include <stdlib.h>
+#include "opusreader.h"
 */
 import "C"
 
@@ -65,6 +66,9 @@ func (h *gometaHandler) sendFile(who, filename string) error {
 	}
 	mime := http.DetectContentType(data)
 	isImage := strings.HasPrefix(mime, "image/")
+	// The transport transcodes recorded voice notes to Ogg/Opus; http.DetectContentType reports those
+	// as "application/ogg". Treat any ogg/audio as a voice note.
+	isAudio := mime == "application/ogg" || strings.HasPrefix(mime, "audio/")
 
 	h.mu.Lock()
 	isE2EE := h.e2eeContacts[threadID]
@@ -73,10 +77,13 @@ func (h *gometaHandler) sendFile(who, filename string) error {
 		if h.e2ee == nil {
 			return fmt.Errorf("encrypted thread and E2EE isn't connected yet")
 		}
-		if !isImage {
-			return fmt.Errorf("only images can be sent to encrypted threads for now")
+		if isImage {
+			return h.sendImageE2EE(threadID, data, mime)
 		}
-		return h.sendImageE2EE(threadID, data, mime)
+		if isAudio {
+			return h.sendAudioE2EE(threadID, data)
+		}
+		return fmt.Errorf("only images and voice notes can be sent to encrypted threads for now")
 	}
 	return h.sendMediaPlaintext(threadID, data, filepath.Base(filename), mime)
 }
@@ -211,6 +218,83 @@ func (h *gometaHandler) sendImageE2EE(threadID int64, data []byte, mime string) 
 	// this the sent image carried no id and reactions to it were silently dropped. Mirrors sendE2EE.
 	purple_handle_outbox_id(h.account, otidStr, "")
 	h.logger.Info().Int64("thread", threadID).Msg("e2ee image sent")
+	return nil
+}
+
+// sendAudioE2EE uploads+encrypts an Ogg/Opus voice note via whatsmeow and sends it as a PTT audio
+// message over the E2EE transport (armadillo AudioTransport, OPUS format). Mirrors sendImageE2EE.
+func (h *gometaHandler) sendAudioE2EE(threadID int64, data []byte) error {
+	ctx, cancel := context.WithTimeout(h.ctx, 120*time.Second)
+	defer cancel()
+
+	// Duration + waveform from the Opus stream (same reader WhatsApp uses in send_file.go).
+	cdata := C.CBytes(data)
+	info := C.opusfile_get_info(cdata, C.size_t(len(data)))
+	C.free(cdata)
+	seconds := int64(info.length_seconds)
+	if seconds < 0 {
+		return fmt.Errorf("invalid ogg/opus voice note")
+	}
+	waveform := make([]byte, C.WAVEFORM_SAMPLES_COUNT)
+	for i := range info.waveform {
+		waveform[i] = byte(info.waveform[i])
+	}
+
+	uploaded, err := h.e2ee.Upload(ctx, data, whatsmeow.MediaAudio)
+	if err != nil {
+		return fmt.Errorf("e2ee audio upload: %w", err)
+	}
+	mime := "audio/ogg; codecs=opus"
+	opusFmt := waMediaTransport.AudioTransport_Integral_OPUS
+	mediaTransport := &waMediaTransport.WAMediaTransport{
+		Integral: &waMediaTransport.WAMediaTransport_Integral{
+			FileSHA256:        uploaded.FileSHA256,
+			MediaKey:          uploaded.MediaKey,
+			FileEncSHA256:     uploaded.FileEncSHA256,
+			DirectPath:        &uploaded.DirectPath,
+			MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		},
+		Ancillary: &waMediaTransport.WAMediaTransport_Ancillary{
+			FileLength: proto.Uint64(uint64(len(data))),
+			Mimetype:   &mime,
+			ObjectID:   &uploaded.ObjectID,
+		},
+	}
+	audioMsg := &waConsumerApplication.ConsumerApplication_AudioMessage{PTT: proto.Bool(true)}
+	if err := audioMsg.Set(&waMediaTransport.AudioTransport{
+		Integral: &waMediaTransport.AudioTransport_Integral{
+			Transport:   mediaTransport,
+			AudioFormat: &opusFmt,
+		},
+		Ancillary: &waMediaTransport.AudioTransport_Ancillary{
+			Seconds:  proto.Uint32(uint32(seconds)),
+			Waveform: waveform,
+		},
+	}); err != nil {
+		return fmt.Errorf("build audio message: %w", err)
+	}
+	msg := &waConsumerApplication.ConsumerApplication{
+		Payload: &waConsumerApplication.ConsumerApplication_Payload{
+			Payload: &waConsumerApplication.ConsumerApplication_Payload_Content{
+				Content: &waConsumerApplication.ConsumerApplication_Content{
+					Content: &waConsumerApplication.ConsumerApplication_Content_AudioMessage{AudioMessage: audioMsg},
+				},
+			},
+		},
+	}
+	otid := methods.GenerateEpochID()
+	otidStr := strconv.FormatInt(otid, 10)
+	h.mu.Lock()
+	h.sentOtids[otid] = true
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
+	h.mu.Unlock()
+	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
+	if _, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)}); err != nil {
+		return fmt.Errorf("e2ee audio send: %w", err)
+	}
+	purple_handle_outbox_id(h.account, otidStr, "")
+	h.logger.Info().Int64("thread", threadID).Int64("seconds", seconds).Msg("e2ee voice note sent")
 	return nil
 }
 
