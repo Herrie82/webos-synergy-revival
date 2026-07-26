@@ -61,7 +61,15 @@ func (handler *Handler) add_to_cache(message *waE2E.Message, id types.MessageID,
 		// TODO: also add FromMe and IsGroup since they are necessary for BuildPollVote
 	})
 	// from https://www.delftstack.com/howto/go/queue-implementation-in-golang/
-	if len(handler.cachedMessages) > purple_get_int(handler.account, C.GOWHATSAPP_MESSAGE_CACHE_SIZE_OPTION, 0) {
+	// webOS: the "message-cache-size" account option defaults to 0 (cache disabled) upstream, and it is
+	// never configured on-device — which silently broke replies (and weakened reaction sender lookup),
+	// since lookup_cached_message_by_id could never find the target. Floor it to a sane default so the
+	// cache actually holds recent messages that a reply/reaction can reference.
+	cacheSize := purple_get_int(handler.account, C.GOWHATSAPP_MESSAGE_CACHE_SIZE_OPTION, 0)
+	if cacheSize <= 0 {
+		cacheSize = 500
+	}
+	if len(handler.cachedMessages) > cacheSize {
 		handler.cachedMessages = handler.cachedMessages[1:]
 	}
 }

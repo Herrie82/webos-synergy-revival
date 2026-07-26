@@ -69,7 +69,7 @@ gowhatsapp_add_account_options(GList *account_options)
     option = purple_account_option_int_new(
                 "Number of messages to cache",
                 GOWHATSAPP_MESSAGE_CACHE_SIZE_OPTION,
-                0
+                500 // webOS: non-zero so replies/reactions can resolve their target (see add_to_cache)
                 );
     account_options = g_list_append(account_options, option);
 
