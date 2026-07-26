@@ -391,6 +391,56 @@ teams_emit_reaction_set(TeamsAccount *sa, const gchar *msgid, JsonArray *emotion
 	g_string_free(serialized, TRUE);
 }
 
+/* webOS reactions (trouter REAL-TIME): Teams pushes a live reaction as a "reactionInChat"
+ * activity (properties.activity of a NewMessage/MessageUpdate on the notifications stream),
+ * NOT as properties.emotions[] (which only the offline-history poll carries). activityContext
+ * holds the FULL aggregated per-emotion counts (e.g. {"heart":"1","like":"1", <metadata>...}),
+ * so map the known emotion keys to the app's emoji and emit the same aggregated
+ * webos-im-reaction-set the emotions[] path uses, keyed by the reacted message's sourceMessageId.
+ * Unknown keys (WebhookCorrelationId, realm, ...) are skipped. Empty set clears all reactions. */
+static void
+teams_process_reaction_activity(TeamsAccount *sa, JsonObject *activity)
+{
+	GString *serialized;
+	gchar *msgid;
+	JsonObject *ctx;
+	gint64 sid;
+
+	if (sa == NULL || activity == NULL || !json_object_has_member(activity, "sourceMessageId"))
+		return;
+	sid = json_object_get_int_member(activity, "sourceMessageId");
+	if (sid == 0)
+		return;
+	msgid = g_strdup_printf("%" G_GINT64_FORMAT, sid);
+
+	serialized = g_string_new("");
+	ctx = json_object_has_member(activity, "activityContext")
+		? json_object_get_object_member(activity, "activityContext") : NULL;
+	if (ctx != NULL) {
+		GList *keys = json_object_get_members(ctx), *it;
+		for (it = keys; it; it = it->next) {
+			const gchar *key = it->data;
+			const gchar *display = teams_emotion_key_to_display(key);
+			const gchar *cntstr;
+			guint count;
+			if (display == NULL)
+				continue; /* metadata key, not an emotion */
+			cntstr = json_object_get_string_member(ctx, key);
+			count = cntstr ? (guint) g_ascii_strtoull(cntstr, NULL, 10) : 0;
+			if (count == 0)
+				continue;
+			g_string_append_printf(serialized, "%u %s\n", count, display);
+		}
+		g_list_free(keys);
+	}
+
+	purple_debug_info("teams", "webos: reactionInChat on msg %s -> [%s]\n", msgid, serialized->str);
+	purple_signal_emit(purple_conversations_get_handle(), "webos-im-reaction-set",
+		sa->account, msgid, serialized->str, (const gchar *)NULL);
+	g_string_free(serialized, TRUE);
+	g_free(msgid);
+}
+
 static void
 process_message_resource(TeamsAccount *sa, JsonObject *resource)
 {
@@ -482,6 +532,20 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 	}
 	if (json_object_has_member(resource, "properties")) {
 		properties = json_object_get_object_member(resource, "properties");
+
+		/* webOS reactions (trouter real-time): a live reaction arrives as a "reactionInChat"
+		 * activity on the notifications stream, with an EMPTY content body. Emit it as a reaction
+		 * and STOP - otherwise it falls through as a blank Text message (all we did before was
+		 * stash its msg-id). The offline-history poll separately carries properties.emotions[]. */
+		if (json_object_has_member(properties, "activity")) {
+			JsonObject *activity = json_object_get_object_member(properties, "activity");
+			if (purple_strequal(json_object_get_string_member(activity, "activityType"), "reactionInChat")) {
+				teams_process_reaction_activity(sa, activity);
+				g_strfreev(messagetype_parts);
+				return;
+			}
+		}
+
 		if (json_object_has_member(properties, "edittime")) {
 			skypeeditedid = json_object_get_string_member(properties, "edittime");
 		}
