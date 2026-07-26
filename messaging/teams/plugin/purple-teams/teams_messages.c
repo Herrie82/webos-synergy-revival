@@ -2288,6 +2288,11 @@ teams_drain_presence_queue(gpointer user_data)
 {
 	TeamsAccount *sa = user_data;
 
+	// webOS: if sa was freed by a re-login flap, bail WITHOUT touching it (pointer check first, so we
+	// never deref the freed sa->pc / sa->pending_presences). The source id is gone with the old sa.
+	if (!teams_account_is_live(sa))
+		return G_SOURCE_REMOVE;
+
 	if (!PURPLE_IS_CONNECTION(sa->pc)) {
 		// If the connection has dropped discard all pending messages and stop.
 		while (!g_queue_is_empty(sa->pending_presences)) {
@@ -2492,6 +2497,12 @@ teams_drain_presence_queue(gpointer user_data)
 void
 teams_got_contact_statuses(TeamsAccount *sa, JsonNode *node, gpointer user_data)
 {
+	// webOS: a presence-snapshot response that lands after a re-login flap would loop over the
+	// presences inserting into the freed sa's NULL hashes (flood) and then g_queue_push into the freed
+	// NULL pending_presences queue -> SIGSEGV. Bail by pointer check (no deref of the freed sa).
+	if (!teams_account_is_live(sa))
+		return;
+
 	JsonArray *responses = json_node_get_array(node);
 
 	if (responses == NULL || json_array_get_length(responses) == 0) {
