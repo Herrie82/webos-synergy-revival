@@ -158,16 +158,34 @@ func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
 	// (FromMe / sender). Keyed by the message id (matches the serviceMessageId we store below).
 	if id := string(evt.Info.ID); id != "" {
 		h.mu.Lock()
-		h.e2eeMsgMeta[id] = e2eeMsgInfo{fromMe: evt.Info.IsFromMe, sender: strconv.FormatInt(senderFbid, 10)}
+		h.e2eeMsgMeta[id] = e2eeMsgInfo{fromMe: evt.Info.IsFromMe, sender: strconv.FormatInt(senderFbid, 10), text: text}
 		h.mu.Unlock()
+	}
+	// webOS replies: an encrypted reply carries the quoted-original in the MessageApplication metadata.
+	// StanzaID matches the serviceMessageId we store (evt.Info.ID); recover the quoted text + author from
+	// the per-message cache (populated above on every E2EE message received/sent this session).
+	var quotedText, quotedFrom, quotedId string
+	if qm := evt.FBApplication.GetMetadata().GetQuotedMessage(); qm != nil {
+		quotedId = qm.GetStanzaID()
+		if quotedId != "" {
+			h.mu.Lock()
+			if meta, ok := h.e2eeMsgMeta[quotedId]; ok {
+				quotedText = meta.text
+				if sf, perr := strconv.ParseInt(meta.sender, 10, 64); perr == nil {
+					quotedFrom = h.contactName[sf]
+				}
+			}
+			h.mu.Unlock()
+		}
 	}
 	h.addContact(chatFbid, name)
 	h.notifyMessage(strconv.FormatInt(chatFbid, 10), strconv.FormatInt(senderFbid, 10),
-		name, text, evt.Info.ID, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe)
+		name, text, evt.Info.ID, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe, quotedText, quotedFrom, quotedId)
 }
 
 // sendE2EE sends a text message over the encrypted (whatsmeow) transport to a Messenger thread.
-func (h *gometaHandler) sendE2EE(threadID int64, text string) error {
+// replyTo (webOS replies) = the StanzaID of the message this one replies to ("" for a normal message).
+func (h *gometaHandler) sendE2EE(threadID int64, text, replyTo string) error {
 	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
 	msg := &waConsumerApplication.ConsumerApplication{
 		Payload: &waConsumerApplication.ConsumerApplication_Payload{
@@ -184,12 +202,32 @@ func (h *gometaHandler) sendE2EE(threadID int64, text string) error {
 	otidStr := strconv.FormatInt(otid, 10)
 	h.mu.Lock()
 	h.sentOtids[otid] = true
-	// Record this as our own message so a later reaction over E2EE builds a FromMe=true MessageKey.
-	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
+	// Record this as our own message so a later reaction/reply over E2EE builds a FromMe=true MessageKey
+	// (and can quote this message's text).
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10), text: text}
 	h.mu.Unlock()
+	// webOS replies: attach the quoted-original so the reply threads. StanzaID = the target message id;
+	// Participant = its sender's Messenger JID (recovered from the per-message cache).
+	metadata := &waMsgApplication.MessageApplication_Metadata{}
+	if replyTo != "" {
+		participant := ""
+		h.mu.Lock()
+		if meta, ok := h.e2eeMsgMeta[replyTo]; ok && meta.sender != "" {
+			participant = waTypes.JID{User: meta.sender, Server: waTypes.MessengerServer}.String()
+		}
+		h.mu.Unlock()
+		qm := &waMsgApplication.MessageApplication_Metadata_QuotedMessage{
+			StanzaID:  proto.String(replyTo),
+			RemoteJID: proto.String(to.String()),
+		}
+		if participant != "" {
+			qm.Participant = proto.String(participant)
+		}
+		metadata.QuotedMessage = qm
+	}
 	ctx, cancel := context.WithTimeout(h.ctx, 30*time.Second)
 	defer cancel()
-	_, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+	_, err := h.e2ee.SendFBMessage(ctx, to, msg, metadata,
 		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)})
 	if err == nil {
 		// webOS outbox-id: the otid we passed as SendRequestExtra{ID} IS this message's id — hand it to

@@ -40,7 +40,16 @@ static void gometa_close(PurpleConnection *pc) {
 }
 
 static int gometa_send_im(PurpleConnection *pc, const char *who, const char *message, PurpleMessageFlags flags) {
-    return gometa_go_send_message(purple_connection_get_account(pc), (char *)who, (char *)message);
+    // webOS replies: the transport stashes the reply target's serviceMessageId as "webos-reply-to" on
+    // the conversation before serv_send_im; read + clear it and pass it down so the reply threads.
+    PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, who, purple_connection_get_account(pc));
+    gchar *reply_to = conv ? (gchar *)purple_conversation_get_data(conv, "webos-reply-to") : NULL;
+    int ret = gometa_go_send_message(purple_connection_get_account(pc), (char *)who, (char *)message, reply_to ? (char *)reply_to : (char *)"");
+    if (reply_to != NULL) {
+        purple_conversation_set_data(conv, "webos-reply-to", NULL);
+        g_free(reply_to);
+    }
+    return ret;
 }
 
 // ---- group chat callbacks (threads registered with component "id" = thread key) ----
@@ -139,7 +148,13 @@ static int gometa_chat_send(PurpleConnection *pc, int id, const char *message, P
     if (conv == NULL) return -1;
     const char *threadKey = purple_conversation_get_name(conv);
     if (threadKey == NULL || *threadKey == '\0') return -1;
-    gometa_go_send_message(purple_connection_get_account(pc), (char *)threadKey, (char *)message);
+    // webOS replies: read + clear the reply target the transport stashed on this chat conversation.
+    gchar *reply_to = (gchar *)purple_conversation_get_data(conv, "webos-reply-to");
+    gometa_go_send_message(purple_connection_get_account(pc), (char *)threadKey, (char *)message, reply_to ? (char *)reply_to : (char *)"");
+    if (reply_to != NULL) {
+        purple_conversation_set_data(conv, "webos-reply-to", NULL);
+        g_free(reply_to);
+    }
     return 0;
 }
 

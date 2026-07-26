@@ -87,7 +87,7 @@ func gometaAccountRemoved(account *PurpleAccount, purpleUserDir, username string
 }
 
 //export gometa_go_send_message
-func gometa_go_send_message(account *PurpleAccount, who *C.char, message *C.char) C.int {
+func gometa_go_send_message(account *PurpleAccount, who *C.char, message *C.char, reply_to *C.char) C.int {
 	// During interactive login the 2FA prompt is shown in a "Facebook" auth chat (imlibpurple
 	// has no request-input UI-op, so purple_request_input can't surface). The user replies with
 	// the code in that chat; if an input prompt is pending for this account, capture the reply
@@ -106,7 +106,7 @@ func gometa_go_send_message(account *PurpleAccount, who *C.char, message *C.char
 	if !ok {
 		return 0
 	}
-	go h.sendMessage(C.GoString(who), C.GoString(message))
+	go h.sendMessage(C.GoString(who), C.GoString(message), C.GoString(reply_to))
 	return 1
 }
 
@@ -220,6 +220,7 @@ type gometaHandler struct {
 type e2eeMsgInfo struct {
 	fromMe bool
 	sender string // fbid of the original message's sender
+	text   string // webOS replies: the message body, so a reply quoting this id can show its text
 }
 
 func (h *gometaHandler) eventHandler(ctx context.Context, rawEvt any) {
@@ -244,7 +245,7 @@ func (h *gometaHandler) eventHandler(ctx context.Context, rawEvt any) {
 // recipient's fbid (send_im buddy id); for a group it's the thread key resolved from the chat
 // conversation name (see gometa_chat_send). Non-E2EE send via the messagix SendMessageTask; E2EE
 // threads are a later milestone (PrepareE2EEClient/whatsmeow).
-func (h *gometaHandler) sendMessage(who, text string) {
+func (h *gometaHandler) sendMessage(who, text, replyTo string) {
 	threadID, err := strconv.ParseInt(who, 10, 64)
 	if err != nil {
 		h.notifyError(fmt.Sprintf("Cannot send: invalid recipient %q", who), false)
@@ -264,7 +265,7 @@ func (h *gometaHandler) sendMessage(who, text string) {
 			h.notifyError("Cannot send: this is an encrypted thread and E2EE isn't connected yet", false)
 			return
 		}
-		if err := h.sendE2EE(threadID, text); err != nil {
+		if err := h.sendE2EE(threadID, text, replyTo); err != nil {
 			h.logger.Warn().Err(err).Int64("thread", threadID).Msg("e2ee send failed")
 			h.notifyError(fmt.Sprintf("Failed to send encrypted message: %v", err), false)
 			return
@@ -290,6 +291,10 @@ func (h *gometaHandler) sendMessage(who, text string) {
 		SendType:         table.TEXT,
 		SyncGroup:        1,
 		Text:             text,
+	}
+	// webOS replies: thread the reply on the network so other clients link it to the original.
+	if replyTo != "" {
+		task.ReplyMetaData = &socket.ReplyMetaData{ReplyMessageId: replyTo, ReplySourceType: 1, ReplyType: 0}
 	}
 	resp, err := h.client.ExecuteTasks(ctx, task)
 	if err != nil {
@@ -332,7 +337,7 @@ func (h *gometaHandler) sendMessage(who, text string) {
 	h.mu.Lock()
 	h.e2eeContacts[threadID] = true
 	h.mu.Unlock()
-	if eerr := h.sendE2EE(threadID, text); eerr != nil {
+	if eerr := h.sendE2EE(threadID, text, replyTo); eerr != nil {
 		h.logger.Warn().Err(eerr).Int64("thread", threadID).Msg("e2ee retry failed")
 		h.notifyError(fmt.Sprintf("Failed to send encrypted message: %v", eerr), false)
 		return
@@ -540,7 +545,7 @@ func (h *gometaHandler) handleMessage(threadKey, senderID int64, text, offlineTh
 		h.addContact(threadKey, partnerName)
 	}
 	h.notifyMessage(strconv.FormatInt(threadKey, 10), strconv.FormatInt(senderID, 10),
-		name, text, messageID, tsMs/1000, isGroup, senderID == h.selfID)
+		name, text, messageID, tsMs/1000, isGroup, senderID == h.selfID, "", "", "")
 }
 
 // webOS reactions: forward a Facebook reaction to the shared "webos-im-reaction" signal (via the
@@ -580,7 +585,7 @@ func (h *gometaHandler) notifyChat(threadKey int64, name string) {
 	C.gometa_process_message(msg)
 }
 
-func (h *gometaHandler) notifyMessage(conv, who, name, text, messageID string, ts int64, isGroup, isOutgoing bool) {
+func (h *gometaHandler) notifyMessage(conv, who, name, text, messageID string, ts int64, isGroup, isOutgoing bool, quotedText, quotedFrom, quotedId string) {
 	msg := C.gometa_message_t{account: h.account, msgtype: C.char(C.gometa_message_type_text), timestamp: C.time_t(ts)}
 	msg.conv = C.CString(conv)
 	msg.who = C.CString(who)
@@ -592,6 +597,16 @@ func (h *gometaHandler) notifyMessage(conv, who, name, text, messageID string, t
 	// -> stored as serviceMessageId, which a later reaction (LSUpsertReaction.MessageId) targets.
 	if messageID != "" {
 		msg.id = C.CString(messageID)
+	}
+	// webOS replies: carry the quoted-original (if this message is a reply) to the C stash.
+	if quotedText != "" {
+		msg.quotedText = C.CString(quotedText)
+		if quotedFrom != "" {
+			msg.quotedFrom = C.CString(quotedFrom)
+		}
+		if quotedId != "" {
+			msg.quotedId = C.CString(quotedId)
+		}
 	}
 	if isGroup {
 		msg.isGroup = 1

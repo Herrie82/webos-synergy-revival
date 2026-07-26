@@ -26,6 +26,9 @@ typedef struct gometa_message {
     char *name;  // display name (sender name, contact name, or group name)
     char *text;  // message body / error text
     char *id;    // message id (optional)
+    char *quotedText; // webOS replies: replied-to original's text (NULL if not a reply)
+    char *quotedFrom; // webOS replies: replied-to original's author display name
+    char *quotedId;   // webOS replies: replied-to original's message id
     time_t timestamp;
     char msgtype;
     char isGroup;

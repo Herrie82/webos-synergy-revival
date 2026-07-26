@@ -55,6 +55,19 @@ static void gometa_free_strings(gometa_message_t *m) {
     free(m->name);
     free(m->text);
     free(m->id);
+    free(m->quotedText);
+    free(m->quotedFrom);
+    free(m->quotedId);
+}
+
+/* webOS replies: stash the quoted-original (text/from/id) on a conversation right beside webos-msg-id,
+ * so the transport records an inline quote card. No-op when the message is not a reply. The transport
+ * g_free's the values after reading them. */
+static void gometa_stash_quote(PurpleConversation *conv, const char *quotedText, const char *quotedFrom, const char *quotedId) {
+    if (!conv || !quotedText || !*quotedText) return;
+    purple_conversation_set_data(conv, "webos-quoted-text", g_strdup(quotedText));
+    if (quotedFrom && *quotedFrom) purple_conversation_set_data(conv, "webos-quoted-from", g_strdup(quotedFrom));
+    if (quotedId && *quotedId) purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(quotedId));
 }
 
 // The buddy-list group all Facebook contacts/chats live under.
@@ -92,7 +105,8 @@ static void gometa_ensure_chat(PurpleAccount *account, const char *threadKey, co
 }
 
 static void gometa_group_message(PurpleConnection *pc, const char *threadKey, const char *senderName,
-                                 const char *text, time_t ts, int isOutgoing, const char *msgId) {
+                                 const char *text, time_t ts, int isOutgoing, const char *msgId,
+                                 const char *quotedText, const char *quotedFrom, const char *quotedId) {
     int chat_id = (int)g_str_hash(threadKey);
     if (purple_find_chat(pc, chat_id) == NULL) {
         serv_got_joined_chat(pc, chat_id, threadKey);
@@ -102,6 +116,9 @@ static void gometa_group_message(PurpleConnection *pc, const char *threadKey, co
     if (!isOutgoing && msgId && *msgId) {
         PurpleConversation *conv = purple_find_chat(pc, chat_id);
         if (conv) purple_conversation_set_data(conv, "webos-msg-id", g_strdup(msgId));
+    }
+    if (!isOutgoing) {
+        gometa_stash_quote(purple_find_chat(pc, chat_id), quotedText, quotedFrom, quotedId);
     }
     const char *from = (senderName && *senderName) ? senderName : "unknown";
     serv_got_chat_in(pc, chat_id, from, isOutgoing ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV, text, ts);
@@ -149,7 +166,8 @@ static gboolean gometa_dispatch(gpointer data) {
             case gometa_message_type_text:
                 if (m->text && m->conv) {
                     if (m->isGroup) {
-                        gometa_group_message(pc, m->conv, m->name ? m->name : m->who, m->text, ts, m->isOutgoing, m->id);
+                        gometa_group_message(pc, m->conv, m->name ? m->name : m->who, m->text, ts, m->isOutgoing, m->id,
+                                m->quotedText, m->quotedFrom, m->quotedId);
                     } else if (m->isOutgoing) {
                         // A message we sent from ANOTHER client (phone) - handleMessage already dropped
                         // the echoes of our OWN sends (sentOtids), so everything here is a genuine
@@ -161,16 +179,18 @@ static gboolean gometa_dispatch(gpointer data) {
                         if (m->id && *m->id) {
                             purple_conversation_set_data(conv, "webos-msg-id", g_strdup(m->id));
                         }
+                        gometa_stash_quote(conv, m->quotedText, m->quotedFrom, m->quotedId);
                         purple_conv_im_write(purple_conversation_get_im_data(conv), m->conv, m->text,
                                 (PurpleMessageFlags)(PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_REMOTE_SEND), ts);
                     } else {
-                        // webOS reactions: stash the message id so the transport stores it as
-                        // serviceMessageId (read in incoming_message_cb during serv_got_im).
+                        // webOS reactions/replies: stash the message id + any quoted-original on the conv
+                        // so the transport stores serviceMessageId (for reactions) and the inline quote card.
+                        PurpleConversation *iconv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, m->conv, m->account);
+                        if (!iconv) iconv = purple_conversation_new(PURPLE_CONV_TYPE_IM, m->account, m->conv);
                         if (m->id && *m->id) {
-                            PurpleConversation *iconv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, m->conv, m->account);
-                            if (!iconv) iconv = purple_conversation_new(PURPLE_CONV_TYPE_IM, m->account, m->conv);
                             purple_conversation_set_data(iconv, "webos-msg-id", g_strdup(m->id));
                         }
+                        gometa_stash_quote(iconv, m->quotedText, m->quotedFrom, m->quotedId);
                         serv_got_im(pc, m->conv, m->text, PURPLE_MESSAGE_RECV, ts);
                     }
                 }
