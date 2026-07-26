@@ -45,6 +45,14 @@ static void purple_conversation_write_img_message(
 		PurpleMessageFlags flags, time_t ts) {
 	PurpleMessage *pmsg;
 
+	// A NULL conv reaches purple_conversation_write_message -> purple_conversation_get_im_data
+	// which asserts conv != NULL and then derefs it -> SIGSEGV that takes the whole transport down
+	// (seen on Teams image send/receive when no PurpleConversation exists yet for `who`). Guard it.
+	if (conv == NULL) {
+		purple_debug_warning("teams", "write_img_message: no conversation for %s, dropping inline image\n", who ? who : "(null)");
+		return;
+	}
+
 	if (flags & PURPLE_MESSAGE_SEND) {
 		pmsg = purple_message_new_outgoing(who, msg, flags);
 		purple_message_set_time(pmsg, ts);
