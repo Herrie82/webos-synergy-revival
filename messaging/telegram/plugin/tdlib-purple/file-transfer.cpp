@@ -6,6 +6,37 @@
 #include "sticker.h"
 #include "purple-info.h"
 #include <unistd.h>
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <vector>
+
+// webOS voice messages: the transport transcodes a recorded WAV to Ogg/Opus and sends it as a .ogg.
+// Telegram voice notes need a duration; derive it from the Opus stream's final granule position (Opus
+// granules are always at 48 kHz), by scanning the Ogg pages for the last valid granulepos. Returns
+// seconds (min 1). 0 on any parse problem.
+static int oggOpusDurationSeconds(const char *path)
+{
+    if (!path) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz <= 14) { fclose(f); return 0; }
+    std::vector<unsigned char> buf((size_t)sz);
+    size_t rd = fread(buf.data(), 1, (size_t)sz, f);
+    fclose(f);
+    if (rd != (size_t)sz) return 0;
+    int64_t granule = 0;
+    for (long i = 0; i + 14 <= sz; i++) {
+        if (buf[i] == 'O' && buf[i+1] == 'g' && buf[i+2] == 'g' && buf[i+3] == 'S') {
+            int64_t g = 0;
+            for (int b = 0; b < 8; b++) g |= (int64_t)buf[i + 6 + b] << (8 * b);
+            if (g > 0) granule = g; // last valid granule = total 48 kHz samples
+        }
+    }
+    int sec = (int)(granule / 48000);
+    return sec > 0 ? sec : 1;
+}
 
 enum {
     FILE_UPLOAD_PRIORITY = 1,
@@ -104,12 +135,29 @@ static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfe
             purple_xfer_unref(upload);
             account.removeFileTransfer(file.id_);
             auto sendMessageRequest = td::td_api::make_object<td::td_api::sendMessage>();
-            auto content = td::td_api::make_object<td::td_api::inputMessageDocument>();
-            content->caption_ = td::td_api::make_object<td::td_api::formattedText>();
-            // webOS tdlib-1.8.x: inputMessageDocument.document_ is now an inputDocument wrapper around the InputFile
-            content->document_ = td::td_api::make_object<td::td_api::inputDocument>(
-                td::td_api::make_object<td::td_api::inputFileId>(file.id_), nullptr, false);
-            sendMessageRequest->input_message_content_ = std::move(content);
+            const char *localName = purple_xfer_get_local_filename(upload);
+            size_t nameLen = localName ? strlen(localName) : 0;
+            if (nameLen > 4 && g_ascii_strcasecmp(localName + nameLen - 4, ".ogg") == 0) {
+                // webOS voice message: the transport already transcoded the recording to Ogg/Opus, so
+                // send it as a Telegram VOICE NOTE (not a document). Duration from the Opus granule;
+                // waveform left empty (Telegram renders a default bar).
+                auto voice = td::td_api::make_object<td::td_api::inputVoiceNote>(
+                    td::td_api::make_object<td::td_api::inputFileId>(file.id_),
+                    oggOpusDurationSeconds(localName),
+                    std::string());
+                auto content = td::td_api::make_object<td::td_api::inputMessageVoiceNote>(
+                    std::move(voice),
+                    td::td_api::make_object<td::td_api::formattedText>(),
+                    nullptr);
+                sendMessageRequest->input_message_content_ = std::move(content);
+            } else {
+                auto content = td::td_api::make_object<td::td_api::inputMessageDocument>();
+                content->caption_ = td::td_api::make_object<td::td_api::formattedText>();
+                // webOS tdlib-1.8.x: inputMessageDocument.document_ is now an inputDocument wrapper around the InputFile
+                content->document_ = td::td_api::make_object<td::td_api::inputDocument>(
+                    td::td_api::make_object<td::td_api::inputFileId>(file.id_), nullptr, false);
+                sendMessageRequest->input_message_content_ = std::move(content);
+            }
             sendMessageRequest->chat_id_ = chatId.value();
 
             uint64_t requestId = transceiver.sendQuery(std::move(sendMessageRequest), sendMessageResponse);
