@@ -878,8 +878,14 @@ teams_got_object_for_file(PurpleHttpConnection *http_conn, PurpleHttpResponse *r
 	
 	//Get back {"id": "0-cus-d3-deadbeefdeadbeef012345678"}
 	if (obj == NULL || !json_object_has_member(obj, "id")) {
+		// swft is still the xfer's protocol data, and purple_xfer_cancel_local() fires the
+		// cancel_send_fnc (teams_free_xfer), which frees swft->from + swft a SECOND time -> a
+		// double-free that aborts the whole transport whenever a Teams image/file object-creation
+		// POST comes back without an id. NULL the protocol data first so teams_free_xfer's
+		// g_return_if_fail(swft != NULL) bails instead of re-freeing what we free here.
 		g_free(swft->from);
 		g_free(swft);
+		purple_xfer_set_protocol_data(xfer, NULL);
 		purple_xfer_cancel_local(xfer);
 		if (obj != NULL) {
 			json_object_unref(obj);
