@@ -503,6 +503,24 @@ func (h *gometaHandler) parseTable(tbl *table.LSTable) {
 	for _, r := range tbl.LSDeleteReactionV2 {
 		h.notifyReaction(r.ThreadKey, r.MessageID, r.ReactionFBID, "")
 	}
+	// webOS delivery/read receipts: the peer delivered/read our outgoing messages up to a per-thread
+	// watermark timestamp (Facebook has no per-message receipt). Emit a watermark scoped by ThreadKey
+	// (== the recipient's fbid / the outbox row's to.addr for a 1:1 thread); the transport marks every
+	// outgoing message whose timestamp is at/under it. Skip our own read position (ContactId == self).
+	for _, r := range tbl.LSUpdateReadReceipt {
+		if r.ContactId == h.selfID || r.ThreadKey == 0 || r.ReadWatermarkTimestampMs == 0 {
+			continue
+		}
+		purple_handle_receipt_watermark(h.account, "ts:"+strconv.FormatInt(r.ThreadKey, 10),
+			strconv.FormatInt(r.ReadWatermarkTimestampMs, 10), "read")
+	}
+	for _, r := range tbl.LSUpdateDeliveryReceipt {
+		if r.ContactId == h.selfID || r.ThreadKey == 0 || r.DeliveredWatermarkTimestampMs == 0 {
+			continue
+		}
+		purple_handle_receipt_watermark(h.account, "ts:"+strconv.FormatInt(r.ThreadKey, 10),
+			strconv.FormatInt(r.DeliveredWatermarkTimestampMs, 10), "delivered")
+	}
 }
 
 // addContact records a display name and adds/updates the buddy, skipping empty ids and self.

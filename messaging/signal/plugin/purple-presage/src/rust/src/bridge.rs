@@ -134,6 +134,15 @@ extern "C" {
         service_message_id: *const std::os::raw::c_char,
         text: *const std::os::raw::c_char,
     );
+
+    // implemented by receive_text.c - emit the cross-prpl "webos-im-receipt" signal telling the
+    // transport the recipient delivered/read one of our outgoing messages. target_id is the message's
+    // sent timestamp (its serviceMessageId); status is "delivered" or "read".
+    fn presage_emit_receipt(
+        account: *mut crate::bridge_structs::PurpleAccount,
+        target_id: *const std::os::raw::c_char,
+        status: *const std::os::raw::c_char,
+    );
 }
 
 // Signal call states pushed to the Phone app's com.palm.signal.call service (must match call.c).
@@ -200,6 +209,26 @@ pub fn emit_outbox_id(
             account as *mut crate::bridge_structs::PurpleAccount,
             id.as_ptr(),
             text.as_ptr(),
+        );
+    }
+}
+
+// webOS delivery/read receipts: tell the transport the recipient delivered/read one of our outgoing
+// messages, via the "webos-im-receipt" signal. target_id is the message's sent timestamp (its
+// serviceMessageId, ms decimal); status is "delivered" or "read". The C side hops to the libpurple
+// main thread before emitting.
+pub fn emit_receipt(
+    account: *const crate::bridge_structs::PurpleAccount,
+    target_id: String,
+    status: String,
+) {
+    let target = std::ffi::CString::new(target_id).unwrap_or_default();
+    let status = std::ffi::CString::new(status).unwrap_or_default();
+    unsafe {
+        presage_emit_receipt(
+            account as *mut crate::bridge_structs::PurpleAccount,
+            target.as_ptr(),
+            status.as_ptr(),
         );
     }
 }

@@ -99,10 +99,21 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 	case *events.Message:
 		handler.handle_message(evt.Message, evt.Info, evt)
 	case *events.Receipt:
+		// webOS delivery/read receipts: the recipient delivered/read messages WE sent. evt.MessageIDs
+		// are the ids we surfaced via purple_handle_outbox_id (== serviceMessageId). "read"/"read-self"
+		// -> double tick; "delivered" -> single tick. (Sender/played/etc are ignored.)
+		var receiptStatus string
 		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
 			log.Infof("%v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
+			receiptStatus = "read"
 		} else if evt.Type == types.ReceiptTypeDelivered {
 			log.Infof("%s was delivered to %s at %s", evt.MessageIDs[0], evt.SourceString(), evt.Timestamp)
+			receiptStatus = "delivered"
+		}
+		if receiptStatus != "" {
+			for _, mid := range evt.MessageIDs {
+				purple_handle_receipt(handler.account, string(mid), receiptStatus)
+			}
 		}
 	case *events.Presence:
 		handler.handle_presence(evt)

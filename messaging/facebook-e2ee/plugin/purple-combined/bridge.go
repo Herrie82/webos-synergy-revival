@@ -589,6 +589,40 @@ func purple_handle_outbox_id(account *PurpleAccount, id string, text string) {
 	C.gowhatsapp_process_message_bridge(cmessage)
 }
 
+// webOS delivery/read receipts: the recipient delivered/read one of our outgoing messages. id is the
+// message's server id (== its serviceMessageId); status is "delivered" or "read". Forwarded to the
+// transport's "webos-im-receipt" signal (status carried in the text field).
+func purple_handle_receipt(account *PurpleAccount, id string, status string) {
+	if id == "" {
+		return
+	}
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_receipt),
+		messageId: C.CString(id),
+		text:      C.CString(status),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
+
+// webOS delivery/read receipts (WATERMARK, Facebook): the peer delivered/read everything in a thread up
+// to a timestamp. scope is the transport match rule ("ts:<threadKey>"), watermark the boundary (ms
+// decimal), status "delivered" or "read". Forwarded to the transport's "webos-im-receipt-hwm" signal
+// (scope in remoteJid, watermark in messageId, status in text).
+func purple_handle_receipt_watermark(account *PurpleAccount, scope string, watermark string, status string) {
+	if scope == "" || watermark == "" {
+		return
+	}
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_receipt_hwm),
+		remoteJid: C.CString(scope),
+		messageId: C.CString(watermark),
+		text:      C.CString(status),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
+
 /*
  * This will inform purple that the remote user started typing.
  */

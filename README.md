@@ -57,20 +57,21 @@ same verified plumbing.
 Synergy **IM** account providers, each bridging a `libpurple` protocol plugin into the stock
 Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Replies** = inline quote
 card + threaded reply · **Images / Audio / Video** = attachments · **Reactions** = inline reaction
-badges · **Voice / Video call** = calls. Each capability is shown as **Send / Receive** (for calls:
-**place / answer**). ✅ works · 🟡 partial / built-not-yet-verified · ❔ not yet verified on webOS
-· ❌ none · ⛔ built but currently disabled.
+badges · **Voice / Video call** = calls · **Receipts** = delivered / read ticks (single / double
+check) on your sent messages. Each capability is shown as **Send / Receive** (for calls: **place /
+answer**; Receipts is a single **read**-state column). ✅ works · 🟡 partial / built-not-yet-verified
+· ❔ not yet verified on webOS · ❌ none · ⛔ built but currently disabled.
 
-| Connector | IM || Replies || Images || Audio || Video || Reactions || Voice call || Video call ||
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **(direction)** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Place** | **Answ** | **Place** | **Answ** |
-| **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ |
-| **Signal** (`purple-presage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ |
-| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Connector | IM || Replies || Images || Audio || Video || Reactions || Voice call || Video call || Receipts |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **(direction)** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Place** | **Answ** | **Place** | **Answ** | **Read** |
+| **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ | 🟡 |
+| **Signal** (`purple-presage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ | 🟡 |
+| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | 🟡 |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
@@ -100,6 +101,14 @@ Notes:
   per-sender. **Teams** send/remove is confirmed on device (consumer chatsvc `emotions` property,
   `PUT`/`DELETE` with a numeric-ms `value` body — verified by decompiling the Teams app); 🙏 has no
   consumer-Teams reaction and is dropped from the picker via the template map.
+- **Receipts** show a **single check** (delivered) / **double check** (read) beside your sent
+  messages, styled after the stock luna-systemui checkmark. **WhatsApp is confirmed on device**;
+  **Signal** (per-message-id), **Telegram** (single = sent-to-server, double = `updateChatReadOutbox`)
+  and **Facebook** (per-thread read/delivery watermarks) are built + deployed and awaiting
+  verification. The prpl emits a `webos-im-receipt` (by id) or `webos-im-receipt-hwm` (watermark)
+  signal; the transport's `ReceiptHandler` upgrades the Outbox row's `deliveryStatus` (monotonic:
+  read outranks delivered). **Teams** is deferred (its `consumptionhorizon` inbound format needs
+  on-device confirmation to avoid false ticks) and **Discord** exposes no peer read-state at all.
 - **Voice messages (Audio → Send)** are recorded in the Messaging app compose bar (a mic button
   driving the native `MediaCaptureV3` 8 kHz capture), staged with an inline play/pause + waveform
   preview, then the transport transcodes the recording once to **Ogg/Opus** (`OpusEncoder`, libopus,

@@ -62,6 +62,36 @@ void presage_emit_outbox_id(PurpleAccount *account, const char *service_message_
     purple_timeout_add(0, presage_outbox_id_apply, e); /* thread-safe; runs on the main thread */
 }
 
+/* webOS delivery/read receipts: emit the cross-prpl "webos-im-receipt" signal telling the transport
+ * that the recipient DELIVERED or READ one of our outgoing messages. Like presage_emit_reaction this
+ * runs on the Rust worker thread, so copy the strings and hop to the libpurple main thread before
+ * touching purple_signal_emit. target_id is the message's sent timestamp (its serviceMessageId);
+ * status is "delivered" or "read". */
+typedef struct {
+    PurpleAccount *account;
+    char *target_id;
+    char *status;
+} PresageReceiptEvt;
+
+static gboolean presage_receipt_apply(gpointer data) {
+    PresageReceiptEvt *e = (PresageReceiptEvt *)data;
+    purple_signal_emit(purple_conversations_get_handle(), "webos-im-receipt",
+        e->account, e->target_id, e->status);
+    g_free(e->target_id); g_free(e->status); g_free(e);
+    return FALSE; /* one-shot */
+}
+
+void presage_emit_receipt(PurpleAccount *account, const char *target_id, const char *status) {
+    if (account == NULL || target_id == NULL || *target_id == '\0' || status == NULL) {
+        return;
+    }
+    PresageReceiptEvt *e = g_new0(PresageReceiptEvt, 1);
+    e->account = account;
+    e->target_id = g_strdup(target_id);
+    e->status = g_strdup(status);
+    purple_timeout_add(0, presage_receipt_apply, e); /* thread-safe; runs on the main thread */
+}
+
 void presage_handle_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags flags, uint64_t timestamp_ms, const char *body) {
     // escaping is now done in rust part
     presage_display_text(connection, who, name, group, flags, timestamp_ms, body);

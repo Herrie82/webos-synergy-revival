@@ -155,6 +155,24 @@ gowhatsapp_process_message(gowhatsapp_message_t *gwamsg)
                     gwamsg->account, gwamsg->messageId ? gwamsg->messageId : "",
                     gwamsg->text ? gwamsg->text : "");
             break;
+        case gowhatsapp_message_type_receipt:
+            // webOS delivery/read receipt: the recipient delivered/read our outgoing message.
+            // messageId = the message's server id (== serviceMessageId), text = status
+            // ("delivered"/"read"). Forward to the transport's cross-prpl "webos-im-receipt" signal
+            // (by-id), which upgrades the Outbox row's deliveryStatus. Runs on the libpurple main thread.
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-receipt",
+                    gwamsg->account, gwamsg->messageId ? gwamsg->messageId : "",
+                    gwamsg->text ? gwamsg->text : "");
+            break;
+        case gowhatsapp_message_type_receipt_hwm:
+            // webOS delivery/read receipt (watermark, Facebook): everything in a thread up to a
+            // timestamp was delivered/read. remoteJid = scope ("ts:<threadKey>"), messageId = watermark
+            // (ms), text = status. Forward to the transport's "webos-im-receipt-hwm" signal.
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-receipt-hwm",
+                    gwamsg->account, gwamsg->remoteJid ? gwamsg->remoteJid : "",
+                    gwamsg->messageId ? gwamsg->messageId : "",
+                    gwamsg->text ? gwamsg->text : "");
+            break;
         case gowhatsapp_message_type_profile_picture:
             gowhatsapp_handle_profile_picture(gwamsg);
             break;

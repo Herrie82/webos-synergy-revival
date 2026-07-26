@@ -13,6 +13,30 @@
 #include <stdlib.h>
 #include <algorithm>
 
+// webOS delivery/read receipts: the transport matches an outgoing message's Outbox row by its
+// serviceMessageId, which OutboxIdHandler stamps ASYNCHRONOUSLY right after updateMessageSendSucceeded.
+// Emitting the delivered/read watermark immediately races that stamp - the just-sent row is still
+// unlabeled, so the watermark matches nothing (seen as "matched no outbox rows" for the newest id).
+// Defer the emit briefly to let the id land; the watermark is cumulative, so the delayed sweep also
+// picks up any earlier messages at/under the boundary.
+struct WebosTgReceipt { PurpleAccount *account; gchar *scope; gchar *watermark; gchar *status; };
+static gboolean webos_tg_receipt_emit(gpointer data) {
+    WebosTgReceipt *e = static_cast<WebosTgReceipt *>(data);
+    purple_signal_emit(purple_conversations_get_handle(), "webos-im-receipt-hwm",
+                       e->account, e->scope, e->watermark, e->status);
+    g_free(e->scope); g_free(e->watermark); g_free(e->status); g_free(e);
+    return FALSE; // one-shot
+}
+static void webos_tg_emit_receipt_delayed(PurpleAccount *account, const std::string &scope,
+                                          int64_t watermark, const char *status) {
+    WebosTgReceipt *e = g_new0(WebosTgReceipt, 1);
+    e->account = account;
+    e->scope = g_strdup(scope.c_str());
+    e->watermark = g_strdup(std::to_string(watermark).c_str());
+    e->status = g_strdup(status);
+    purple_timeout_add(2500, webos_tg_receipt_emit, e);
+}
+
 enum {
     // Typing notifications seems to be resent every 5-6 seconds, so 10s timeout hould be appropriate
     REMOTE_TYPING_NOTICE_TIMEOUT = 10,
@@ -164,6 +188,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             purple_debug_misc(config::pluginId, "outbox-id: sent message now has id %s\n", svcMsgId.c_str());
             purple_signal_emit(purple_conversations_get_handle(), "webos-im-outbox-id",
                                m_account, svcMsgId.c_str(), text.c_str());
+            // webOS delivery ticks (single tick): the message reached Telegram's servers. Emit a
+            // "delivered" watermark scoped to this chat so the transport marks this + earlier outgoing
+            // messages delivered. Telegram (like its own UI) has no distinct delivered-to-device state;
+            // "read" (double tick) arrives separately via updateChatReadOutbox.
+            std::string chatScope = std::string("msgid:") + std::to_string(msg.chat_id_) + ":";
+            webos_tg_emit_receipt_delayed(m_account, chatScope, msg.id_, "delivered");
         }
         break;
     }
@@ -261,6 +291,16 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         auto &interactionUpdate = static_cast<td::td_api::updateMessageInteractionInfo &>(update);
         showReactions(m_data, interactionUpdate.chat_id_, interactionUpdate.message_id_,
                       interactionUpdate.interaction_info_.get());
+        break;
+    };
+
+    case td::td_api::updateChatReadOutbox::ID: {
+        // webOS read ticks (double tick): the recipient has READ all our outgoing messages in this chat
+        // up to last_read_outbox_message_id_. Emit a "read" watermark scoped to the chat; the transport
+        // marks every outgoing message at/under that id as read.
+        auto &readOutbox = static_cast<const td::td_api::updateChatReadOutbox &>(update);
+        std::string chatScope = std::string("msgid:") + std::to_string(readOutbox.chat_id_) + ":";
+        webos_tg_emit_receipt_delayed(m_account, chatScope, readOutbox.last_read_outbox_message_id_, "read");
         break;
     };
 

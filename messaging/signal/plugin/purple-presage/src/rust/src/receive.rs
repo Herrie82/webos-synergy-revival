@@ -549,7 +549,20 @@ async fn process_received_message<C: presage::store::Store>(
         }) => process_data_message(manager, message.clone(), &data_message).await,
         // TODO: forward these properly
         presage::libsignal_service::content::ContentBody::TypingMessage(_) => None, // TODO Some(Msg::Received(&thread, "is typing...".into())), // too annyoing for now. also does not differentiate between "started typing" and "stopped typing"
-        presage::libsignal_service::content::ContentBody::ReceiptMessage(_) => None, // TODO Some(Msg::Received(&thread, "received a message.".into())), // works, but too annyoing for now
+        presage::libsignal_service::content::ContentBody::ReceiptMessage(receipt) => {
+            // webOS delivery/read receipts: the recipient delivered/read messages we sent.
+            // receipt.timestamp lists the target sent-timestamps (each == our serviceMessageId);
+            // receipt.type is Delivery(0)/Read(1)/Viewed(2). Emit a per-id receipt so the transport
+            // upgrades each Outbox row's deliveryStatus (single/double tick).
+            let status = match presage::proto::receipt_message::Type::try_from(receipt.r#type.unwrap_or(0)) {
+                Ok(presage::proto::receipt_message::Type::Read) | Ok(presage::proto::receipt_message::Type::Viewed) => "read",
+                _ => "delivered",
+            };
+            for ts in &receipt.timestamp {
+                crate::bridge::emit_receipt(message.account, ts.to_string(), status.to_string());
+            }
+            None
+        }
         c => {
             // catch-all for everything else
             crate::bridge::purple_debug(message.account, crate::bridge_structs::PURPLE_DEBUG_WARNING, format!("Unsupported message {c:?}\n"));

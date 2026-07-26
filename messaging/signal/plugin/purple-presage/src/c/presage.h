@@ -115,6 +115,7 @@ void presage_emit_reaction(PurpleAccount *account, const char *target_id, const 
 // webOS reactions: emit the cross-prpl "webos-im-outbox-id" signal - the server id (sent timestamp) of a
 // message the user sent from the app (called from the Rust command loop).
 void presage_emit_outbox_id(PurpleAccount *account, const char *service_message_id, const char *text);
+void presage_emit_receipt(PurpleAccount *account, const char *target_id, const char *status);
 void presage_display_text(PurpleConnection *connection, const char *who, const char *name, const char *group, PurpleMessageFlags sent, uint64_t timestamp_ms, const char *body);
 int presage_send_im(PurpleConnection *connection, const char *who, const char *message, PurpleMessageFlags flags);
 int presage_send_chat(PurpleConnection *connection, int id, const gchar *message, PurpleMessageFlags flags);
