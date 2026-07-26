@@ -122,14 +122,21 @@ std::string proxyTypeToString(PurpleProxyType proxyType)
 
 const char *getPurpleStatusId(const td::td_api::UserStatus &tdStatus)
 {
-    // webOS: only a genuinely-online user is "available" (green); every other Telegram status
-    // (offline, seen recently / last week / last month, hidden) is offline (grey). Previously all
-    // non-online users mapped to AWAY, which the webOS transport renders as IDLE - an orange dot on
-    // every single contact, which reads as "wrong/everyone busy". Grey-when-not-online is correct.
-    if (tdStatus.get_id() == td::td_api::userStatusOnline::ID)
+    // webOS: online -> AVAILABLE (green). "seen recently" -> AWAY (the transport renders AWAY as
+    // IDLE / orange dot): userStatusRecently means active within ~the last couple of days (privacy
+    // may hide the exact time), so a distinct dot reads as "around lately" vs a hard grey offline.
+    // Everything else - genuinely offline, last week / last month, hidden, empty - stays OFFLINE
+    // (grey). NB: mapping ALL non-online to AWAY was tried before and turned EVERY contact orange
+    // ("everyone busy"); scoping AWAY to ONLY userStatusRecently avoids that - lastWeek/lastMonth
+    // (the bulk of privacy-limited contacts) stay grey.
+    switch (tdStatus.get_id()) {
+    case td::td_api::userStatusOnline::ID:
         return purple_primitive_get_id_from_type(PURPLE_STATUS_AVAILABLE);
-    else
+    case td::td_api::userStatusRecently::ID:
+        return purple_primitive_get_id_from_type(PURPLE_STATUS_AWAY);
+    default:
         return purple_primitive_get_id_from_type(PURPLE_STATUS_OFFLINE);
+    }
 }
 
 std::string getPurpleBuddyName(const td::td_api::user &user)
