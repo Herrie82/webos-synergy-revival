@@ -2887,6 +2887,45 @@ discord_stash_webos_msgid(PurpleConversation *conv, guint64 msg_id)
 	}
 }
 
+/* webOS replies: when an incoming message quotes another (Discord referenced_message), stash the
+ * quoted original's author/text/id on the same conversation as webos-msg-id, so the transport records
+ * a proper inline quote card (the Messaging app renders it above the reply) instead of nothing. The
+ * quoted-id matches the webos-msg-id format (decimal snowflake string). No-op when not a reply. Strings
+ * are g_strdup'd here and freed by the transport after it reads them. Mirrors the Telegram prpl. */
+static void
+discord_stash_webos_quote(PurpleConversation *conv, DiscordAccount *da, DiscordGuild *guild, DiscordChannel *channel, JsonObject *referenced_message)
+{
+	if (conv == NULL || referenced_message == NULL) {
+		return;
+	}
+	const gchar *quoted_id = json_object_get_string_member(referenced_message, "id");
+	if (quoted_id == NULL || *quoted_id == '\0') {
+		return;
+	}
+
+	JsonObject *reply_author = json_object_get_object_member(referenced_message, "author");
+	DiscordUser *reply_user = discord_upsert_user(da->new_users, reply_author);
+	gchar *reply_name = discord_get_display_name_or_unk(da, guild, channel, reply_user, reply_author);
+
+	const gchar *raw = json_object_get_string_member(referenced_message, "content");
+	gchar *quoted_text;
+	if (raw && *raw) {
+		quoted_text = discord_replace_mentions_bare(da, guild, g_strdup(raw));
+	} else {
+		quoted_text = g_strdup(_("[attachment]"));
+	}
+	/* single-line it for the compact quote card */
+	for (gchar *p = quoted_text; *p != '\0'; p++) {
+		if (*p == '\n' || *p == '\r') {
+			*p = ' ';
+		}
+	}
+
+	purple_conversation_set_data(conv, "webos-quoted-text", quoted_text);
+	purple_conversation_set_data(conv, "webos-quoted-from", reply_name);
+	purple_conversation_set_data(conv, "webos-quoted-id", g_strdup(quoted_id));
+}
+
 static guint64
 discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_type)
 {
@@ -3337,6 +3376,7 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				 * cannot pre-stash - that first message just won't be reaction-targetable (acceptable). */
 				PurpleConversation *imconv = conv ? conv : PURPLE_CONVERSATION(purple_conversations_find_im_with_account(merged_username, da->account));
 				discord_stash_webos_msgid(imconv, msg_id);
+				discord_stash_webos_quote(imconv, da, guild, channel, referenced_message);
 				purple_serv_got_im(da->pc, merged_username, escaped_content, flags, timestamp);
 			} else if (msg_type == MESSAGE_CALL) {
 				gchar *call_txt = g_strdup_printf(_("%s started a call"), merged_username);
@@ -3532,6 +3572,7 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 				 * stashing webos-msg-id on it now lets the transport record serviceMessageId for the
 				 * received channel message (needed for a reaction to attach to it). */
 				discord_stash_webos_msgid(conv, msg_id);
+				discord_stash_webos_quote(conv, da, guild, channel, referenced_message);
 				purple_serv_got_chat_in(da->pc, discord_chat_hash(channel_id), name, flags, escaped_content, timestamp);
 			}
 
@@ -8887,7 +8928,15 @@ discord_chat_send(PurpleConnection *pc, gint id,
 	}
 
 	g_return_val_if_fail(discord_get_channel_global_int(da, room_id), -1); /* TODO rejoin room? */
-	ret = discord_conversation_send_message(da, room_id, d_message, NULL);
+	/* webOS replies: the transport stashes the reply target's serviceMessageId (Discord message id) as
+	 * "webos-reply-to" on the conv before serv_chat_send; pass it as ref_id so the REST call sets a real
+	 * message_reference and other clients thread the reply. Clear + free after use. */
+	gchar *webos_reply_to = (gchar *) purple_conversation_get_data(PURPLE_CONVERSATION(chatconv), "webos-reply-to");
+	ret = discord_conversation_send_message(da, room_id, d_message, (webos_reply_to && *webos_reply_to) ? webos_reply_to : NULL);
+	if (webos_reply_to != NULL) {
+		purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "webos-reply-to", NULL);
+		g_free(webos_reply_to);
+	}
 
 	if (ret > 0) {
 		gchar *tmp = g_regex_replace_eval(emoji_regex, d_message, -1, 0, 0, discord_replace_emoji, PURPLE_CONVERSATION(chatconv), NULL);
@@ -9001,7 +9050,16 @@ discord_send_im(PurpleConnection *pc,
 		return -1;
 	}
 
-	return discord_conversation_send_message(da, to_int(room_id), message, NULL);
+	/* webOS replies: read the reply target the transport stashed on this DM conversation (see
+	 * discord_chat_send for the group case) and pass it as ref_id so the REST call threads the reply. */
+	PurpleConversation *imconv = PURPLE_CONVERSATION(purple_conversations_find_im_with_account(who, da->account));
+	gchar *webos_reply_to = imconv ? (gchar *) purple_conversation_get_data(imconv, "webos-reply-to") : NULL;
+	int im_ret = discord_conversation_send_message(da, to_int(room_id), message, (webos_reply_to && *webos_reply_to) ? webos_reply_to : NULL);
+	if (webos_reply_to != NULL) {
+		purple_conversation_set_data(imconv, "webos-reply-to", NULL);
+		g_free(webos_reply_to);
+	}
+	return im_ret;
 }
 
 static void
