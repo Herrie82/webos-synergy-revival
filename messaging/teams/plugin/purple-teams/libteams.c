@@ -535,6 +535,7 @@ teams_login(PurpleAccount *account)
 	sa->cookie_jar = purple_http_cookie_jar_new();
 	sa->sent_messages_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	sa->received_messages_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	sa->quote_meta_hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	sa->buddy_to_chat_lookup = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	sa->chat_to_buddy_lookup = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	sa->calendar_reminder_timeouts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -702,6 +703,7 @@ teams_close(PurpleConnection *pc)
 	
 	g_hash_table_destroy(sa->sent_messages_hash);
 	g_hash_table_destroy(sa->received_messages_hash);
+	g_hash_table_destroy(sa->quote_meta_hash);
 	g_hash_table_destroy(sa->buddy_to_chat_lookup);
 	g_hash_table_destroy(sa->chat_to_buddy_lookup);
 	g_hash_table_destroy(sa->calendar_reminder_timeouts);

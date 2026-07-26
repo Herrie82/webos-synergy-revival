@@ -220,6 +220,9 @@ struct _TeamsAccount {
 	 * periodic poll / offline-history re-fetch never re-delivers an already-shown
 	 * message. See process_message_resource() and teams_poll_messages(). */
 	GHashTable *received_messages_hash;
+	/* webOS replies: message id -> "authorMRI\x1fauthorname\x1fcomposetime\x1fconversation\x1fplaintext",
+	 * so an outgoing reply can rebuild the full inline <quote> block Teams needs. Bounded by size. */
+	GHashTable *quote_meta_hash;
 	guint poll_timeout;
 	gboolean poll_in_flight; /* a poll's conversations fetch is outstanding; skip overlapping ticks */
 	guint watchdog_timeout;
