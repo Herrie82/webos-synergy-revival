@@ -65,12 +65,12 @@ badges · **Voice / Video call** = calls. Each capability is shown as **Send / R
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | **(direction)** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Place** | **Answ** | **Place** | **Answ** |
 | **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ |
-| **Signal** (`purple-presage`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ✅ | ❔ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ |
-| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ |
+| **Signal** (`purple-presage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ |
+| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
@@ -82,13 +82,13 @@ Notes:
 - **Replies** render as an inline quote card above the message (not the raw `> …` / `┌──@name`
   text the networks fold in) and work **both ways**: incoming replies show the quoted original, and
   replies you compose **from the Messaging app thread on the network** so other clients see them
-  linked to the original — **confirmed end-to-end on device for Telegram, Discord, WhatsApp, Teams
-  and Facebook** (including replies to your **own** sent messages). Each prpl stashes the quoted
+  linked to the original — **confirmed end-to-end on device for Telegram, Discord, WhatsApp, Teams,
+  Facebook and Signal** (including replies to your **own** sent messages). Each prpl stashes the quoted
   `text`/`from`/`id` on the conversation (`webos-quoted-*`) which the transport persists; the reverse
   path stashes `webos-reply-to` so the prpl sets the network's native reply (Telegram `reply_to`,
   Discord `message_reference`, WhatsApp `ContextInfo`, Teams inline `<blockquote …/Reply>`, Facebook
-  `MessageApplication.QuotedMessage` on E2EE threads / `ReplyMetaData` on plaintext). Only **Signal**
-  is without replies.
+  `MessageApplication.QuotedMessage` on E2EE threads / `ReplyMetaData` on plaintext; Signal via the
+  presage quote). Only **Google Chat** is currently without replies.
 - **Reactions** render as inline badges on the message bubble (not a separate "reacted with X"
   line) and work **both ways**: reactions others place on your messages are received as badges, and
   reactions you place **from the Messaging app are transmitted to the network** (add / change /
@@ -109,17 +109,18 @@ Notes:
   the whatsmeow socket) — **all four confirmed on device**. **Signal** and **plaintext Facebook**
   play the same Opus file as a regular audio attachment (no extra encoder needed). Signal's *proper*
   voice-note flag would want AAC and is left as an attachment on purpose. **Teams** voice notes are
-  the remaining gap (Phase 2, plain audio attachment path).
+  the remaining gap (Phase 2, plain audio attachment path). **Receiving** voice notes is likewise
+  confirmed on device (Telegram, Discord, WhatsApp, Facebook, Signal) — they play inline in the
+  message bubble's audio player (play/pause + progress + duration).
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
 - **Signal** is **enabled again**: `libpresage` used to SIGABRT-crash-loop the whole transport on
   login (uncaught "Couldn't find prpl" panic), taking every account offline; the transport-level
   try/catch around account creation now contains that so Signal loads alongside the others. **IM,
-  reactions and voice notes are working on device**; replies are not implemented (Signal is the one
-  connector without them) and calling (incoming ring + SRTP-GCM/Opus media loopback previously
-  passed) is not re-verified. A proper presage panic fix is still desirable but no longer blocks the
-  transport.
+  replies, image and voice-note attachments, and reactions are all working on device**; calling
+  (incoming ring + SRTP-GCM/Opus media loopback previously passed) is not re-verified. A proper
+  presage panic fix is still desirable but no longer blocks the transport.
 - **WhatsApp**: IM works, image/audio/video **attachments are confirmed on device**, and **voice
   calls work on device** — calling now runs **inside `purple-combined`** (the `meowcaller` MLow/SRTP
   path) on the same messaging session, so one pairing does messaging + calling and the standalone
