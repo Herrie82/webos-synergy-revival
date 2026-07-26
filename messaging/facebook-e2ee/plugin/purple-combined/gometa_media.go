@@ -137,15 +137,20 @@ func (h *gometaHandler) sendMediaPlaintext(threadID int64, data []byte, filename
 			}
 		}
 	}
-	// Not confirmed — likely an encrypted thread. Retry the image over E2EE and remember it.
+	// Not confirmed — likely an encrypted thread. Retry the media over E2EE and remember it.
 	h.mu.Lock()
 	delete(h.sentOtids, otid)
 	h.mu.Unlock()
-	if h.e2ee != nil && strings.HasPrefix(mime, "image/") {
+	isImg := strings.HasPrefix(mime, "image/")
+	isAud := mime == "application/ogg" || strings.HasPrefix(mime, "audio/")
+	if h.e2ee != nil && (isImg || isAud) {
 		h.mu.Lock()
 		h.e2eeContacts[threadID] = true
 		h.mu.Unlock()
 		h.logger.Warn().Int64("thread", threadID).Msg("media send not confirmed; retrying over E2EE")
+		if isAud {
+			return h.sendAudioE2EE(threadID, data)
+		}
 		return h.sendImageE2EE(threadID, data, mime)
 	}
 	return fmt.Errorf("send not confirmed (thread may be encrypted)")
