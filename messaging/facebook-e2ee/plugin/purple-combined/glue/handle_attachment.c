@@ -222,10 +222,21 @@ void download_to_templated_destination(gowhatsapp_message_t *gwamsg, const char 
         if (url_template && url_template[0]) {
             url = gowhatsapp_attachment_fill_template(url_template, gwamsg->timestamp, gwamsg->hash_hex, gwamsg->filename, gwamsg->extension, gwamsg->remoteJid, gwamsg->senderJid, chat_alias, buddy_alias, gwamsg->messageId, flags);
         }
-        gowhatsapp_display_text_message(gwamsg->account, gwamsg->senderJid, gwamsg->remoteJid, url, gwamsg->timestamp, gwamsg->isGroup, gwamsg->isOutgoing, gwamsg->name, 0, gwamsg->messageId, TRUE);
+        // webOS: deliver the media URL and its caption as ONE message, not two. The Messaging app
+        // strips the media URL from the body, renders it inline as an image/chip, and shows the
+        // remaining caption text - so a "url\ncaption" body is a single picture+caption bubble. The
+        // caption used to go out as a separate gowhatsapp_display_caption() message with the SAME
+        // messageId, which the app rendered as a second stand-alone bubble (upstream posts them apart).
+        if (gwamsg->text && gwamsg->text[0]) {
+            char *combined = g_strdup_printf("%s\n%s", url, gwamsg->text);
+            gowhatsapp_display_text_message(gwamsg->account, gwamsg->senderJid, gwamsg->remoteJid, combined, gwamsg->timestamp, gwamsg->isGroup, gwamsg->isOutgoing, gwamsg->name, 0, gwamsg->messageId, TRUE);
+            g_free(combined);
+        } else {
+            gowhatsapp_display_text_message(gwamsg->account, gwamsg->senderJid, gwamsg->remoteJid, url, gwamsg->timestamp, gwamsg->isGroup, gwamsg->isOutgoing, gwamsg->name, 0, gwamsg->messageId, TRUE);
+        }
         g_free(url);
         gowhatsapp_display_image_inline(gwamsg, local_path);
-        gowhatsapp_display_caption(gwamsg);
+        // caption folded into the URL message above (was: gowhatsapp_display_caption(gwamsg))
     }
     g_free(error);
     g_free(local_path);
