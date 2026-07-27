@@ -73,11 +73,11 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 </tr>
 </thead>
 <tbody>
-<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
-<tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
-<tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Google Chat</b> (<code>purple-googlechat</code>)</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 </tbody>
@@ -148,9 +148,10 @@ Notes:
   (an inline AMSVideo `<video>` element — parallel to an inline AMSImage `<img>`, NOT a card; the clip
   is uploaded as a `sharing/video` ASM object to `/content/video` and referenced by `/views/video`,
   with width/height/duration parsed from the mp4) — **all five confirmed on device**. **Video →
-  Receive** now **plays** on device: the H.264 mp4 decodes via the **Snapdragon S3 (APQ8060) OMX
-  hardware decoder** and plays (tapping an mp4 opens the stock `com.palm.app.videoplayer`; a sender
-  JPEG thumbnail rides along as the `<video poster>` preview). The earlier "won't play / not-negotiated"
+  Receive** now **plays** on device — **confirmed for WhatsApp, Telegram, Signal, Discord and Teams**:
+  the H.264 mp4 decodes via the **Snapdragon S3 (APQ8060) OMX hardware decoder** and plays (tapping an
+  mp4 opens the stock `com.palm.app.videoplayer`; a sender JPEG thumbnail rides along as the
+  `<video poster>` preview). The earlier "won't play / not-negotiated"
   symptom was **NOT** a decoder limit — it was the **`device-setup/videoplayer-webm` autoplug shim**
   (`libmp-autoplug.so`) breaking H.264 video-session creation. That shim is now **kept OFF** (stock
   media-pipeline) — it only ever helped WebM, which no IM connector sends. (Heavy back-to-back playback
