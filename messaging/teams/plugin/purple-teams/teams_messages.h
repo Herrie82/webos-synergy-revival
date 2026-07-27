@@ -30,7 +30,10 @@ gint teams_send_im(PurpleConnection *pc,
 #endif
 );
 
-gint teams_chat_send(PurpleConnection *pc, gint id, 
+/* webOS: send an uploaded ASM audio object as a Teams voice note (audio card). */
+void teams_send_audio_card(TeamsAccount *sa, const gchar *who, const gchar *object_id, guint duration_secs);
+
+gint teams_chat_send(PurpleConnection *pc, gint id,
 #if PURPLE_VERSION_CHECK(3, 0, 0)
 PurpleMessage *msg
 #else

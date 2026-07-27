@@ -27,6 +27,7 @@
 #include "teams_cards.h"
 #include "util.h"
 
+
 static GString* make_last_timestamp_setting(const gchar *convname) {
 	GString *rv = g_string_new(NULL);
 	g_string_printf(rv, "%s_last_message_timestamp", convname);
@@ -157,19 +158,41 @@ teams_process_files_in_properties(JsonObject *properties, gchar **html)
 		GString *files_string = g_string_new(NULL);
 		guint i, len = json_array_get_length(files);
 
-		if (len > 0) {
-			g_string_append(files_string, "<br>");
-			g_string_append(files_string, _("Files sent"));
-			g_string_append(files_string, "</b>: <br>");
-		}
 		for(i = 0; i < len; i++) {
 			JsonObject *file = json_array_get_object_element(files, i);
-			g_string_append(files_string, "* <a href=\"");
-			g_string_append(files_string, json_object_get_string_member(file, "objectUrl"));
-			g_string_append(files_string, "\">");
-			g_string_append(files_string, json_object_get_string_member(file, "fileName"));
-			g_string_append(files_string, "</a><br>");
-			
+			const gchar *fileName = json_object_has_member(file, "fileName") ? json_object_get_string_member(file, "fileName") : NULL;
+			const gchar *fileType = json_object_has_member(file, "fileType") ? json_object_get_string_member(file, "fileType") : NULL;
+			// webOS: a Teams file (docx/pptx/...) is a OneDrive item, NOT a skype_token-downloadable ASM
+			// object -- so we can't fetch it inline like an image/voice note (its share link 403s without
+			// a Microsoft browser session). Emit a clean tappable link to fileInfo.shareUrl (the 1drv.ms
+			// share URL, which opens the file in the browser where the user is signed in). Prefer shareUrl,
+			// then objectUrl/fileUrl.
+			const gchar *href = NULL;
+			if (json_object_has_member(file, "fileInfo")) {
+				JsonObject *fi = json_object_get_object_member(file, "fileInfo");
+				if (fi != NULL) {
+					if (json_object_has_member(fi, "shareUrl"))
+						href = json_object_get_string_member(fi, "shareUrl");
+					if ((href == NULL || !*href) && json_object_has_member(fi, "fileUrl"))
+						href = json_object_get_string_member(fi, "fileUrl");
+				}
+			}
+			if ((href == NULL || !*href) && json_object_has_member(file, "objectUrl"))
+				href = json_object_get_string_member(file, "objectUrl");
+
+			if (href != NULL && *href) {
+				g_string_append(files_string, "\xF0\x9F\x93\x8E <a href=\""); // 📎
+				g_string_append(files_string, href);
+				g_string_append(files_string, "\">");
+				g_string_append(files_string, fileName ? fileName : _("File"));
+				g_string_append(files_string, "</a>");
+				if (fileType != NULL && *fileType) {
+					g_string_append(files_string, " (");
+					g_string_append(files_string, fileType);
+					g_string_append(files_string, ")");
+				}
+				g_string_append(files_string, "<br>");
+			}
 			//Potentially use the preview image in  file.filePreview.previewUrl
 		}
 
@@ -186,7 +209,8 @@ teams_process_files_in_properties(JsonObject *properties, gchar **html)
 }
 
 static gchar *
-teams_process_cards_in_properties(JsonObject *properties, gchar **html)
+teams_process_cards_in_properties(JsonObject *properties, gchar **html,
+	TeamsAccount *sa, PurpleConversation *conv, time_t msg_time, const gchar *msg_who)
 {
 	if (html == NULL) {
 		return NULL;
@@ -198,10 +222,71 @@ teams_process_cards_in_properties(JsonObject *properties, gchar **html)
 		GString *cards_string = g_string_new(NULL);
 		guint i, len = json_array_get_length(cards);
 
+		// webOS: a card message's body is an empty InputExtension placeholder span for the card; strip
+		// it (and any now-empty <div> wrapper) so it doesn't render as a blank SECOND bubble beside the
+		// card. Voice notes carry only this placeholder, so *html becomes empty -> no stray text bubble.
+		if (*html && strstr(*html, "schema.skype.com/InputExtension")) {
+			static GRegex *ie_re = NULL;
+			gchar *stripped, *plain;
+			if (ie_re == NULL)
+				ie_re = g_regex_new("<span[^>]*schema\\.skype\\.com/InputExtension[^>]*>\\s*</span>",
+					G_REGEX_CASELESS, 0, NULL);
+			stripped = g_regex_replace(ie_re, *html, -1, 0, "", 0, NULL);
+			if (stripped != NULL) {
+				g_free(*html);
+				*html = stripped;
+			}
+			plain = purple_markup_strip_html(*html);
+			if (plain != NULL) {
+				g_strstrip(plain);
+				if (*plain == '\0') {
+					g_free(*html);
+					*html = g_strdup("");
+				}
+				g_free(plain);
+			}
+		}
+
 		for(i = 0; i < len; i++) {
 			JsonObject *card = json_array_get_object_element(cards, i);
 			JsonObject *content = json_object_get_object_member(card, "content");
 			const gchar *contentType = json_object_get_string_member(card, "contentType");
+
+			// webOS: an audio/video/animation media card is a Teams voice note / media clip. Download the
+			// media object authenticated (skype_token) and emit it as a playable file:// bubble
+			// (teams_download_uri_to_conv -> teams_got_imagemessage does magic-byte ext detection incl
+			// ogg/mp3/m4a/wav) instead of the bare "Media:<url>" text teams_convert_media_card_to_html
+			// would render.
+			if (sa != NULL && content != NULL &&
+					(purple_strequal(contentType, "application/vnd.microsoft.card.audio") ||
+					 purple_strequal(contentType, "application/vnd.microsoft.card.video") ||
+					 purple_strequal(contentType, "application/vnd.microsoft.card.animation")) &&
+					json_object_has_member(content, "media")) {
+				// The 1:1 IM path runs this BEFORE it creates the conversation (conv is NULL here) and a
+				// voice note's html body is empty, so the later emit block that would create the conv never
+				// runs. Find/create the IM conv from the sender ourselves and download into it (mirrors the
+				// RichText/UriObject image path); a group chat passes its chat conv in. Skip our own carbon
+				// echo (the app already shows the outgoing bubble) so it isn't misfiled under the self id.
+				PurpleConversation *target = conv;
+				if (target == NULL && msg_who != NULL && *msg_who && !teams_is_user_self(sa, msg_who)) {
+					PurpleIMConversation *imc = purple_conversations_find_im_with_account(msg_who, sa->account);
+					if (imc == NULL)
+						imc = purple_im_conversation_new(sa->account, msg_who);
+					target = PURPLE_CONVERSATION(imc);
+				}
+				if (target != NULL) {
+					JsonArray *media = json_object_get_array_member(content, "media");
+					guint m, mlen = json_array_get_length(media);
+					for (m = 0; m < mlen; m++) {
+						JsonObject *media_item = json_array_get_object_element(media, m);
+						const gchar *url = json_object_get_string_member(media_item, "url");
+						if (url && *url) {
+							teams_download_uri_to_conv(sa, url, target, msg_time, msg_who);
+						}
+					}
+				}
+				continue; // handled as a file:// download; no text html for this card
+			}
 
 			gchar *card_html = teams_convert_card_to_html(content, contentType);
 			if (card_html == NULL) {
@@ -589,7 +674,7 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 	JsonObject *properties = NULL;
 	
 	g_return_if_fail(messagetype != NULL);
-	
+
 	messagetype_parts = g_strsplit(messagetype, "/", -1);
 	
 	if (json_object_has_member(resource, "clientmessageid"))
@@ -1015,7 +1100,7 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 
 				} else {
 					html = teams_process_files_in_properties(properties, &html);
-					html = teams_process_cards_in_properties(properties, &html);
+					html = teams_process_cards_in_properties(properties, &html, sa, conv, composetimestamp, from);
 
 				}
 			}
@@ -1319,7 +1404,7 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 
 				} else {
 					html = teams_process_files_in_properties(properties, &html);
-					html = teams_process_cards_in_properties(properties, &html);
+					html = teams_process_cards_in_properties(properties, &html, sa, conv, composetimestamp, from);
 					
 				}
 			}
@@ -3105,6 +3190,92 @@ teams_send_message(TeamsAccount *sa, const gchar *convname, const gchar *message
 	g_free(url);
 	g_free(stripped);
 	
+	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
+}
+
+/* webOS voice notes (SEND). A Teams voice note is NOT a File.1 URIObject -- it is a
+ * RichText/Html message carrying an audio CARD in properties.cards (captured from a real
+ * Android->Teams voice note):
+ *   content:  <div><span itemid="<GUID>" itemscope="" itemtype="http://schema.skype.com/InputExtension"></span></div>
+ *   amsreferences: ["<audio-object-id>"]
+ *   properties.cards: [{"cardClientId":"<GUID>","content":{"duration":"PT<N>S",
+ *                       "media":[{"url":".../objects/<id>/views/audio"}]},
+ *                       "contentType":"application/vnd.microsoft.card.audio"}]
+ *   properties.formatVariant: "TEAMS"
+ * The GUID ties the content span's itemid to the card's cardClientId. The audio object must
+ * have been created as an audio ASM object (so it has a /views/audio view) and its content
+ * uploaded -- see teams_xfer_send_init/_begin (is_audio). */
+void
+teams_send_audio_card(TeamsAccount *sa, const gchar *who, const gchar *object_id, guint duration_secs)
+{
+	gchar *post, *url, *content, *cards, *media_url, *guid, *convname_enc;
+	const gchar *convname;
+	JsonObject *obj, *props;
+	JsonArray *amsrefs;
+	gint64 clientmessageid;
+	gchar *clientmessageid_str;
+
+	if (object_id == NULL || !*object_id)
+		return;
+
+	/* Resolve buddy -> 1:1 thread the same way teams_send_im does; a group name is already a thread id. */
+	convname = who ? g_hash_table_lookup(sa->buddy_to_chat_lookup, who) : NULL;
+	if (convname == NULL)
+		convname = who;
+	if (convname == NULL || !*convname)
+		return;
+
+	convname_enc = g_strdup(purple_url_encode(convname));
+	url = g_strdup_printf(TEAMS_CONTACTS_PATH_PREFIX "/v1/users/ME/conversations/%s/messages", convname_enc);
+	g_free(convname_enc);
+
+	clientmessageid = teams_get_js_time();
+	clientmessageid_str = g_strdup_printf("%" G_GINT64_FORMAT "", clientmessageid);
+
+	/* 32-hex GUID (no dashes), used as BOTH the content span's itemid and the card's cardClientId. */
+	guid = g_strdup_printf("%08x%08x%08x%08x", g_random_int(), g_random_int(), g_random_int(), g_random_int());
+
+	media_url = g_strdup_printf("https://%s/v1/objects/%s/views/audio", TEAMS_XFER_HOST, purple_url_encode(object_id));
+
+	content = g_strdup_printf(
+		"<div><span itemid=\"%s\" itemscope=\"\" itemtype=\"http://schema.skype.com/InputExtension\"></span></div>",
+		guid);
+
+	/* properties.cards is itself a JSON STRING (a serialised one-element array), matching the wire format. */
+	cards = g_strdup_printf(
+		"[{\"cardClientId\":\"%s\",\"content\":{\"duration\":\"PT%uS\",\"media\":[{\"url\":\"%s\"}]},"
+		"\"contentType\":\"application/vnd.microsoft.card.audio\"}]",
+		guid, duration_secs > 0 ? duration_secs : 1, media_url);
+
+	obj = json_object_new();
+	json_object_set_string_member(obj, "clientmessageid", clientmessageid_str);
+	json_object_set_string_member(obj, "content", content);
+	json_object_set_string_member(obj, "messagetype", "RichText/Html");
+	json_object_set_string_member(obj, "contenttype", "text");
+	json_object_set_string_member(obj, "imdisplayname", sa->self_display_name ? sa->self_display_name : sa->username);
+
+	amsrefs = json_array_new();
+	json_array_add_string_element(amsrefs, object_id);
+	json_object_set_array_member(obj, "amsreferences", amsrefs);
+
+	props = json_object_new();
+	json_object_set_string_member(props, "cards", cards);
+	json_object_set_string_member(props, "formatVariant", "TEAMS");
+	json_object_set_object_member(obj, "properties", props);
+
+	post = teams_jsonobj_to_string(obj);
+	purple_debug_info("teams", "sending voice-note card: %s\n", post);
+
+	teams_post_or_get(sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL, TEAMS_CONTACTS_HOST, url, post, teams_sent_message_cb, g_strdup(convname), TRUE);
+
+	g_free(post);
+	json_object_unref(obj);
+	g_free(url);
+	g_free(content);
+	g_free(cards);
+	g_free(media_url);
+	g_free(guid);
+
 	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
 }
 

@@ -30,6 +30,7 @@
 #include "http.h"
 
 #include <stdio.h> // webOS: fopen/fwrite to persist received media to a WebKit-readable file
+#include <glib/gstdio.h> // webOS: g_spawn/g_unlink/g_stat for the voice-note WAV->M4A transcode
 #include "util.h"
 #include "xfer.h"
 #include "image-store.h"
@@ -84,6 +85,8 @@ typedef struct {
 	gchar *id;
 	TeamsAccount *sa;
 	gboolean is_image; // webOS: send as an inline AMSImage picture, not a File.1 attachment
+	gboolean is_audio; // webOS: send as a Teams voice note (audio card), not a File.1 attachment
+	guint duration_secs; // webOS: voice-note length, captured from the Opus source before WAV->M4A transcode
 } TeamsFileTransfer;
 
 static guint active_icon_downloads = 0;
@@ -302,6 +305,54 @@ typedef struct SkypeImgMsgContext_ {
 	gchar* from;
 } SkypeImgMsgContext;
 
+/* webOS: transcode a downloaded audio file to WAV for in-app playback. Teams voice notes are AAC in
+ * MP4 (.m4a); the WebKit <audio> gate accepts "audio/aac" but the media server then "Failed to get a
+ * pipeline" for AAC/MP4 (it plays Ogg/Opus and raw WAV fine, not AAC). Raw WAV is the simplest
+ * pipeline, so we transcode m4a -> wav and hand the app the .wav. gst-launch runs with a CLEAN env --
+ * the transport's LD_PRELOAD/wpe-glibc LD_LIBRARY_PATH SEGFAULTs stock binaries (same as the outgoing
+ * faac/ffmpeg path). Returns a newly-allocated .wav path (caller frees) or NULL to keep the original. */
+static gchar *
+teams_audio_to_wav(const gchar *in_path)
+{
+	gchar *stem = NULL, *wav = NULL, *result = NULL, *loc_in = NULL, *loc_out = NULL;
+	const gchar *dot;
+	gint status = 0;
+	gboolean ok;
+
+	if (in_path == NULL)
+		return NULL;
+	dot = strrchr(in_path, '.');
+	if (dot == NULL)
+		return NULL;
+	stem = g_strndup(in_path, dot - in_path);
+	wav = g_strconcat(stem, ".wav", NULL);
+	loc_in = g_strconcat("location=", in_path, NULL);
+	loc_out = g_strconcat("location=", wav, NULL);
+
+	{
+		gchar *envp[] = { (gchar *) "PATH=/usr/bin:/bin", NULL };
+		gchar *argv[] = { (gchar *) "/usr/bin/gst-launch-0.10",
+			(gchar *) "filesrc", loc_in,
+			(gchar *) "!", (gchar *) "decodebin2",
+			(gchar *) "!", (gchar *) "audioconvert",
+			(gchar *) "!", (gchar *) "wavenc",
+			(gchar *) "!", (gchar *) "filesink", loc_out, NULL };
+		ok = g_spawn_sync(NULL, argv, envp, G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+			NULL, NULL, NULL, NULL, &status, NULL);
+	}
+	if (ok && g_file_test(wav, G_FILE_TEST_EXISTS)) {
+		GStatBuf st;
+		if (g_stat(wav, &st) == 0 && st.st_size > 44) /* bigger than a bare WAV header */
+			result = g_strdup(wav);
+	}
+
+	g_free(stem);
+	g_free(wav);
+	g_free(loc_in);
+	g_free(loc_out);
+	return result;
+}
+
 static void
 teams_got_imagemessage(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
 {
@@ -370,6 +421,17 @@ teams_got_imagemessage(PurpleHttpConnection *http_conn, PurpleHttpResponse *resp
 	}
 	fwrite(url_text, 1, len, f);
 	fclose(f);
+
+	// webOS: an AAC .m4a (Teams voice note) can't be played by the in-app media server ("Failed to get
+	// a pipeline" for AAC/MP4), so transcode it to WAV, which plays. Keep the original if it fails.
+	if (g_str_equal(ext, ".m4a")) {
+		gchar *wav = teams_audio_to_wav(path);
+		if (wav != NULL) {
+			g_unlink(path);
+			g_free(path);
+			path = wav;
+		}
+	}
 
 	msg_tmp = g_strdup_printf("file://%s", path);
 	g_free(path);
@@ -859,6 +921,52 @@ teams_xfer_send_contents_reader(PurpleHttpConnection *con, gchar *buf, size_t of
 	cb(con, TRUE, read != len, read);
 }
 
+/* webOS: best-effort duration (seconds) of a voice note for the audio card. Opus/Ogg voice notes
+ * carry a 48kHz granule position in their last OggS page; other/unparsable formats fall back to 0
+ * (the card still plays -- only the displayed length is off). */
+static guint
+teams_audio_duration_secs(const gchar *path)
+{
+	FILE *f;
+	long fsize, tail, start, i;
+	unsigned char hdr[4];
+	unsigned char *buf;
+	guint secs = 0;
+
+	if (path == NULL)
+		return 0;
+	f = fopen(path, "rb");
+	if (f == NULL)
+		return 0;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+	fsize = ftell(f);
+	if (fsize <= 27 || fseek(f, 0, SEEK_SET) != 0 || fread(hdr, 1, 4, f) != 4 ||
+			memcmp(hdr, "OggS", 4) != 0) {
+		fclose(f);
+		return 0;
+	}
+	/* scan the tail for the LAST OggS page and read its 64-bit LE granule position (page offset +6) */
+	tail = fsize > 65536 ? 65536 : fsize;
+	start = fsize - tail;
+	buf = g_malloc(tail);
+	if (fseek(f, start, SEEK_SET) == 0 && (long) fread(buf, 1, tail, f) == tail) {
+		for (i = tail - 27; i >= 0; i--) {
+			if (buf[i] == 'O' && buf[i+1] == 'g' && buf[i+2] == 'g' && buf[i+3] == 'S') {
+				guint64 g = 0;
+				int k;
+				for (k = 0; k < 8; k++)
+					g |= ((guint64) buf[i + 6 + k]) << (8 * k);
+				if (g != G_MAXUINT64)
+					secs = (guint) (g / 48000);
+				break;
+			}
+		}
+	}
+	g_free(buf);
+	fclose(f);
+	return secs;
+}
+
 static void
 teams_xfer_send_done(PurpleHttpConnection *conn, PurpleHttpResponse *resp, gpointer user_data)
 {
@@ -898,6 +1006,22 @@ teams_xfer_send_done(PurpleHttpConnection *conn, PurpleHttpResponse *resp, gpoin
 		return;
 	}
 
+	if (swft->is_audio) {
+		// webOS: the audio content is uploaded -> send it as a Teams voice note (audio card) now, no
+		// status poll (mirrors the is_image path). The recipient plays /views/audio inline.
+		TeamsAccount *sa = swft->sa;
+		PurpleXfer *xfer = swft->xfer;
+		// duration was captured from the Opus source in teams_xfer_send_init (the xfer now points at the
+		// .m4a, which teams_audio_duration_secs can't parse); fall back to parsing if it wasn't set.
+		guint dur = swft->duration_secs > 0 ? swft->duration_secs
+			: teams_audio_duration_secs(purple_xfer_get_local_filename(xfer));
+		purple_xfer_set_completed(xfer, TRUE);
+		teams_send_audio_card(sa, swft->from, swft->id, dur);
+		teams_free_xfer(xfer);
+		purple_xfer_unref(xfer);
+		return;
+	}
+
 	g_timeout_add_seconds(1, poll_file_send_progress, user_data);
 }
 
@@ -919,12 +1043,13 @@ teams_xfer_send_begin(gpointer user_data)
 
 	PurpleHttpRequest *request = purple_http_request_new("");
 	purple_http_request_set_keepalive_pool(request, sa->keepalive_pool);
-	// webOS: images upload to the image content view (imgpsh) as octet-stream; generic files to the
-	// original view as multipart/form-data (the recipient renders the former inline, see is_image).
-	purple_http_request_set_url_printf(request, "https://%s/v1/objects/%s/content/%s", TEAMS_XFER_HOST, purple_url_encode(swft->id), swft->is_image ? "imgpsh" : "original");
+	// webOS: images upload to the image content view (imgpsh) and audio to the audio view, both as
+	// octet-stream; generic files to the original view as multipart/form-data (the recipient renders
+	// the former two inline -- see is_image/is_audio).
+	purple_http_request_set_url_printf(request, "https://%s/v1/objects/%s/content/%s", TEAMS_XFER_HOST, purple_url_encode(swft->id), swft->is_image ? "imgpsh" : (swft->is_audio ? "audio" : "original"));
 	purple_http_request_set_method(request, "PUT");
 	purple_http_request_header_set(request, "Host", TEAMS_XFER_HOST);
-	purple_http_request_header_set(request, "Content-Type", swft->is_image ? "application/octet-stream" : "multipart/form-data");
+	purple_http_request_header_set(request, "Content-Type", (swft->is_image || swft->is_audio) ? "application/octet-stream" : "multipart/form-data");
 	purple_http_request_header_set_printf(request, "Content-Length", "%" G_GSIZE_FORMAT, (gsize) purple_xfer_get_size(xfer));
 	purple_http_request_header_set_printf(request, "Authorization", "skype_token %s", sa->skype_token);
 	purple_http_request_set_contents_reader(request, teams_xfer_send_contents_reader, purple_xfer_get_size(xfer), user_data);
@@ -977,12 +1102,111 @@ teams_got_object_for_file(PurpleHttpConnection *http_conn, PurpleHttpResponse *r
 	
 }
 
+/* webOS: transcode a recorded voice note's source PCM WAV to AAC/M4A. Teams' clients only play
+ * voice notes as AAC/M4A (audio card /views/audio) -- an Ogg/Opus upload shows "Can't play message"
+ * on Android. Our transport hands us an Opus .ogg but keeps voicenote_X.wav next to it; this device's
+ * ffmpeg has no PCM/Opus decoder, so we go from the WAV via the standalone faac + ffmpeg binaries:
+ *   1) faac  -o X.aac X.wav                          (PCM WAV -> raw ADTS AAC; this faac lacks MP4)
+ *   2) ffmpeg -i X.aac -acodec copy -f mp4 X.m4a     (wrap AAC in MP4; --disable-bsfs build, and it
+ *                                                      won't infer the muxer from .m4a, hence -f mp4)
+ * Returns a newly-allocated .m4a path (caller frees) or NULL to fall back to the original file. */
+static gchar *
+teams_voicenote_to_m4a(const gchar *audio_path)
+{
+	gchar *stem = NULL, *wav = NULL, *aac = NULL, *m4a = NULL, *result = NULL;
+	const gchar *dot;
+	gint status = 0;
+	gboolean ok;
+
+	if (audio_path == NULL)
+		return NULL;
+	dot = strrchr(audio_path, '.');
+	if (dot == NULL)
+		return NULL;
+
+	stem = g_strndup(audio_path, dot - audio_path);
+	wav = (g_ascii_strcasecmp(dot, ".wav") == 0) ? g_strdup(audio_path) : g_strconcat(stem, ".wav", NULL);
+	if (!g_file_test(wav, G_FILE_TEST_EXISTS))
+		goto out;
+
+	aac = g_strconcat(stem, ".aac", NULL);
+	m4a = g_strconcat(stem, ".m4a", NULL);
+
+	// CRITICAL: run faac/ffmpeg with a CLEAN environment. The transport is launched with an
+	// LD_PRELOAD (app libstdc++ + wpe-glibc librt + libasound) and a wpe-glibc-first LD_LIBRARY_PATH;
+	// inherited by the child, those make the stock /usr/bin/faac (and ffmpeg) SEGFAULT. A minimal env
+	// lets the default loader pick their normal system libs. (envp replaces, not augments, the env.)
+	{
+		gchar *envp[] = { (gchar *) "PATH=/usr/bin:/bin", NULL };
+		gchar *argv[] = { (gchar *) "/usr/bin/faac", (gchar *) "-o", aac, wav, NULL };
+		ok = g_spawn_sync(NULL, argv, envp, G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+			NULL, NULL, NULL, NULL, &status, NULL);
+	}
+	if (!ok || !g_file_test(aac, G_FILE_TEST_EXISTS))
+		goto out;
+
+	{
+		// RE-ENCODE (not -acodec copy): faac emits ADTS-framed AAC, and this ffmpeg has NO aac_adtstoasc
+		// bitstream filter (--disable-bsfs) to strip it, so a stream-copy leaves ADTS sync headers in the
+		// MP4 with no proper esds codec-config -> Teams/Android shows the card but "can't play". Decoding
+		// the ADTS and re-encoding through libfaac writes a clean raw-AAC MP4 (correct esds). 16 kHz is a
+		// safe AAC-LC rate (the 8 kHz source upsamples; fine for voice).
+		gchar *envp[] = { (gchar *) "PATH=/usr/bin:/bin", NULL };
+		gchar *argv[] = { (gchar *) "/usr/bin/ffmpeg", (gchar *) "-y", (gchar *) "-i", aac,
+			(gchar *) "-acodec", (gchar *) "libfaac", (gchar *) "-ar", (gchar *) "16000",
+			(gchar *) "-f", (gchar *) "mp4", m4a, NULL };
+		ok = g_spawn_sync(NULL, argv, envp, G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+			NULL, NULL, NULL, NULL, &status, NULL);
+	}
+	if (ok && g_file_test(m4a, G_FILE_TEST_EXISTS))
+		result = g_strdup(m4a);
+
+out:
+	if (aac != NULL)
+		g_unlink(aac); // drop the intermediate raw-AAC
+	g_free(stem);
+	g_free(wav);
+	g_free(aac);
+	g_free(m4a);
+	return result;
+}
+
 static void
 teams_xfer_send_init(PurpleXfer *xfer)
 {
 	PurpleConnection *pc = purple_account_get_connection(purple_xfer_get_account(xfer));
 	TeamsAccount *sa = purple_connection_get_protocol_data(pc);
-	gchar *basename = g_path_get_basename(purple_xfer_get_local_filename(xfer));
+	gchar *basename;
+
+	// webOS: a recorded voice note reaches us as Opus (.ogg); Teams needs AAC/M4A (else Android shows
+	// "Can't play message"). Transcode the source WAV -> M4A and send that instead. Repoint the xfer so
+	// the object create/upload + is_audio detection below all see the .m4a.
+	{
+		const gchar *lf = purple_xfer_get_local_filename(xfer);
+		const gchar *d = lf ? strrchr(lf, '.') : NULL;
+		if (d != NULL && (g_ascii_strcasecmp(d, ".ogg") == 0 || g_ascii_strcasecmp(d, ".opus") == 0)) {
+			// Capture the length from the Opus source NOW -- after we repoint the xfer to the .m4a,
+			// teams_audio_duration_secs (Ogg-granule only) can't read it and the card would show PT1S.
+			TeamsFileTransfer *swft0 = purple_xfer_get_protocol_data(xfer);
+			guint dur = teams_audio_duration_secs(lf);
+			gchar *m4a = teams_voicenote_to_m4a(lf);
+			if (m4a != NULL) {
+				GStatBuf st;
+				if (swft0 != NULL)
+					swft0->duration_secs = dur;
+				purple_xfer_set_local_filename(xfer, m4a);
+				if (g_stat(m4a, &st) == 0)
+					purple_xfer_set_size(xfer, (size_t) st.st_size);
+				purple_debug_info("teams", "voice note transcoded to M4A: %s (%ld bytes, %us)\n",
+					m4a, (long) purple_xfer_get_size(xfer), dur);
+				g_free(m4a);
+			} else {
+				purple_debug_warning("teams", "voice-note WAV->M4A transcode failed; sending Opus as-is\n");
+			}
+		}
+	}
+
+	basename = g_path_get_basename(purple_xfer_get_local_filename(xfer));
 	gchar *id, *post;
 	TeamsFileTransfer *swft = purple_xfer_get_protocol_data(xfer);
 	JsonObject *obj = json_object_new();
@@ -1002,9 +1226,18 @@ teams_xfer_send_init(PurpleXfer *xfer)
 			g_ascii_strcasecmp(dot, ".png")  == 0 || g_ascii_strcasecmp(dot, ".jpg") == 0 ||
 			g_ascii_strcasecmp(dot, ".jpeg") == 0 || g_ascii_strcasecmp(dot, ".gif") == 0 ||
 			g_ascii_strcasecmp(dot, ".webp") == 0 || g_ascii_strcasecmp(dot, ".bmp") == 0);
+		// webOS: a voice note is created as a "pish/audio" (Inline) object so it gets a /views/audio
+		// view, then sent as an audio card (teams_send_audio_card) -- NOT a File.1 URIObject.
+		swft->is_audio = dot != NULL && (
+			g_ascii_strcasecmp(dot, ".ogg")  == 0 || g_ascii_strcasecmp(dot, ".opus") == 0 ||
+			g_ascii_strcasecmp(dot, ".mp3")  == 0 || g_ascii_strcasecmp(dot, ".m4a")  == 0 ||
+			g_ascii_strcasecmp(dot, ".wav")  == 0 || g_ascii_strcasecmp(dot, ".amr")  == 0);
 	}
 
-	json_object_set_string_member(obj, "type", swft->is_image ? "pish/image" : "sharing/file");
+	// webOS: a voice note is a "sharing/audio" object (verified against a real incoming Teams voice
+	// note) -- its /views/audio serves audio/mp4 to the recipient. "pish/audio" creates an object whose
+	// /views/audio 400s ("Can't play message"). Images are "pish/image" (Inline AMSImage), else File.1.
+	json_object_set_string_member(obj, "type", swft->is_image ? "pish/image" : (swft->is_audio ? "sharing/audio" : "sharing/file"));
 	json_object_set_string_member(obj, "filename", basename);
 	if (swft->is_image) {
 		json_object_set_string_member(obj, "sharingMode", "Inline");
