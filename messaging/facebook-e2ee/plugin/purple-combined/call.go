@@ -37,6 +37,7 @@ import (
 	"unsafe"
 
 	"github.com/purpshell/meowcaller"
+	"go.mau.fi/whatsmeow/types"
 )
 
 const (
@@ -60,6 +61,9 @@ type callInfo struct {
 var (
 	callCtx  = context.Background()
 	mcClient *meowcaller.Client
+	// The Handler that owns the whatsmeow client/store -- used to resolve an incoming caller's @lid
+	// to their phone number (Store.LIDs) so the Phone app can match it to a contact. Set in startCalling.
+	callHandler *Handler
 
 	callMu  sync.Mutex
 	calls   = map[string]*callInfo{} // id -> call
@@ -75,6 +79,7 @@ func (handler *Handler) startCalling() {
 		// the same account replaces the engine so it tracks the live client.
 		mcClient = nil
 	}
+	callHandler = handler
 	mcClient = meowcaller.NewClient(handler.client)
 	mcClient.OnIncomingCall(handleIncoming)
 	fmt.Fprintln(os.Stderr, "wacall: calling engine attached to messaging session")
@@ -155,7 +160,20 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 		mic:     newMicSource(),
 	}
 	if ci.address == "" {
-		ci.address = mcCall.Peer().String()
+		// Modern WhatsApp delivers an incoming caller as a @lid (an anonymised identity), NOT the phone
+		// number -- so the Phone app can't match it to a contact and shows "Unknown Caller" + the raw
+		// 14-digit LID. Resolve LID -> phone number via the same store the messaging side uses
+		// (handler.lidToPn / Store.LIDs) and present it in the +E.164 form the WhatsApp contact records
+		// are keyed on, so the caller's name resolves. Fall back to the raw id if unresolved.
+		peer := mcCall.Peer()
+		if callHandler != nil {
+			peer = callHandler.lidToPn(peer, "incoming call peer")
+		}
+		if peer.Server == types.DefaultUserServer && peer.User != "" {
+			ci.address = "+" + peer.User
+		} else {
+			ci.address = peer.User
+		}
 	}
 	if origin == "incoming" {
 		ci.state = "incoming"
