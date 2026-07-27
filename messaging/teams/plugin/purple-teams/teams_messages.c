@@ -1725,6 +1725,23 @@ process_conversation_resource(TeamsAccount *sa, JsonObject *resource)
 	if (!teams_account_is_live(sa))
 		return;
 
+	// webOS RECEIPT-CAPTURE (temporary): consumer Teams delivers conversation updates by POLLING, so a
+	// peer read (consumptionhorizon / consumptionHorizonBookmark) arrives here, not via the trouter
+	// dispatch. Dump the full conversation resource so the read-receipt format is captured. Grep
+	// imstdout.log for TEAMS-RCPT-CAPTURE.
+	{
+		gchar *dump = teams_jsonobj_to_string(resource);
+		if (dump != NULL) {
+			purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=conversation resource=%s\n", dump);
+			if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
+					strstr(dump, "readUntil") || strstr(dump, "messageRead") || strstr(dump, "readReceipt")) {
+				purple_debug_info("teams",
+					"TEAMS-RCPT-CAPTURE *** read marker present in conversation resource ***\n");
+			}
+			g_free(dump);
+		}
+	}
+
 	const gchar *id = json_object_get_string_member(resource, "id");
 	JsonObject *threadProperties = json_object_get_object_member(resource, "threadProperties");
 	JsonObject *lastMessage = json_object_get_object_member(resource, "lastMessage");
@@ -1888,23 +1905,26 @@ teams_process_event_message(TeamsAccount *sa, JsonObject *message)
 	// device, read one of your sent messages from another Teams client, then grep imstdout.log for
 	// "TEAMS-RCPT-CAPTURE". Remove once the inbound receipt format is known.
 	if (resource != NULL && resourceType != NULL &&
-			!purple_strequal(resourceType, "NewMessage") &&
 			!purple_strequal(resourceType, "UserPresence") &&
-			!purple_strequal(resourceType, "EndpointPresence") &&
-			!purple_strequal(resourceType, "ThreadUpdate")) {
-		// Non-NewMessage resource (ConversationUpdate/MessageUpdate/unknown) -- a receipt candidate.
-		// Incoming media/video is captured in process_message_resource instead (so a re-synced history
-		// video is dumped even though it deduped).
+			!purple_strequal(resourceType, "EndpointPresence")) {
+		// Receipt candidates. ConversationUpdate/ThreadUpdate/MessageUpdate/unknown are always dumped.
+		// A read receipt on consumer Teams may instead arrive as an activity NewMessage on the
+		// streamofnotifications thread (that's how reactions arrive: properties.activity.activityType),
+		// so dump those too -- but skip normal chat NewMessages (captured in process_message_resource).
 		gchar *dump = teams_jsonobj_to_string(resource);
 		if (dump != NULL) {
-			purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
-				resourceType, dump);
-			if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
-					strstr(dump, "readUntil") || strstr(dump, "isRead") ||
-					strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
-				purple_debug_info("teams",
-					"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
-					resourceType);
+			gboolean is_new = purple_strequal(resourceType, "NewMessage");
+			gboolean notif = strstr(dump, "streamofnotifications") != NULL || strstr(dump, "\"activity\"") != NULL;
+			if (!is_new || notif) {
+				purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
+					resourceType, dump);
+				if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
+						strstr(dump, "readUntil") || strstr(dump, "messageRead") ||
+						strstr(dump, "readReceipt") || strstr(dump, "activityType\":\"read")) {
+					purple_debug_info("teams",
+						"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
+						resourceType);
+				}
 			}
 			g_free(dump);
 		}
