@@ -128,6 +128,13 @@ func (handler *Handler) handle_attachment(message *waE2E.Message, id string, sou
 			mimetype = dm.GetMimetype()
 			length = dm.GetFileLength()
 			caption = dm.GetCaption()
+			// webOS: name the downloaded document by its REAL filename (not the content hash) so the
+			// Messaging app's attachment chip shows e.g. "Q3-Report.pdf" instead of a hash / generic
+			// label. The path template uses $hash, so put the sanitized real name there; keep the
+			// content hash as a fallback when the document has no filename.
+			if safe := sanitize_attachment_name(filename); safe != "" {
+				hash = safe
+			}
 		}
 	}
 	if data_type != C.gowhatsapp_attachment_type_none {
@@ -135,6 +142,19 @@ func (handler *Handler) handle_attachment(message *waE2E.Message, id string, sou
 		sender := source.Sender.ToNonAD().String()
 		purple_handle_attachment(handler.account, chat, source.IsGroup, sender, caption, id, timestamp, data_type, filename, extension, mimetype, hash, length, downloadable)
 	}
+}
+
+// sanitize_attachment_name makes a document's real filename safe to use as a single path component AND
+// to survive the Messaging app's media-URL regex (which stops at whitespace): directory separators,
+// control chars, spaces and characters that break a URL/path all map to "_".
+func sanitize_attachment_name(name string) string {
+	name = strings.TrimSpace(name)
+	return strings.Map(func(r rune) rune {
+		if r <= 0x20 || strings.ContainsRune("/\\?#\"'<>|:*&", r) {
+			return '_'
+		}
+		return r
+	}, name)
 }
 
 func (handler *Handler) download_attachment(local_file_path string, message whatsmeow.DownloadableMessage) error {
