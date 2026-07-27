@@ -69,6 +69,7 @@ func (h *gometaHandler) sendFile(who, filename string) error {
 	// The transport transcodes recorded voice notes to Ogg/Opus; http.DetectContentType reports those
 	// as "application/ogg". Treat any ogg/audio as a voice note.
 	isAudio := mime == "application/ogg" || strings.HasPrefix(mime, "audio/")
+	isVideo := strings.HasPrefix(mime, "video/")
 
 	h.mu.Lock()
 	isE2EE := h.e2eeContacts[threadID]
@@ -83,7 +84,10 @@ func (h *gometaHandler) sendFile(who, filename string) error {
 		if isAudio {
 			return h.sendAudioE2EE(threadID, data)
 		}
-		return fmt.Errorf("only images and voice notes can be sent to encrypted threads for now")
+		if isVideo {
+			return h.sendVideoE2EE(threadID, data, mime)
+		}
+		return fmt.Errorf("only images, videos and voice notes can be sent to encrypted threads for now")
 	}
 	return h.sendMediaPlaintext(threadID, data, filepath.Base(filename), mime)
 }
@@ -143,13 +147,17 @@ func (h *gometaHandler) sendMediaPlaintext(threadID int64, data []byte, filename
 	h.mu.Unlock()
 	isImg := strings.HasPrefix(mime, "image/")
 	isAud := mime == "application/ogg" || strings.HasPrefix(mime, "audio/")
-	if h.e2ee != nil && (isImg || isAud) {
+	isVid := strings.HasPrefix(mime, "video/")
+	if h.e2ee != nil && (isImg || isAud || isVid) {
 		h.mu.Lock()
 		h.e2eeContacts[threadID] = true
 		h.mu.Unlock()
 		h.logger.Warn().Int64("thread", threadID).Msg("media send not confirmed; retrying over E2EE")
 		if isAud {
 			return h.sendAudioE2EE(threadID, data)
+		}
+		if isVid {
+			return h.sendVideoE2EE(threadID, data, mime)
 		}
 		return h.sendImageE2EE(threadID, data, mime)
 	}
@@ -223,6 +231,76 @@ func (h *gometaHandler) sendImageE2EE(threadID int64, data []byte, mime string) 
 	// this the sent image carried no id and reactions to it were silently dropped. Mirrors sendE2EE.
 	purple_handle_outbox_id(h.account, otidStr, "")
 	h.logger.Info().Int64("thread", threadID).Msg("e2ee image sent")
+	return nil
+}
+
+// sendVideoE2EE uploads+encrypts a video via whatsmeow and sends it as an armadillo VideoMessage
+// over the E2EE transport. Mirrors sendImageE2EE; dimensions/duration come from the mp4 boxes so
+// Messenger clients render (and can scrub) the video instead of showing a broken tile.
+func (h *gometaHandler) sendVideoE2EE(threadID int64, data []byte, mime string) error {
+	ctx, cancel := context.WithTimeout(h.ctx, 120*time.Second)
+	defer cancel()
+	uploaded, err := h.e2ee.Upload(ctx, data, whatsmeow.MediaVideo)
+	if err != nil {
+		return fmt.Errorf("e2ee video upload: %w", err)
+	}
+	w, ht, secs := videoInfoMP4(data)
+	if w == 0 || ht == 0 {
+		// Messenger refuses media without non-zero dimensions; fall back to a 4:3 default.
+		w, ht = 640, 480
+	}
+	mediaTransport := &waMediaTransport.WAMediaTransport{
+		Integral: &waMediaTransport.WAMediaTransport_Integral{
+			FileSHA256:        uploaded.FileSHA256,
+			MediaKey:          uploaded.MediaKey,
+			FileEncSHA256:     uploaded.FileEncSHA256,
+			DirectPath:        &uploaded.DirectPath,
+			MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		},
+		Ancillary: &waMediaTransport.WAMediaTransport_Ancillary{
+			FileLength: proto.Uint64(uint64(len(data))),
+			Mimetype:   &mime,
+			Thumbnail: &waMediaTransport.WAMediaTransport_Ancillary_Thumbnail{
+				ThumbnailWidth:  proto.Uint32(w),
+				ThumbnailHeight: proto.Uint32(ht),
+			},
+			ObjectID: &uploaded.ObjectID,
+		},
+	}
+	videoMsg := &waConsumerApplication.ConsumerApplication_VideoMessage{}
+	if err := videoMsg.Set(&waMediaTransport.VideoTransport{
+		Integral: &waMediaTransport.VideoTransport_Integral{Transport: mediaTransport},
+		Ancillary: &waMediaTransport.VideoTransport_Ancillary{
+			Height:      proto.Uint32(ht),
+			Width:       proto.Uint32(w),
+			Seconds:     proto.Uint32(secs),
+			GifPlayback: proto.Bool(false), // a real video, not a looping GIF
+		},
+	}); err != nil {
+		return fmt.Errorf("build video message: %w", err)
+	}
+	msg := &waConsumerApplication.ConsumerApplication{
+		Payload: &waConsumerApplication.ConsumerApplication_Payload{
+			Payload: &waConsumerApplication.ConsumerApplication_Payload_Content{
+				Content: &waConsumerApplication.ConsumerApplication_Content{
+					Content: &waConsumerApplication.ConsumerApplication_Content_VideoMessage{VideoMessage: videoMsg},
+				},
+			},
+		},
+	}
+	otid := methods.GenerateEpochID()
+	otidStr := strconv.FormatInt(otid, 10)
+	h.mu.Lock()
+	h.sentOtids[otid] = true
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
+	h.mu.Unlock()
+	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
+	if _, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)}); err != nil {
+		return fmt.Errorf("e2ee video send: %w", err)
+	}
+	purple_handle_outbox_id(h.account, otidStr, "")
+	h.logger.Info().Int64("thread", threadID).Uint32("seconds", secs).Msg("e2ee video sent")
 	return nil
 }
 

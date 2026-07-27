@@ -112,6 +112,23 @@ void uploadResponseError(PurpleXfer *xfer, const std::string &message, TdAccount
     purple_xfer_unref(xfer);
 }
 
+// webOS: Telegram turns an mp4 sent as a plain *document* into a looping GIF/animation. Detecting
+// video files by extension lets us send them as inputMessageVideo (streamable) so they arrive as a
+// proper video with a player instead.
+static bool isVideoFilename(const char *name)
+{
+    if (!name)
+        return false;
+    const char *dot = strrchr(name, '.');
+    if (!dot)
+        return false;
+    static const char *exts[] = { ".mp4", ".m4v", ".mov", ".3gp", NULL };
+    for (int i = 0; exts[i]; i++)
+        if (g_ascii_strcasecmp(dot, exts[i]) == 0)
+            return true;
+    return false;
+}
+
 static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfer *upload, ChatId chatId,
                                          TdTransceiver &transceiver, TdAccountData &account,
                                          TdTransceiver::ResponseCb sendMessageResponse)
@@ -149,6 +166,27 @@ static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfe
                     std::move(voice),
                     td::td_api::make_object<td::td_api::formattedText>(),
                     nullptr);
+                sendMessageRequest->input_message_content_ = std::move(content);
+            } else if (isVideoFilename(localName)) {
+                // webOS video: send as a streamable Telegram VIDEO (not a document, which Telegram
+                // auto-converts to a GIF/animation). Duration/dimensions left 0 so Telegram derives
+                // them server-side; supports_streaming makes it a proper in-place video player.
+                auto video = td::td_api::make_object<td::td_api::inputVideo>(
+                    td::td_api::make_object<td::td_api::inputFileId>(file.id_),
+                    nullptr,                        // thumbnail
+                    nullptr,                        // cover
+                    0,                              // start_timestamp
+                    std::vector<std::int32_t>(),    // added_sticker_file_ids
+                    0,                              // duration
+                    0,                              // width
+                    0,                              // height
+                    true);                          // supports_streaming
+                auto content = td::td_api::make_object<td::td_api::inputMessageVideo>(
+                    std::move(video),
+                    td::td_api::make_object<td::td_api::formattedText>(),
+                    false,                          // show_caption_above_media
+                    nullptr,                        // self_destruct_type
+                    false);                         // has_spoiler
                 sendMessageRequest->input_message_content_ = std::move(content);
             } else {
                 auto content = td::td_api::make_object<td::td_api::inputMessageDocument>();
