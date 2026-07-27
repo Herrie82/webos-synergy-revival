@@ -1,0 +1,8 @@
+{
+    "org.webosports.service.cdav": [
+        "cdav-service.operation",
+        "activity.operation",
+        "database.operation",
+        "time.query"
+    ]
+}

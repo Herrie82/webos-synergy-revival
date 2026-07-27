@@ -1,0 +1,18 @@
+{
+	"id": "org.webosports.cdav",
+	"package_format_version": 2,
+	"loc_name": "C+DAV synergy connector",
+	"version": "0.3.36",
+	"vendor": "WebOS Ports",
+	"vendorurl": "www.webos-ports.org",
+	"app": "org.webosports.app.cdav",
+	"services": [
+		"org.webosports.service.cdav"
+	],
+	"accounts": [
+		"org.webosports.cdav.account",
+		"org.webosports.cdav.account.google",
+		"org.webosports.cdav.account.icloud",
+		"org.webosports.cdav.account.yahoo"
+	]
+}
