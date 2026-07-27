@@ -148,12 +148,14 @@ Notes:
   (an inline AMSVideo `<video>` element — parallel to an inline AMSImage `<img>`, NOT a card; the clip
   is uploaded as a `sharing/video` ASM object to `/content/video` and referenced by `/views/video`,
   with width/height/duration parsed from the mp4) — **all five confirmed on device**. **Video →
-  Receive** is 🟡 across the board: the file **downloads / opens as a link** fine but does **not play
-  inline** — the TouchPad's hardware H.264 decoder (`palmvideodecoder`) can't negotiate
-  WhatsApp/Messenger's H.264 **High profile** stream (`not-negotiated`), the same media-pipeline
-  class as the unresolved WebM video. In-app playback is being tackled via the stock
-  **`com.palm.app.videoplayer`** (launch received videos in the dedicated player instead of the
-  WebKit `<video>` element).
+  Receive** now **plays** on device: the H.264 mp4 decodes via the **Snapdragon S3 (APQ8060) OMX
+  hardware decoder** and plays (tapping an mp4 opens the stock `com.palm.app.videoplayer`; a sender
+  JPEG thumbnail rides along as the `<video poster>` preview). The earlier "won't play / not-negotiated"
+  symptom was **NOT** a decoder limit — it was the **`device-setup/videoplayer-webm` autoplug shim**
+  (`libmp-autoplug.so`) breaking H.264 video-session creation. That shim is now **kept OFF** (stock
+  media-pipeline) — it only ever helped WebM, which no IM connector sends. (Heavy back-to-back playback
+  can still intermittently crash WebAppMgr on the video-overlay teardown — a media-resource-churn race,
+  not a decode fault; normal use plays cleanly.)
 - **Document attachments (files → Send)** — pdf/docx/xlsx/pptx/zip/etc. send from the same picker:
   **WhatsApp** (`send_file_document`), **Signal**, **Telegram** (`inputMessageDocument`) and
   **Facebook E2EE** (armadillo `DocumentMessage`, original filename carried on the message) all

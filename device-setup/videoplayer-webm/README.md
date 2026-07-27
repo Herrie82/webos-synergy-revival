@@ -1,5 +1,16 @@
 # videoplayer-webm — make the stock Video player actually play WebM/VP8/VP9
 
+> ⚠️ **DO NOT INSTALL THE AUTOPLUG SHIM ON A DEVICE WHERE mp4 VIDEO MATTERS.**
+> The `mp_autoplug.c` LD_PRELOAD shim (Gate 2 below) **breaks H.264 (mp4) video playback** — verified
+> on device by clean-boot A/B (2026-07): with the shim active, mp4 video sessions never get created
+> (the player spins; the media resource arbiter logs `requestPipeline restore timeout` / `unsent
+> QueryName`); with it OFF, the same mp4 decodes and plays via the Snapdragon S3 OMX hardware decoder.
+> The `README`'s earlier "mp3/mp4 still play normally through it" claim was **WRONG**. Since every
+> received IM video is H.264 mp4 (WhatsApp/Teams/Signal/Telegram) and **none are WebM**, the shim's
+> only benefit does not apply to messaging — so the shim is kept **OFF** (stock media-pipeline). The
+> mediastream `<source>`-mislabel patch (Gate 1) is harmless and independent; only the autoplug shim is
+> the problem. `install-videoplayer-webm.sh` no longer enables the shim unless `MP_SHIM=1` is set.
+
 The `../gst-video-codecs` package puts `vp8dec`/`vp9dec`/`matroskademux` into the gstreamer-0.10
 registry, so the pipeline *can* decode WebM. But the stock **Video player** still wouldn't play a
 `.webm`: it opened, spun forever, then errored. This package fixes the two gates that sit *above* the

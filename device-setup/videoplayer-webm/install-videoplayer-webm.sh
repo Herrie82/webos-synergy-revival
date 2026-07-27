@@ -28,13 +28,20 @@ FRAMEWORK_FILES="
 echo "== remount rootfs rw =="
 nr "mount -o remount,rw /dev/mapper/store-root / || mount -o remount,rw /"
 
-echo "== 1) install the autoplug shim -> /usr/lib/libmp-autoplug.so =="
-novacom -d usb put "file:///usr/lib/libmp-autoplug.so" < "$PRE/libmp-autoplug.so"
+# The autoplug shim BREAKS H.264 (mp4) video playback (see README ⚠️). It is OFF by default; set
+# MP_SHIM=1 only if you need WebM in the stock Video player AND accept that mp4 video will break.
+if [ "${MP_SHIM:-0}" = "1" ]; then
+  echo "== 1) install the autoplug shim -> /usr/lib/libmp-autoplug.so  (WARNING: breaks mp4 video) =="
+  novacom -d usb put "file:///usr/lib/libmp-autoplug.so" < "$PRE/libmp-autoplug.so"
 
-echo "== 2) wrap media-pipeline to preload the shim =="
-nr '[ -f /usr/bin/media-pipeline.wrapper.orig ] || cp /usr/bin/media-pipeline /usr/bin/media-pipeline.wrapper.orig'
-novacom -d usb put "file:///usr/bin/media-pipeline" < "$HERE/media-pipeline.wrapper"
-nr 'chmod 755 /usr/bin/media-pipeline'
+  echo "== 2) wrap media-pipeline to preload the shim =="
+  nr '[ -f /usr/bin/media-pipeline.wrapper.orig ] || cp /usr/bin/media-pipeline /usr/bin/media-pipeline.wrapper.orig'
+  novacom -d usb put "file:///usr/bin/media-pipeline" < "$HERE/media-pipeline.wrapper"
+  nr 'chmod 755 /usr/bin/media-pipeline'
+else
+  echo "== 1+2) SKIPPING autoplug shim (breaks mp4 video; set MP_SHIM=1 to force). Ensuring stock media-pipeline. =="
+  nr '[ -f /usr/bin/media-pipeline.wrapper.orig ] && cp /usr/bin/media-pipeline.wrapper.orig /usr/bin/media-pipeline && chmod 755 /usr/bin/media-pipeline || true'
+fi
 
 echo "== 3) mislabel webm/mkv in the mediastream framework (idempotent, backs up .orig) =="
 for f in $FRAMEWORK_FILES; do
