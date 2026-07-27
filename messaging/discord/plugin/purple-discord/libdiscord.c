@@ -499,7 +499,12 @@ typedef struct {
 typedef struct {
 	guint64 room_id;
 	gboolean canceleable;
+	int send_retries; // webOS: file-upload retries while Discord's gateway is transiently reconnecting
 } DiscordTransfer;
+
+// webOS: how many times to re-try firing a file upload while the Discord connection is invalid
+// (its gateway flaps/reconnects roughly every few minutes). ~10 x 1.5s = up to ~15s of waiting.
+#define DISCORD_XFER_MAX_RETRIES 10
 
 
 static guint64
@@ -10899,7 +10904,8 @@ purple_xfer_update_cb(DiscordAccount *da, JsonNode *node, gpointer userdata) {
 	// The following may say the xfer is canceled when it isn't, but it's
 	// the best we can do
 	if (node == NULL) {
-		purple_notify_error(pc, _("Connection Error"), NULL, xfer_info, purple_get_cpar_from_connection(pc));
+		// primary must be non-NULL (purple_notify_message asserts on it); use the title text.
+		purple_notify_error(pc, _("Connection Error"), _("Discord upload failed"), xfer_info, purple_get_cpar_from_connection(pc));
 
 		purple_xfer_unref(xfer);
 		dt->canceleable = TRUE;
@@ -11011,6 +11017,8 @@ discord_ogg_opus_info(const guchar *buf, gsize len, double *out_duration, guchar
 	return TRUE;
 }
 
+static gboolean discord_xfer_send_init_retry_cb(gpointer data);
+
 // TODO progress, true cancel
 static void
 discord_xfer_send_init(PurpleXfer *xfer)
@@ -11022,12 +11030,33 @@ discord_xfer_send_init(PurpleXfer *xfer)
 	GMappedFile *file;
 	GString *postdata;
 
-	purple_xfer_ref(xfer);
-
 	PurpleAccount *acct = purple_xfer_get_account(xfer);
 	PurpleConnection *pc = purple_account_get_connection(acct);
-	DiscordAccount *da = purple_connection_get_protocol_data(pc);
 	DiscordTransfer *dt = purple_xfer_get_protocol_data(xfer);
+
+	// webOS: Discord's user-account gateway flaps (it reconnects with a Network_Error every few
+	// minutes). If the HTTP connection is transiently invalid at THIS instant, discord_fetch_url would
+	// bail silently (callback(NULL)) and the upload would die with no retry -- the file just never
+	// sends. Wait for the connection to come back (a few short retries) before building + firing the
+	// multipart POST, instead of failing the whole transfer on one bad moment.
+	if (!PURPLE_CONNECTION_IS_VALID(pc) || purple_account_is_disconnected(acct)) {
+		if (dt != NULL && dt->send_retries < DISCORD_XFER_MAX_RETRIES) {
+			dt->send_retries++;
+			purple_debug_info("discord", "xfer: connection not ready, retry %d/%d in 1.5s\n",
+				dt->send_retries, DISCORD_XFER_MAX_RETRIES);
+			purple_xfer_ref(xfer); // held by the timeout; released in discord_xfer_send_init_retry_cb
+			purple_timeout_add(1500, discord_xfer_send_init_retry_cb, xfer);
+		} else {
+			purple_xfer_error(PURPLE_XFER_SEND, acct, purple_xfer_get_remote_user(xfer),
+				_("Discord connection not ready — please try again"));
+			purple_xfer_cancel_local(xfer);
+		}
+		return;
+	}
+
+	purple_xfer_ref(xfer);
+
+	DiscordAccount *da = purple_connection_get_protocol_data(pc);
 
 	const gchar* fullpath = purple_xfer_get_local_filename(xfer);
 
@@ -11120,9 +11149,21 @@ discord_xfer_send_init(PurpleXfer *xfer)
 	g_string_free(postdata, TRUE);
 }
 
+// webOS: re-enter discord_xfer_send_init after a short delay to re-check the connection and fire the
+// upload once Discord's gateway has reconnected. One-shot (returns FALSE); releases the ref that
+// discord_xfer_send_init took when it scheduled this retry.
+static gboolean
+discord_xfer_send_init_retry_cb(gpointer data)
+{
+	PurpleXfer *xfer = data;
+	discord_xfer_send_init(xfer);
+	purple_xfer_unref(xfer);
+	return FALSE;
+}
+
 // This is not hooked into 'new_xfer' like you may see in other prpl's
 static PurpleXfer *
-discord_create_xfer(PurpleConnection *pc, guint64 room_id, const gchar *receiver) 
+discord_create_xfer(PurpleConnection *pc, guint64 room_id, const gchar *receiver)
 {
 	DiscordAccount *da = purple_connection_get_protocol_data(pc);
 	PurpleXfer *xfer;
@@ -11132,6 +11173,7 @@ discord_create_xfer(PurpleConnection *pc, guint64 room_id, const gchar *receiver
 	DiscordTransfer *dt = g_new(DiscordTransfer, 1);
 	dt->room_id = room_id;
 	dt->canceleable = FALSE;
+	dt->send_retries = 0;
 	purple_xfer_set_protocol_data(xfer, dt);
 
 	purple_xfer_set_init_fnc(xfer, discord_xfer_send_init);
