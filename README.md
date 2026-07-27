@@ -115,12 +115,18 @@ Notes:
 - **Receipts** show a **single check** (delivered) / **double check** (read) beside your sent
   messages, styled after the stock luna-systemui checkmark. **WhatsApp** (per-message-id),
   **Telegram** (single = sent-to-server, double = `updateChatReadOutbox`) and **Signal**
-  (per-message-id) are **confirmed on device with both delivered and read**; **Facebook**
-  (per-thread read/delivery watermarks) is confirmed for **delivered only** so far. The prpl emits a
-  `webos-im-receipt` (by id) or `webos-im-receipt-hwm` (watermark) signal; the transport's
-  `ReceiptHandler` upgrades the Outbox row's `deliveryStatus` (monotonic: read outranks delivered).
-  **Teams** is deferred (its `consumptionhorizon` inbound format needs on-device confirmation to
-  avoid false ticks) and **Discord** exposes no peer read-state at all.
+  (per-message-id) are **confirmed on device with both delivered and read**; **Facebook** is
+  **delivered-only** in practice. The prpl emits a `webos-im-receipt` (by id) or
+  `webos-im-receipt-hwm` (watermark) signal; the transport's `ReceiptHandler` upgrades the Outbox
+  row's `deliveryStatus` (monotonic: read outranks delivered). On **Facebook E2EE** the by-id
+  **delivered** receipt lands and persists on the sent message's numeric-OTID row, but **read** does
+  not stick: read receipts arrive over whatsmeow keyed by the OTID and briefly apply, yet the
+  read-marked rows then disappear from the db (they are neither retained nor re-keyed to the
+  `mid.$…` server id) — so no Facebook message ends up showing the double check. Root cause of the
+  disappearance is still open (it is *not* the receipt code — the identical by-id path keeps
+  `delivered` durably; the read-marked outbox rows are being removed/replaced elsewhere). **Teams**
+  is deferred (its `consumptionhorizon` inbound format needs on-device confirmation to avoid false
+  ticks) and **Discord** exposes no peer read-state at all.
 - **Voice messages (Audio → Send)** are recorded in the Messaging app compose bar (a mic button
   driving the native `MediaCaptureV3` 8 kHz capture), staged with an inline play/pause + waveform
   preview, then the transport transcodes the recording once to **Ogg/Opus** (`OpusEncoder`, libopus,
