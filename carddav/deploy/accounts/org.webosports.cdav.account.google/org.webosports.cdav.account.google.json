@@ -12,7 +12,7 @@
 		"address": "palm://org.webosports.service.cdav/checkCredentials",
 		"customUI": {
 			"appId": "org.webosports.app.cdav",
-			"name": "accountSetupGoogle"
+			"name": "accountSetupGoogle.html"
 		}
 	},
 	"onCredentialsChanged": "palm://org.webosports.service.cdav/onCredentialsChanged",

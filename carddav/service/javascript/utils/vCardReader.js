@@ -91,6 +91,13 @@ var vCardReader = function () {
 			return extractField("CATEGORIES");
 		},
 
+		//exposes the cleaned/unfolded line array (PHOTO already spliced out by extractPhoto)
+		//so callers can map vCard properties -> a contact object directly, without routing
+		//through the stock Contacts.vCardImporter (which needs a temp file per contact).
+		getLines: function () {
+			return lines;
+		},
+
 		readLine: function () {
 			var line = lines[index] || "";
 			index += 1;

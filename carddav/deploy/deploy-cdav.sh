@@ -71,6 +71,21 @@ if [ -d "$HERE/app/$APPID" ]; then
 	cp -r "$HERE/app/$APPID/." "$P_APP/"
 	APP_PRESENT=1
 	echo "   including setup app $APPID"
+	# Inject the Google OAuth client_secret (kept out of git). Prefer $CDAV_GOOGLE_CLIENT_SECRET,
+	# else read it from the locally-downloaded client_secret_*.json. Google treats loopback-app
+	# secrets as non-confidential; the placeholder in GoogleSetup.js is replaced only in the
+	# staged copy that gets pushed to the device.
+	GSECRET="${CDAV_GOOGLE_CLIENT_SECRET:-}"
+	if [ -z "$GSECRET" ]; then
+		GJSON=$(ls "$HOME"/Downloads/client_secret_*apps.googleusercontent.com.json 2>/dev/null | head -1)
+		[ -n "$GJSON" ] && GSECRET=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['web']['client_secret'])" "$GJSON" 2>/dev/null)
+	fi
+	if [ -n "$GSECRET" ]; then
+		sed -i "s/GOCSPX_INJECTED_AT_DEPLOY/$GSECRET/" "$P_APP/source/GoogleSetup.js"
+		echo "   injected Google client_secret into setup app"
+	else
+		echo "   !! WARNING: no Google client_secret found (set CDAV_GOOGLE_CLIENT_SECRET or place client_secret_*.json in ~/Downloads); Google OAuth setup will fail until injected"
+	fi
 else
 	echo "   (no setup app in deploy/app/$APPID -- skipping; add via UI won't work until built)"
 fi
@@ -89,6 +104,7 @@ cat > "$STAGE/cdav-postinstall.sh" <<'POST'
 #!/bin/sh
 set -u
 SVCID=org.webosports.service.cdav
+APPID=org.webosports.app.cdav
 echo "-- extracting payload to / --"
 cd / && tar xf /tmp/cdav-payload.tar || { echo "!! extract failed"; exit 1; }
 chmod +x /tmp/provision-cdav-db.sh 2>/dev/null
@@ -99,10 +115,16 @@ sh /tmp/provision-cdav-db.sh
 echo "-- rescanning luna-service2 roles --"
 ls-control scan-services 2>/dev/null || echo "   (ls-control scan-services not available)"
 
-echo "-- telling Accounts to reload templates --"
-luna-send -n 1 palm://com.palm.service.accounts/listAccountTemplates '{}' >/dev/null 2>&1
-# nudge appinstaller to re-read /usr/palm/public/accounts
+echo "-- registering the setup app + reloading Accounts templates --"
+# apps dropped straight into /media/cryptofs/apps need a launcher rescan before the Accounts
+# framework can cross-launch the customUI (accountSetup.html / accountSetupGoogle.html).
+luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$APPID'"}' >/dev/null 2>&1
 luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$SVCID'"}' >/dev/null 2>&1
+# restart the accounts service so it re-reads /usr/palm/public/accounts (it caches templates at startup)
+for p in $(ps 2>/dev/null | grep 'accounts.js' | grep -v grep | awk '{print $1}'); do kill $p 2>/dev/null; done
+sleep 2
+luna-send -n 1 palm://com.palm.service.accounts/listAccountTemplates '{}' >/dev/null 2>&1
 
 echo "-- (re)starting the service --"
 for p in $(ps 2>/dev/null | grep "$SVCID" | grep -v grep | awk '{print $1}'); do
