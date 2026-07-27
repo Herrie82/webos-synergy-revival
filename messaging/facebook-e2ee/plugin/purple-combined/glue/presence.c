@@ -143,6 +143,19 @@ void gowhatsapp_request_profile_picture(PurpleAccount *account, PurpleBuddy *bud
     if (!purple_strequal(purple_account_get_string(account, GOWHATSAPP_ICONS_OPTION, GOWHATSAPP_ICONS_CHOICE_NO), GOWHATSAPP_ICONS_CHOICE_NO)) {
         const char *picture_id = purple_blist_node_get_string(&buddy->node, "picture_id");
         const char *picture_date = purple_blist_node_get_string(&buddy->node, "picture_date");
+        // webOS avatar RESTORE: if libpurple has NO icon for this buddy right now (its contact photo was
+        // wiped by a partial-roster consolidation and the icon didn't survive the reconnect), passing the
+        // stored picture_id makes whatsmeow answer "you already have that picture" (GetProfilePictureInfo
+        // returns nil for a matching ExistingID) and NOT re-send it -- so the avatar never comes back.
+        // Force a fresh download by requesting with an empty id/date, so whatsmeow re-delivers the image
+        // (-> gowhatsapp_handle_profile_picture -> purple_buddy_icons_set_for_user -> BuddyStatusHandler
+        // re-writes the contact photo). connection_set_online already calls this for every buddy on connect,
+        // so lost avatars come back on the next reconnect. When an icon IS present we keep the id so we only
+        // fetch on a genuine change.
+        if (purple_buddy_get_icon(buddy) == NULL) {
+            picture_id = "";
+            picture_date = "";
+        }
         gowhatsapp_go_request_profile_picture(account, buddy->name, (char *)picture_date, (char *)picture_id); // cgo does not suport const
     }
 }
