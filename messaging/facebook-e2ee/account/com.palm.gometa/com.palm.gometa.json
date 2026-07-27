@@ -55,7 +55,8 @@
                 "topicsSupported": true,
                 "invitesSupportMessages": false
             },
-            "chatWithNonBuddies": true
+            "chatWithNonBuddies": true,
+            "authContacts": ["Facebook"]
         },
         {
             "capability": "CONTACTS",

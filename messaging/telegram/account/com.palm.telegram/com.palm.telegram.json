@@ -62,7 +62,8 @@
                     "&#128518;": "&#128513;",
                     "&#128558;": "&#128561;"
                 }
-            }
+            },
+            "authContacts": ["Telegram"]
         },
         {
             "capability": "CONTACTS",
