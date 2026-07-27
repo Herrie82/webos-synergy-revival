@@ -3076,7 +3076,11 @@ teams_send_message(TeamsAccount *sa, const gchar *convname, const gchar *message
 		stripped = font_stripped;
 	}
 	
-	if (strstr(stripped, "blockquote") != NULL)
+	// NOTE: obj MUST be created for every message. A prior edit left this behind a braceless
+	// `if (strstr(stripped,"blockquote"))`, so only reply/quote messages (which contain <blockquote>)
+	// got a valid obj; every other send -- plain text AND file/image <URIObject> -- built its JSON on
+	// an UNINITIALISED pointer, so the chat POST was malformed and the message never reached the
+	// recipient (the "outgoing image/file doesn't arrive" bug; also UB that churned the transport).
 	obj = json_object_new();
 	json_object_set_string_member(obj, "clientmessageid", clientmessageid_str);
 	json_object_set_string_member(obj, "content", stripped);
