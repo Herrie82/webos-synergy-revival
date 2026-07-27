@@ -8658,15 +8658,40 @@ discord_join_chat(PurpleConnection *pc, GHashTable *chatdata)
 	 * duplicate. discord_open_chat() (run inside join_chat_by_id with present=TRUE) has
 	 * already created the conversation, so discord_got_history_of_room routes correctly. */
 	gchar *marker = g_strdup_printf("chan-backfilled-%" G_GUINT64_FORMAT, id);
+	DiscordChannel *bchannel = discord_get_channel_global_int(da, id);
 	if (!fetched && !purple_account_get_bool(da->account, marker, FALSE)) {
-		DiscordChannel *channel = discord_get_channel_global_int(da, id);
+		// FIRST open of this channel: backfill a fuller recent window (100).
 		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
 		                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=100", id);
-		if (channel)
-			discord_fetch_url(da, url, NULL, discord_got_history_of_room, channel);
+		if (bchannel)
+			discord_fetch_url(da, url, NULL, discord_got_history_of_room, bchannel);
 		else
 			discord_fetch_url(da, url, NULL, discord_got_history_static, NULL);
 		g_free(url);
+	} else if (!fetched) {
+		// webOS: RE-open of an already-joined + already-backfilled channel. discord_join_chat_by_id
+		// declined to fetch (discord_open_chat short-circuits when the conversation already exists), so
+		// without this a re-opened channel shows STALE content -- messages that arrived while it wasn't
+		// the focused conversation are never pulled (Discord's lazy user-account gateway may not push a
+		// channel's messages unless it's being "viewed"). Pull the recent tail on EVERY open so new
+		// messages appear; discord_process_message dedups by received_message_ids, so anything we already
+		// have is skipped (no duplicates).
+		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
+		                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=25", id);
+		if (bchannel)
+			discord_fetch_url(da, url, NULL, discord_got_history_static, bchannel);
+		else
+			discord_fetch_url(da, url, NULL, discord_got_history_static, NULL);
+		g_free(url);
+	}
+	// webOS: also (re-)subscribe the channel on the gateway so Discord starts live-pushing its
+	// MESSAGE_CREATE. discord_open_chat only subscribes on a FIRST join; a re-open (or a channel joined
+	// before a reconnect) is otherwise never subscribed, so live messages never arrive. Safe to repeat.
+	if (bchannel != NULL && bchannel->guild_id != 0) {
+		DiscordGuild *guild = discord_get_guild(da, bchannel->guild_id);
+		if (guild != NULL) {
+			discord_subscribe_channel(da, guild, id);
+		}
 	}
 	purple_account_set_bool(da->account, marker, TRUE);
 	g_free(marker);
