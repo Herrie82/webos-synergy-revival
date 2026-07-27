@@ -21,7 +21,8 @@ type ProfilePictureRequest struct {
 }
 
 func (handler *Handler) request_profile_picture(jid types.JID, picture_date string, picture_id string) {
-	setting := purple_get_string(handler.account, C.GOWHATSAPP_ICONS_OPTION, C.GOWHATSAPP_ICONS_CHOICE_NO)
+	// webOS: default PREVIEW (fetch avatars) when unset -- see presence.c gowhatsapp_request_profile_picture.
+	setting := purple_get_string(handler.account, C.GOWHATSAPP_ICONS_OPTION, C.GOWHATSAPP_ICONS_CHOICE_PREVIEW)
 	if setting != C.GoString(C.GOWHATSAPP_ICONS_CHOICE_NO) {
 		select {
 		case handler.pictureRequests <- ProfilePictureRequest{jid: jid, picture_date: picture_date, picture_id: picture_id}:

@@ -140,7 +140,11 @@ gowhatsapp_subscribe_presence_updates(PurpleAccount *account, PurpleBuddy *buddy
 void gowhatsapp_request_profile_picture(PurpleAccount *account, PurpleBuddy *buddy) {
     g_return_if_fail(buddy != NULL);
 
-    if (!purple_strequal(purple_account_get_string(account, GOWHATSAPP_ICONS_OPTION, GOWHATSAPP_ICONS_CHOICE_NO), GOWHATSAPP_ICONS_CHOICE_NO)) {
+    // webOS: default to PREVIEW (fetch avatars) when the setting is unset. The upstream default was "no"
+    // (avatars off, opt-in), so an account that never stored the option -- or lost it on a db8/accounts.xml
+    // re-provision -- silently stopped fetching avatars, and none ever came back. webOS shows contact
+    // avatars, so on-by-default matches the platform (and profile.go's downloader already defaults preview).
+    if (!purple_strequal(purple_account_get_string(account, GOWHATSAPP_ICONS_OPTION, GOWHATSAPP_ICONS_CHOICE_PREVIEW), GOWHATSAPP_ICONS_CHOICE_NO)) {
         const char *picture_id = purple_blist_node_get_string(&buddy->node, "picture_id");
         const char *picture_date = purple_blist_node_get_string(&buddy->node, "picture_date");
         // webOS avatar RESTORE: if libpurple has NO icon for this buddy right now (its contact photo was

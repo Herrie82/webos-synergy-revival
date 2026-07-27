@@ -110,8 +110,10 @@ gowhatsapp_add_account_options(GList *account_options)
         
     {
         GList *choices = NULL;
-        choices = add_choice(choices, "no", GOWHATSAPP_ICONS_CHOICE_NO);
+        // webOS: "preview" FIRST so it's the default (a purple list option defaults to the first choice) --
+        // avatars on by default, matching the platform + the code fallback in presence.c / profile.go.
         choices = add_choice(choices, "preview", GOWHATSAPP_ICONS_CHOICE_PREVIEW);
+        choices = add_choice(choices, "no", GOWHATSAPP_ICONS_CHOICE_NO);
         choices = add_choice(choices, "original", GOWHATSAPP_ICONS_CHOICE_ORIGINAL);
         option = purple_account_option_list_new( // MEMCHECK: account_options takes ownership
             "Download user profile pictures",
