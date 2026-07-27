@@ -73,13 +73,13 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 </tr>
 </thead>
 <tbody>
-<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
-<tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Google Chat</b> (<code>purple-googlechat</code>)</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 </tbody>
 </table>
 
@@ -137,6 +137,23 @@ Notes:
   message" on the Teams Android client — send and receive now work on device. **Receiving** voice
   notes is likewise confirmed on device (Telegram, Discord, WhatsApp, Facebook, Signal, Teams) —
   they play inline in the message bubble's audio player (play/pause + progress + duration).
+- **Video (Video → Send)** goes out as each network's native video message from the Messaging
+  compose picker (widened to allow video + document files): **WhatsApp** (`send_file_video`),
+  **Signal**, **Telegram** (`inputMessageVideo`, streamable — sending an mp4 as a plain *document*
+  makes Telegram auto-convert it to a looping GIF) and **Facebook E2EE** (armadillo `VideoTransport`,
+  with width/height/duration parsed from the mp4 so Messenger renders and scrubs it) — **all four
+  confirmed on device**. **Teams** rejects our uploaded video ("Unsupported content") and is
+  back-burnered. **Video → Receive** is 🟡 across the board: the file **downloads** fine but does
+  **not play inline** — the TouchPad's hardware H.264 decoder (`palmvideodecoder`) can't negotiate
+  WhatsApp/Messenger's H.264 **High profile** stream (`not-negotiated`), the same media-pipeline
+  class as the unresolved WebM video. Deferred as a research spike (software-decode autoplug shim or
+  a receive-side transcode).
+- **Document attachments (files → Send)** — pdf/docx/xlsx/pptx/zip/etc. send from the same picker:
+  **WhatsApp** (`send_file_document`), **Signal**, **Telegram** (`inputMessageDocument`) and
+  **Facebook E2EE** (armadillo `DocumentMessage`, original filename carried on the message) all
+  confirmed on device. **Incoming** documents render as typed icon chips (PDF/Word/Excel/PowerPoint)
+  that open in the native viewers — see [`messaging/README.md`](messaging/README.md). (Documents are
+  not a separate column above; they ride the same file-transfer path as the other attachments.)
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
@@ -157,8 +174,9 @@ Notes:
   Messenger threads. The current path is `purple-gometa` (mautrix-meta messagix + whatsmeow,
   Signal-protocol E2EE). Sign-in is **email + password + a typed 2FA code** entered in a "Facebook"
   chat in the Messaging app (code method, not the Meta-rejected approve-on-another-device flow);
-  **text IM is verified working on device**, attachment media not yet wired up. Uses the original
-  Facebook account icon.
+  **text IM, replies, reactions, receipts and the full attachment set — image, voice note, video and
+  document — are all verified working on device** (each an armadillo `ConsumerApplication` message over
+  the whatsmeow E2EE socket). Uses the original Facebook account icon.
 
 ## The transport reality (shapes the whole design)
 
