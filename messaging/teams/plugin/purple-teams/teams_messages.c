@@ -1862,6 +1862,33 @@ teams_process_event_message(TeamsAccount *sa, JsonObject *message)
 		}
 	}
 	
+	// webOS RECEIPT-CAPTURE (temporary instrumentation): dump the full resource JSON for the resource
+	// types that could plausibly carry a Teams delivered/read receipt (the peer's read position), and
+	// flag any payload that mentions a known read marker. Presence/NewMessage/ThreadUpdate are excluded
+	// as high-volume noise (a receipt arriving as a NewMessage control messagetype already surfaces via
+	// the "Unhandled message resource messagetype" warning). To capture: enable IM_PURPLE_DEBUG on
+	// device, read one of your sent messages from another Teams client, then grep imstdout.log for
+	// "TEAMS-RCPT-CAPTURE". Remove once the inbound receipt format is known.
+	if (resource != NULL && resourceType != NULL &&
+			!purple_strequal(resourceType, "NewMessage") &&
+			!purple_strequal(resourceType, "UserPresence") &&
+			!purple_strequal(resourceType, "EndpointPresence") &&
+			!purple_strequal(resourceType, "ThreadUpdate")) {
+		gchar *dump = teams_jsonobj_to_string(resource);
+		if (dump != NULL) {
+			purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
+				resourceType, dump);
+			if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
+					strstr(dump, "readUntil") || strstr(dump, "isRead") ||
+					strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
+				purple_debug_info("teams",
+					"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
+					resourceType);
+			}
+			g_free(dump);
+		}
+	}
+
 	if (purple_strequal(resourceType, "NewMessage"))
 	{
 		process_message_resource(sa, resource);
