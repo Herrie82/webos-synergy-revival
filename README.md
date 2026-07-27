@@ -79,7 +79,7 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 <tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Google Chat</b> (<code>purple-googlechat</code>)</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 </tbody>
 </table>
 
@@ -115,18 +115,15 @@ Notes:
 - **Receipts** show a **single check** (delivered) / **double check** (read) beside your sent
   messages, styled after the stock luna-systemui checkmark. **WhatsApp** (per-message-id),
   **Telegram** (single = sent-to-server, double = `updateChatReadOutbox`) and **Signal**
-  (per-message-id) are **confirmed on device with both delivered and read**; **Facebook** is
-  **delivered-only** in practice. The prpl emits a `webos-im-receipt` (by id) or
-  `webos-im-receipt-hwm` (watermark) signal; the transport's `ReceiptHandler` upgrades the Outbox
-  row's `deliveryStatus` (monotonic: read outranks delivered). On **Facebook E2EE** the by-id
-  **delivered** receipt lands and persists on the sent message's numeric-OTID row, but **read** does
-  not stick: read receipts arrive over whatsmeow keyed by the OTID and briefly apply, yet the
-  read-marked rows then disappear from the db (they are neither retained nor re-keyed to the
-  `mid.$…` server id) — so no Facebook message ends up showing the double check. Root cause of the
-  disappearance is still open (it is *not* the receipt code — the identical by-id path keeps
-  `delivered` durably; the read-marked outbox rows are being removed/replaced elsewhere). **Teams**
-  is deferred (its `consumptionhorizon` inbound format needs on-device confirmation to avoid false
-  ticks) and **Discord** exposes no peer read-state at all.
+  (per-message-id) and **Facebook** are **confirmed on device with both delivered and read**. The
+  prpl emits a `webos-im-receipt` (by id) or `webos-im-receipt-hwm` (watermark) signal; the
+  transport's `ReceiptHandler` upgrades the Outbox row's `deliveryStatus` (monotonic: read outranks
+  delivered). On **Facebook E2EE** both receipts arrive over whatsmeow keyed by the numeric OTID and
+  land on the sent message's Outbox row: a peer-device receipt with no `type` = delivered, and a
+  `type="read"` receipt = read — the latter fires only when the peer actually **opens** the
+  conversation (a reaction or notification preview does *not* count, which is why read appears to lag
+  delivery). **Teams** is deferred (its `consumptionhorizon` inbound format needs on-device
+  confirmation to avoid false ticks) and **Discord** exposes no peer read-state at all.
 - **Voice messages (Audio → Send)** are recorded in the Messaging app compose bar (a mic button
   driving the native `MediaCaptureV3` 8 kHz capture), staged with an inline play/pause + waveform
   preview, then the transport transcodes the recording once to **Ogg/Opus** (`OpusEncoder`, libopus,
