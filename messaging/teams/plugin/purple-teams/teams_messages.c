@@ -3279,6 +3279,88 @@ teams_send_audio_card(TeamsAccount *sa, const gchar *who, const gchar *object_id
 	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
 }
 
+/* webOS video clips (SEND). Parallels teams_send_audio_card: a Teams video message is a RichText/Html
+ * message carrying a video CARD in properties.cards, tying an InputExtension content span (by GUID) to
+ * the card's cardClientId. The video object must have been created as a "sharing/video" ASM object with
+ * its content uploaded to /content/video (so it has a /views/video view) -- see teams_xfer_send_init/
+ * _begin (is_video). contentType is application/vnd.microsoft.card.video; the incoming counterpart is
+ * downloaded to a file:// bubble by teams_process_cards_in_properties. */
+void
+teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id)
+{
+	gchar *post, *url, *content, *cards, *media_url, *thumb_url, *guid, *convname_enc;
+	const gchar *convname;
+	JsonObject *obj, *props;
+	JsonArray *amsrefs;
+	gint64 clientmessageid;
+	gchar *clientmessageid_str;
+
+	if (object_id == NULL || !*object_id)
+		return;
+
+	/* Resolve buddy -> 1:1 thread the same way teams_send_im does; a group name is already a thread id. */
+	convname = who ? g_hash_table_lookup(sa->buddy_to_chat_lookup, who) : NULL;
+	if (convname == NULL)
+		convname = who;
+	if (convname == NULL || !*convname)
+		return;
+
+	convname_enc = g_strdup(purple_url_encode(convname));
+	url = g_strdup_printf(TEAMS_CONTACTS_PATH_PREFIX "/v1/users/ME/conversations/%s/messages", convname_enc);
+	g_free(convname_enc);
+
+	clientmessageid = teams_get_js_time();
+	clientmessageid_str = g_strdup_printf("%" G_GINT64_FORMAT "", clientmessageid);
+
+	/* 32-hex GUID (no dashes), used as BOTH the content span's itemid and the card's cardClientId. */
+	guid = g_strdup_printf("%08x%08x%08x%08x", g_random_int(), g_random_int(), g_random_int(), g_random_int());
+
+	media_url = g_strdup_printf("https://%s/v1/objects/%s/views/video", TEAMS_XFER_HOST, purple_url_encode(object_id));
+	thumb_url = g_strdup_printf("https://%s/v1/objects/%s/views/thumbnail", TEAMS_XFER_HOST, purple_url_encode(object_id));
+
+	content = g_strdup_printf(
+		"<div><span itemid=\"%s\" itemscope=\"\" itemtype=\"http://schema.skype.com/InputExtension\"></span></div>",
+		guid);
+
+	/* properties.cards is itself a JSON STRING (a serialised one-element array), matching the wire format. */
+	cards = g_strdup_printf(
+		"[{\"cardClientId\":\"%s\",\"content\":{\"media\":[{\"url\":\"%s\",\"thumbnailUrl\":\"%s\"}]},"
+		"\"contentType\":\"application/vnd.microsoft.card.video\"}]",
+		guid, media_url, thumb_url);
+
+	obj = json_object_new();
+	json_object_set_string_member(obj, "clientmessageid", clientmessageid_str);
+	json_object_set_string_member(obj, "content", content);
+	json_object_set_string_member(obj, "messagetype", "RichText/Html");
+	json_object_set_string_member(obj, "contenttype", "text");
+	json_object_set_string_member(obj, "imdisplayname", sa->self_display_name ? sa->self_display_name : sa->username);
+
+	amsrefs = json_array_new();
+	json_array_add_string_element(amsrefs, object_id);
+	json_object_set_array_member(obj, "amsreferences", amsrefs);
+
+	props = json_object_new();
+	json_object_set_string_member(props, "cards", cards);
+	json_object_set_string_member(props, "formatVariant", "TEAMS");
+	json_object_set_object_member(obj, "properties", props);
+
+	post = teams_jsonobj_to_string(obj);
+	purple_debug_info("teams", "sending video card: %s\n", post);
+
+	teams_post_or_get(sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL, TEAMS_CONTACTS_HOST, url, post, teams_sent_message_cb, g_strdup(convname), TRUE);
+
+	g_free(post);
+	json_object_unref(obj);
+	g_free(url);
+	g_free(content);
+	g_free(cards);
+	g_free(media_url);
+	g_free(thumb_url);
+	g_free(guid);
+
+	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
+}
+
 
 /* ------------------------------------------------------------------------------------
  * webOS reactions (SEND): handle the transport's "webos-im-send-reaction" signal.

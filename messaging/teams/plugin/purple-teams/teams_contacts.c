@@ -86,6 +86,7 @@ typedef struct {
 	TeamsAccount *sa;
 	gboolean is_image; // webOS: send as an inline AMSImage picture, not a File.1 attachment
 	gboolean is_audio; // webOS: send as a Teams voice note (audio card), not a File.1 attachment
+	gboolean is_video; // webOS: send as a Teams video clip (video card), not a File.1 attachment
 	guint duration_secs; // webOS: voice-note length, captured from the Opus source before WAV->M4A transcode
 } TeamsFileTransfer;
 
@@ -1022,6 +1023,19 @@ teams_xfer_send_done(PurpleHttpConnection *conn, PurpleHttpResponse *resp, gpoin
 		return;
 	}
 
+	if (swft->is_video) {
+		// webOS: the video content is uploaded -> send it as a Teams video card now, no status poll
+		// (mirrors is_image/is_audio). The recipient plays /views/video inline; a File.1 URIObject would
+		// show "Unsupported Content".
+		TeamsAccount *sa = swft->sa;
+		PurpleXfer *xfer = swft->xfer;
+		purple_xfer_set_completed(xfer, TRUE);
+		teams_send_video_card(sa, swft->from, swft->id);
+		teams_free_xfer(xfer);
+		purple_xfer_unref(xfer);
+		return;
+	}
+
 	g_timeout_add_seconds(1, poll_file_send_progress, user_data);
 }
 
@@ -1046,10 +1060,10 @@ teams_xfer_send_begin(gpointer user_data)
 	// webOS: images upload to the image content view (imgpsh) and audio to the audio view, both as
 	// octet-stream; generic files to the original view as multipart/form-data (the recipient renders
 	// the former two inline -- see is_image/is_audio).
-	purple_http_request_set_url_printf(request, "https://%s/v1/objects/%s/content/%s", TEAMS_XFER_HOST, purple_url_encode(swft->id), swft->is_image ? "imgpsh" : (swft->is_audio ? "audio" : "original"));
+	purple_http_request_set_url_printf(request, "https://%s/v1/objects/%s/content/%s", TEAMS_XFER_HOST, purple_url_encode(swft->id), swft->is_image ? "imgpsh" : (swft->is_audio ? "audio" : (swft->is_video ? "video" : "original")));
 	purple_http_request_set_method(request, "PUT");
 	purple_http_request_header_set(request, "Host", TEAMS_XFER_HOST);
-	purple_http_request_header_set(request, "Content-Type", (swft->is_image || swft->is_audio) ? "application/octet-stream" : "multipart/form-data");
+	purple_http_request_header_set(request, "Content-Type", (swft->is_image || swft->is_audio || swft->is_video) ? "application/octet-stream" : "multipart/form-data");
 	purple_http_request_header_set_printf(request, "Content-Length", "%" G_GSIZE_FORMAT, (gsize) purple_xfer_get_size(xfer));
 	purple_http_request_header_set_printf(request, "Authorization", "skype_token %s", sa->skype_token);
 	purple_http_request_set_contents_reader(request, teams_xfer_send_contents_reader, purple_xfer_get_size(xfer), user_data);
@@ -1232,12 +1246,19 @@ teams_xfer_send_init(PurpleXfer *xfer)
 			g_ascii_strcasecmp(dot, ".ogg")  == 0 || g_ascii_strcasecmp(dot, ".opus") == 0 ||
 			g_ascii_strcasecmp(dot, ".mp3")  == 0 || g_ascii_strcasecmp(dot, ".m4a")  == 0 ||
 			g_ascii_strcasecmp(dot, ".wav")  == 0 || g_ascii_strcasecmp(dot, ".amr")  == 0);
+		// webOS: a video clip is created as a "sharing/video" object (parallels sharing/audio) so it gets
+		// a /views/video view, then sent as a video card (teams_send_video_card) -- NOT a File.1 URIObject
+		// (which modern Teams shows as "Unsupported Content").
+		swft->is_video = dot != NULL && (
+			g_ascii_strcasecmp(dot, ".mp4")  == 0 || g_ascii_strcasecmp(dot, ".mov")  == 0 ||
+			g_ascii_strcasecmp(dot, ".m4v")  == 0 || g_ascii_strcasecmp(dot, ".3gp")  == 0);
 	}
 
 	// webOS: a voice note is a "sharing/audio" object (verified against a real incoming Teams voice
 	// note) -- its /views/audio serves audio/mp4 to the recipient. "pish/audio" creates an object whose
-	// /views/audio 400s ("Can't play message"). Images are "pish/image" (Inline AMSImage), else File.1.
-	json_object_set_string_member(obj, "type", swft->is_image ? "pish/image" : (swft->is_audio ? "sharing/audio" : "sharing/file"));
+	// /views/audio 400s ("Can't play message"). Images are "pish/image" (Inline AMSImage), video is
+	// "sharing/video" (/views/video), else File.1.
+	json_object_set_string_member(obj, "type", swft->is_image ? "pish/image" : (swft->is_audio ? "sharing/audio" : (swft->is_video ? "sharing/video" : "sharing/file")));
 	json_object_set_string_member(obj, "filename", basename);
 	if (swft->is_image) {
 		json_object_set_string_member(obj, "sharingMode", "Inline");
