@@ -8670,19 +8670,39 @@ discord_join_chat(PurpleConnection *pc, GHashTable *chatdata)
 		g_free(url);
 	} else if (!fetched) {
 		// webOS: RE-open of an already-joined + already-backfilled channel. discord_join_chat_by_id
-		// declined to fetch (discord_open_chat short-circuits when the conversation already exists), so
-		// without this a re-opened channel shows STALE content -- messages that arrived while it wasn't
-		// the focused conversation are never pulled (Discord's lazy user-account gateway may not push a
-		// channel's messages unless it's being "viewed"). Pull the recent tail on EVERY open so new
-		// messages appear; discord_process_message dedups by received_message_ids, so anything we already
-		// have is skipped (no duplicates).
-		gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
-		                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=25", id);
-		if (bchannel)
-			discord_fetch_url(da, url, NULL, discord_got_history_static, bchannel);
-		else
-			discord_fetch_url(da, url, NULL, discord_got_history_static, NULL);
-		g_free(url);
+		// returns early here -- discord_open_chat yields NULL once the conversation exists, so its whole
+		// forward catch-up (the recent-batch + "?after=<last-seen>" pagination) never runs, and messages
+		// that arrived while the channel wasn't focused are missing (Discord's lazy user-account gateway
+		// may not push a channel's MESSAGE_CREATE unless it's being "viewed").
+		//
+		// A flat "?limit=25" static fetch was wrong twice over: it is a FIXED WINDOW (a busy channel
+		// gets >25 messages in the gap, so a whole day above the window is lost) AND every id is run
+		// through the PERSISTED received_message_ids dedup, so a re-open renders only the 1-2 genuinely
+		// new ids ("only pulled 1 msg", "not the last").
+		//
+		// Instead fetch FORWARD from the last id we actually RENDERED for this channel:
+		// discord_get_room_last_id is persisted per-channel in blist.xml and advanced ONLY by
+		// discord_got_history_of_room (never by the login limit=1 poll), so it is a true "last rendered"
+		// anchor. discord_got_history_of_room self-paginates "?after=" in 100-message batches until it
+		// reaches channel->last_message_id, so the ENTIRE gap is filled regardless of size, the newest
+		// message included, and the marker advances so the next open resumes where this left off.
+		// discord_process_message still dedups by id, so anything already in db8 is not re-written.
+		guint64 room_last = discord_get_room_last_id(da, id);
+		if (bchannel != NULL && room_last != 0) {
+			gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
+			                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=100&after=%" G_GUINT64_FORMAT, id, room_last);
+			discord_fetch_url(da, url, NULL, discord_got_history_of_room, bchannel);
+			g_free(url);
+		} else {
+			// No rendered anchor yet (marker unset) -- pull a fuller recent window instead of a thin tail.
+			gchar *url = g_strdup_printf("https://" DISCORD_API_SERVER "/api/" DISCORD_API_VERSION
+			                             "/channels/%" G_GUINT64_FORMAT "/messages?limit=100", id);
+			if (bchannel)
+				discord_fetch_url(da, url, NULL, discord_got_history_of_room, bchannel);
+			else
+				discord_fetch_url(da, url, NULL, discord_got_history_static, NULL);
+			g_free(url);
+		}
 	}
 	// webOS: also (re-)subscribe the channel on the gateway so Discord starts live-pushing its
 	// MESSAGE_CREATE. discord_open_chat only subscribes on a FIRST join; a re-open (or a channel joined
