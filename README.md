@@ -58,26 +58,37 @@ Synergy **IM** account providers, each bridging a `libpurple` protocol plugin in
 Messaging (and, for calls, Phone) app. Capabilities: **IM** = text · **Replies** = inline quote
 card + threaded reply · **Images / Audio / Video** = attachments · **Reactions** = inline reaction
 badges · **Voice / Video call** = calls · **Receipts** = delivered / read ticks (single / double
-check) on your sent messages. Each capability is shown as **Send / Receive** (for calls: **place /
-answer**; Receipts is a single **read**-state column). ✅ works · 🟡 partial / built-not-yet-verified
+check) on your sent messages. Each capability spans two columns, **Send / Receive** (for calls:
+**place / answer**; for **Receipts**: **delivered / read**). ✅ works · 🟡 partial / built-not-yet-verified
 · ❔ not yet verified on webOS · ❌ none · ⛔ built but currently disabled.
 
-| Connector | IM || Replies || Images || Audio || Video || Reactions || Voice call || Video call || Receipts |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **(direction)** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Snd** | **Rcv** | **Place** | **Answ** | **Place** | **Answ** | **Read** |
-| **Teams** (`purple-teams`) | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Telegram** (`tdlib-purple`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ | 🟡 |
-| **Signal** (`purple-presage`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❔ | ❔ | ❌ | ❌ | 🟡 |
-| **Discord** (`purple-discord`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **WhatsApp** (`purple-combined`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| **Google Chat** (`purple-googlechat`) | ✅ | ✅ | ❌ | ❌ | ❔ | ❔ | ❔ | ❔ | ❔ | ❔ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Facebook (E2EE)** (`purple-combined`, gometa) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❔ | ❔ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | 🟡 |
+<table>
+<thead>
+<tr>
+<th rowspan="2">Connector</th>
+<th colspan="2">IM</th><th colspan="2">Replies</th><th colspan="2">Images</th><th colspan="2">Audio</th><th colspan="2">Video</th><th colspan="2">Reactions</th><th colspan="2">Voice call</th><th colspan="2">Video call</th><th colspan="2">Receipts</th>
+</tr>
+<tr>
+<th>Snd</th><th>Rcv</th><th>Snd</th><th>Rcv</th><th>Snd</th><th>Rcv</th><th>Snd</th><th>Rcv</th><th>Snd</th><th>Rcv</th><th>Snd</th><th>Rcv</th><th>Place</th><th>Answ</th><th>Place</th><th>Answ</th><th>Deliv</th><th>Read</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Google Chat</b> (<code>purple-googlechat</code>)</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td></tr>
+</tbody>
+</table>
 
 Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
   libpurple 2.14 + ssl-openssl (Teams-port) backend. **Teams, Telegram, Discord, WhatsApp and
   Facebook** are the active connectors verified end-to-end on device (IM + reactions + replies);
-  **WhatsApp** also has working voice calls. **Signal** is enabled again (the crash-loop is contained
+  **Teams** now also sends and receives image and audio attachments on device. **WhatsApp** also has
+  working voice calls. **Signal** is enabled again (the crash-loop is contained
   by the transport try/catch) with IM + reactions + voice notes working, though not every capability
   is re-verified; **Google Chat** is built but largely untested on device.
 - **Replies** render as an inline quote card above the message (not the raw `> …` / `┌──@name`
@@ -102,13 +113,14 @@ Notes:
   `PUT`/`DELETE` with a numeric-ms `value` body — verified by decompiling the Teams app); 🙏 has no
   consumer-Teams reaction and is dropped from the picker via the template map.
 - **Receipts** show a **single check** (delivered) / **double check** (read) beside your sent
-  messages, styled after the stock luna-systemui checkmark. **WhatsApp is confirmed on device**;
-  **Signal** (per-message-id), **Telegram** (single = sent-to-server, double = `updateChatReadOutbox`)
-  and **Facebook** (per-thread read/delivery watermarks) are built + deployed and awaiting
-  verification. The prpl emits a `webos-im-receipt` (by id) or `webos-im-receipt-hwm` (watermark)
-  signal; the transport's `ReceiptHandler` upgrades the Outbox row's `deliveryStatus` (monotonic:
-  read outranks delivered). **Teams** is deferred (its `consumptionhorizon` inbound format needs
-  on-device confirmation to avoid false ticks) and **Discord** exposes no peer read-state at all.
+  messages, styled after the stock luna-systemui checkmark. **WhatsApp** (per-message-id),
+  **Telegram** (single = sent-to-server, double = `updateChatReadOutbox`) and **Signal**
+  (per-message-id) are **confirmed on device with both delivered and read**; **Facebook**
+  (per-thread read/delivery watermarks) is confirmed for **delivered only** so far. The prpl emits a
+  `webos-im-receipt` (by id) or `webos-im-receipt-hwm` (watermark) signal; the transport's
+  `ReceiptHandler` upgrades the Outbox row's `deliveryStatus` (monotonic: read outranks delivered).
+  **Teams** is deferred (its `consumptionhorizon` inbound format needs on-device confirmation to
+  avoid false ticks) and **Discord** exposes no peer read-state at all.
 - **Voice messages (Audio → Send)** are recorded in the Messaging app compose bar (a mic button
   driving the native `MediaCaptureV3` 8 kHz capture), staged with an inline play/pause + waveform
   preview, then the transport transcodes the recording once to **Ogg/Opus** (`OpusEncoder`, libopus,
@@ -118,9 +130,10 @@ Notes:
   the whatsmeow socket) — **all four confirmed on device**. **Signal** and **plaintext Facebook**
   play the same Opus file as a regular audio attachment (no extra encoder needed). Signal's *proper*
   voice-note flag would want AAC and is left as an attachment on purpose. **Teams** voice notes are
-  the remaining gap (Phase 2, plain audio attachment path). **Receiving** voice notes is likewise
-  confirmed on device (Telegram, Discord, WhatsApp, Facebook, Signal) — they play inline in the
-  message bubble's audio player (play/pause + progress + duration).
+  **M4A/AAC** (transcoded from the source WAV with `faac`+`ffmpeg`), since Opus reads as "Can't play
+  message" on the Teams Android client — send and receive now work on device. **Receiving** voice
+  notes is likewise confirmed on device (Telegram, Discord, WhatsApp, Facebook, Signal, Teams) —
+  they play inline in the message bubble's audio player (play/pause + progress + duration).
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
   stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
   brought up. No video.
