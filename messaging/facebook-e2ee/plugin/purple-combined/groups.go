@@ -16,9 +16,12 @@ import (
 func (handler *Handler) query_group_participants_retry(group_jid types.JID, seconds_backoff int, max_retries int, retry_count int) []types.GroupParticipant {
 	group, err := handler.client.GetGroupInfo(context.TODO(), group_jid)
 	if err == nil && group != nil {
-		if retry_count > 0 {
-			purple_update_group(handler.account, group)
-		} else {
+		// webOS: ALWAYS push the group name/subject, not only on a delayed retry. Previously the immediate
+		// success path (retry_count==0, the common case) returned participants WITHOUT calling
+		// purple_update_group, so a group whose info loaded on the first try never got its subject and the
+		// chat showed the raw JID.
+		purple_update_group(handler.account, group)
+		if retry_count == 0 {
 			return group.Participants
 		}
 	} else {

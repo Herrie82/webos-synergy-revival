@@ -35,6 +35,12 @@ static void gowhatsapp_connection_set_online(PurpleConnection *connection) {
     gowhatsapp_set_presence(account, purple_account_get_active_status(account));
 
     gowhatsapp_for_all_buddies(account, gowhatsapp_request_profile_picture);
+
+    // webOS: fetch every group's info on connect so its name/subject is set (each group flows through
+    // gowhatsapp_handle_group -> ensure_group_chat_in_blist, which aliases the chat). Without this,
+    // query_groups only ran when the room picker was opened, so group chats showed the raw JID
+    // ("<digits>-<digits>@g.us") in the conversation list instead of their name.
+    gowhatsapp_go_query_groups(account);
 }
 
 /*
