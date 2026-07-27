@@ -104,8 +104,16 @@ static void download_via_xfer_mechanism(gowhatsapp_message_t *gwamsg) {
 
 static void replace_placeholder(gpointer key, gpointer value, gpointer user_data) {
     char **text = user_data;
+    // webOS: a NULL replacement value (e.g. an unset alias, filename or extension -- seen on a
+    // Facebook E2EE self-carbon whose sender isn't in the buddy list) must NOT reach purple_strreplace:
+    // it asserts 'replacement != NULL', returns NULL, nulls *text, and the resulting NULL path later
+    // crashes g_path_get_dirname (SIGSEGV, crash-looping the whole transport). Coalesce NULL to "" and
+    // skip once *text is NULL.
+    if (*text == NULL) {
+        return;
+    }
     // NOTE: I am not using g_string_replace here since the GLib shipped with win32 Pidgin is ancient
-    char *replaced = purple_strreplace(*text, key, value);
+    char *replaced = purple_strreplace(*text, key, value ? (const char *)value : "");
     g_free(*text);
     *text = replaced;
 }
@@ -152,7 +160,7 @@ char * gowhatsapp_attachment_fill_template(const char *template, time_t timestam
 // TODO: for a cross-platform-solution, check out https://github.com/nyaosorg/go-windows-junction
 void create_symlinks_recurse(char *path, char *aliased_path) {
     //purple_debug_info(GOWHATSAPP_NAME, "create_symlinks_recurse(%s, %s)…\n", aliased_path, path);
-    if (strlen(path) <= 1 || strlen(aliased_path) <= 1) {
+    if (path == NULL || aliased_path == NULL || strlen(path) <= 1 || strlen(aliased_path) <= 1) {
         // we reached / or . – stop recursion
         return;
     }
