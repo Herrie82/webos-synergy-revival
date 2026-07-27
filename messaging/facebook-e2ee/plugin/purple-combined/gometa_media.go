@@ -87,7 +87,8 @@ func (h *gometaHandler) sendFile(who, filename string) error {
 		if isVideo {
 			return h.sendVideoE2EE(threadID, data, mime)
 		}
-		return fmt.Errorf("only images, videos and voice notes can be sent to encrypted threads for now")
+		// Anything else (pdf/docx/xlsx/zip/...) goes as an armadillo DocumentMessage.
+		return h.sendDocumentE2EE(threadID, data, filepath.Base(filename), mime)
 	}
 	return h.sendMediaPlaintext(threadID, data, filepath.Base(filename), mime)
 }
@@ -148,7 +149,7 @@ func (h *gometaHandler) sendMediaPlaintext(threadID int64, data []byte, filename
 	isImg := strings.HasPrefix(mime, "image/")
 	isAud := mime == "application/ogg" || strings.HasPrefix(mime, "audio/")
 	isVid := strings.HasPrefix(mime, "video/")
-	if h.e2ee != nil && (isImg || isAud || isVid) {
+	if h.e2ee != nil {
 		h.mu.Lock()
 		h.e2eeContacts[threadID] = true
 		h.mu.Unlock()
@@ -159,7 +160,10 @@ func (h *gometaHandler) sendMediaPlaintext(threadID int64, data []byte, filename
 		if isVid {
 			return h.sendVideoE2EE(threadID, data, mime)
 		}
-		return h.sendImageE2EE(threadID, data, mime)
+		if isImg {
+			return h.sendImageE2EE(threadID, data, mime)
+		}
+		return h.sendDocumentE2EE(threadID, data, filename, mime)
 	}
 	return fmt.Errorf("send not confirmed (thread may be encrypted)")
 }
@@ -301,6 +305,62 @@ func (h *gometaHandler) sendVideoE2EE(threadID int64, data []byte, mime string) 
 	}
 	purple_handle_outbox_id(h.account, otidStr, "")
 	h.logger.Info().Int64("thread", threadID).Uint32("seconds", secs).Msg("e2ee video sent")
+	return nil
+}
+
+// sendDocumentE2EE uploads+encrypts a file via whatsmeow and sends it as an armadillo DocumentMessage
+// over the E2EE transport. Mirrors sendImageE2EE; the original filename rides on the DocumentMessage so
+// Messenger shows it (mirrors mautrix-meta's MsgFile path).
+func (h *gometaHandler) sendDocumentE2EE(threadID int64, data []byte, filename, mime string) error {
+	ctx, cancel := context.WithTimeout(h.ctx, 120*time.Second)
+	defer cancel()
+	uploaded, err := h.e2ee.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return fmt.Errorf("e2ee document upload: %w", err)
+	}
+	mediaTransport := &waMediaTransport.WAMediaTransport{
+		Integral: &waMediaTransport.WAMediaTransport_Integral{
+			FileSHA256:        uploaded.FileSHA256,
+			MediaKey:          uploaded.MediaKey,
+			FileEncSHA256:     uploaded.FileEncSHA256,
+			DirectPath:        &uploaded.DirectPath,
+			MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		},
+		Ancillary: &waMediaTransport.WAMediaTransport_Ancillary{
+			FileLength: proto.Uint64(uint64(len(data))),
+			Mimetype:   &mime,
+			ObjectID:   &uploaded.ObjectID,
+		},
+	}
+	docMsg := &waConsumerApplication.ConsumerApplication_DocumentMessage{FileName: &filename}
+	if err := docMsg.Set(&waMediaTransport.DocumentTransport{
+		Integral:  &waMediaTransport.DocumentTransport_Integral{Transport: mediaTransport},
+		Ancillary: &waMediaTransport.DocumentTransport_Ancillary{},
+	}); err != nil {
+		return fmt.Errorf("build document message: %w", err)
+	}
+	msg := &waConsumerApplication.ConsumerApplication{
+		Payload: &waConsumerApplication.ConsumerApplication_Payload{
+			Payload: &waConsumerApplication.ConsumerApplication_Payload_Content{
+				Content: &waConsumerApplication.ConsumerApplication_Content{
+					Content: &waConsumerApplication.ConsumerApplication_Content_DocumentMessage{DocumentMessage: docMsg},
+				},
+			},
+		},
+	}
+	otid := methods.GenerateEpochID()
+	otidStr := strconv.FormatInt(otid, 10)
+	h.mu.Lock()
+	h.sentOtids[otid] = true
+	h.e2eeMsgMeta[otidStr] = e2eeMsgInfo{fromMe: true, sender: strconv.FormatInt(h.selfID, 10)}
+	h.mu.Unlock()
+	to := waTypes.JID{User: strconv.FormatInt(threadID, 10), Server: waTypes.MessengerServer}
+	if _, err := h.e2ee.SendFBMessage(ctx, to, msg, &waMsgApplication.MessageApplication_Metadata{},
+		whatsmeow.SendRequestExtra{ID: waTypes.MessageID(otidStr)}); err != nil {
+		return fmt.Errorf("e2ee document send: %w", err)
+	}
+	purple_handle_outbox_id(h.account, otidStr, "")
+	h.logger.Info().Int64("thread", threadID).Str("filename", filename).Msg("e2ee document sent")
 	return nil
 }
 
