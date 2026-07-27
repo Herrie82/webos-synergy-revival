@@ -1870,20 +1870,34 @@ teams_process_event_message(TeamsAccount *sa, JsonObject *message)
 	// device, read one of your sent messages from another Teams client, then grep imstdout.log for
 	// "TEAMS-RCPT-CAPTURE". Remove once the inbound receipt format is known.
 	if (resource != NULL && resourceType != NULL &&
-			!purple_strequal(resourceType, "NewMessage") &&
 			!purple_strequal(resourceType, "UserPresence") &&
 			!purple_strequal(resourceType, "EndpointPresence") &&
 			!purple_strequal(resourceType, "ThreadUpdate")) {
 		gchar *dump = teams_jsonobj_to_string(resource);
 		if (dump != NULL) {
-			purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
-				resourceType, dump);
-			if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
-					strstr(dump, "readUntil") || strstr(dump, "isRead") ||
-					strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
-				purple_debug_info("teams",
-					"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
-					resourceType);
+			// For NewMessage, only dump media-bearing ones (amsreferences / a media schema / a video
+			// view) -- so an incoming Teams VIDEO reveals the real object type / view / card shape to
+			// mirror on send -- and skip plain text/presence chatter. Everything non-NewMessage
+			// (ConversationUpdate/MessageUpdate/unknown) is dumped as a receipt candidate.
+			gboolean is_new = purple_strequal(resourceType, "NewMessage");
+			gboolean media_like = strstr(dump, "amsreferences") || strstr(dump, "AMSVideo") ||
+				strstr(dump, "card.video") || strstr(dump, "Media_Video") ||
+				strstr(dump, "/views/video") || strstr(dump, "SkypeVideoMessage");
+			if (!is_new || media_like) {
+				purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
+					resourceType, dump);
+				if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
+						strstr(dump, "readUntil") || strstr(dump, "isRead") ||
+						strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
+					purple_debug_info("teams",
+						"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
+						resourceType);
+				}
+				if (media_like) {
+					purple_debug_info("teams",
+						"TEAMS-RCPT-CAPTURE *** media/video message in type=%s -- this is the send format to mirror ***\n",
+						resourceType);
+				}
 			}
 			g_free(dump);
 		}
