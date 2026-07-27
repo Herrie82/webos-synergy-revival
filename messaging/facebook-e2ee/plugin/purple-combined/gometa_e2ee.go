@@ -165,6 +165,13 @@ func (h *gometaHandler) handleE2EEMessage(evt *events.FBMessage) {
 			}
 			return
 		}
+		// webOS: incoming media (image/video/audio/document) over an ENCRYPTED thread arrives here as an
+		// armadillo media message inside the ConsumerApplication. Download + display it via the shared
+		// attachment path (handleE2EEMedia). Without this the message was silently dropped -- only text
+		// and reactions were handled, so a Facebook video/image never appeared in the Messaging app.
+		if h.handleE2EEMedia(content, evt, chatFbid, senderFbid, name) {
+			return
+		}
 		text = content.GetMessageText().GetText()
 	}
 	if text == "" {

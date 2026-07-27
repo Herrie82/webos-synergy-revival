@@ -8,15 +8,20 @@ import "C"
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"mime"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waConsumerApplication"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waMediaTransport"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 func extension_from_mimetype(mimeType *string) string {
@@ -164,7 +169,19 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	// with EOPNOTSUPP; that gets misclassified as a network error, retried across hosts, and the
 	// reused-but-not-truncated file corrupts the payload into an "invalid media hmac" failure.
 	// The in-memory Download() path does io.ReadAll (no fallocate, no *os.File) and verifies the HMAC.
-	data, err := handler.client.Download(context.TODO(), message)
+	var data []byte
+	var err error
+	if fb, ok := message.(*fbDownloadable); ok {
+		// Facebook E2EE (armadillo) media: download via the FB e2ee whatsmeow client with the explicit
+		// media type (a different client + endpoint than WhatsApp's handler.client).
+		g, gok := gometaHandlers[handler.account]
+		if !gok || g.e2ee == nil {
+			return fmt.Errorf("facebook e2ee not connected")
+		}
+		data, err = g.e2ee.DownloadFB(context.TODO(), fb.integral, fb.mediaType)
+	} else {
+		data, err = handler.client.Download(context.TODO(), message)
+	}
 	if err != nil {
 		return err
 	}
@@ -183,4 +200,90 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 		}
 	}
 	return nil
+}
+
+// fbDownloadable adapts a Facebook E2EE (armadillo) media transport to whatsmeow.DownloadableMessage so
+// an incoming FB image/video/audio/document flows through the SAME attachment display path as WhatsApp
+// media (purple_handle_attachment -> lazy download -> inline render). download_attachment recognises it
+// and routes the fetch to the FB e2ee client's DownloadFB (a different client/endpoint than WhatsApp).
+type fbDownloadable struct {
+	integral  *waMediaTransport.WAMediaTransport_Integral
+	mediaType whatsmeow.MediaType
+}
+
+func (f *fbDownloadable) GetDirectPath() string   { return f.integral.GetDirectPath() }
+func (f *fbDownloadable) GetMediaKey() []byte      { return f.integral.GetMediaKey() }
+func (f *fbDownloadable) GetFileSHA256() []byte    { return f.integral.GetFileSHA256() }
+func (f *fbDownloadable) GetFileEncSHA256() []byte { return f.integral.GetFileEncSHA256() }
+
+// handleE2EEMedia downloads + displays an incoming Facebook E2EE media message (image/video/audio/
+// document) carried inside a ConsumerApplication. Returns true if the content WAS a media message (so
+// the caller stops -- otherwise media was silently dropped, only text/reactions were handled). Mirrors
+// the WhatsApp handle_attachment path.
+func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerApplication_Content, evt *events.FBMessage, chatFbid, senderFbid int64, name string) bool {
+	var (
+		wa        *waMediaTransport.WAMediaTransport
+		mediaType whatsmeow.MediaType
+		dataType  C.int = C.gowhatsapp_attachment_type_none
+		filename  string
+		caption   string
+	)
+	if vm := content.GetVideoMessage(); vm != nil {
+		if t, err := vm.Decode(); err == nil {
+			wa = t.GetIntegral().GetTransport()
+			caption = t.GetAncillary().GetCaption().GetText()
+			mediaType, dataType = whatsmeow.MediaVideo, C.gowhatsapp_attachment_type_video
+		}
+	} else if im := content.GetImageMessage(); im != nil {
+		if t, err := im.Decode(); err == nil {
+			wa = t.GetIntegral().GetTransport()
+			mediaType, dataType = whatsmeow.MediaImage, C.gowhatsapp_attachment_type_image
+		}
+	} else if am := content.GetAudioMessage(); am != nil {
+		if t, err := am.Decode(); err == nil {
+			wa = t.GetIntegral().GetTransport()
+			mediaType, dataType = whatsmeow.MediaAudio, C.gowhatsapp_attachment_type_audio
+		}
+	} else if dm := content.GetDocumentMessage(); dm != nil {
+		if t, err := dm.Decode(); err == nil {
+			wa = t.GetIntegral().GetTransport()
+			filename = dm.GetFileName()
+			mediaType, dataType = whatsmeow.MediaDocument, C.gowhatsapp_attachment_type_document
+		}
+	}
+	if wa == nil || dataType == C.gowhatsapp_attachment_type_none {
+		return false
+	}
+	integral := wa.GetIntegral()
+	if integral == nil {
+		return false
+	}
+	mimetype := wa.GetAncillary().GetMimetype()
+	length := wa.GetAncillary().GetFileLength()
+	hash := hex.EncodeToString(integral.GetFileSHA256())
+	extension := ""
+	if filename != "" { // document: keep its real name (shown on the chip), split off the extension
+		extension = filepath.Ext(filename)
+		if extension != "" {
+			filename = strings.TrimSuffix(filename, extension)
+		}
+		if safe := sanitize_attachment_name(filename); safe != "" {
+			hash = safe
+		}
+	}
+	if extension == "" {
+		extension = extension_from_mimetype(&mimetype)
+	}
+	// Record who sent this (keyed by serviceMessageId) so a later reaction/reply over E2EE resolves.
+	id := string(evt.Info.ID)
+	if id != "" {
+		h.mu.Lock()
+		h.e2eeMsgMeta[id] = e2eeMsgInfo{fromMe: evt.Info.IsFromMe, sender: strconv.FormatInt(senderFbid, 10), text: caption}
+		h.mu.Unlock()
+	}
+	h.addContact(chatFbid, name)
+	purple_handle_attachment(h.account, strconv.FormatInt(chatFbid, 10), false, strconv.FormatInt(senderFbid, 10),
+		caption, id, evt.Info.Timestamp, dataType, filename, extension, mimetype, hash, length,
+		&fbDownloadable{integral: integral, mediaType: mediaType})
+	return true
 }
