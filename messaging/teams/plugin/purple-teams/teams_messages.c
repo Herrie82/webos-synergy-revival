@@ -659,6 +659,24 @@ process_message_resource(TeamsAccount *sa, JsonObject *resource)
 	if (!teams_account_is_live(sa))
 		return;
 
+	// webOS RECEIPT-CAPTURE (temporary): consumer Teams (TFL) delivers incoming messages by POLLING,
+	// so they arrive here (not via the trouter event dispatch). Dump media/video-bearing messages BEFORE
+	// the dedup below so a re-synced history video is captured too -- this reveals the real object type /
+	// view / content markup (e.g. AMSVideo) to mirror on send. Grep imstdout.log for TEAMS-RCPT-CAPTURE.
+	{
+		gchar *dump = teams_jsonobj_to_string(resource);
+		if (dump != NULL) {
+			if (strstr(dump, "amsreferences") || strstr(dump, "AMSVideo") ||
+					strstr(dump, "Media_Video") || strstr(dump, "/views/video") ||
+					strstr(dump, "SkypeVideoMessage") || strstr(dump, "card.video")) {
+				purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=message resource=%s\n", dump);
+				purple_debug_info("teams",
+					"TEAMS-RCPT-CAPTURE *** media/video message -- this is the send format to mirror ***\n");
+			}
+			g_free(dump);
+		}
+	}
+
 	const gchar *clientmessageid = NULL;
 	const gchar *skypeeditedid = NULL;
 	const gchar *messagetype = json_object_get_string_member(resource, "messagetype");
@@ -1870,34 +1888,23 @@ teams_process_event_message(TeamsAccount *sa, JsonObject *message)
 	// device, read one of your sent messages from another Teams client, then grep imstdout.log for
 	// "TEAMS-RCPT-CAPTURE". Remove once the inbound receipt format is known.
 	if (resource != NULL && resourceType != NULL &&
+			!purple_strequal(resourceType, "NewMessage") &&
 			!purple_strequal(resourceType, "UserPresence") &&
 			!purple_strequal(resourceType, "EndpointPresence") &&
 			!purple_strequal(resourceType, "ThreadUpdate")) {
+		// Non-NewMessage resource (ConversationUpdate/MessageUpdate/unknown) -- a receipt candidate.
+		// Incoming media/video is captured in process_message_resource instead (so a re-synced history
+		// video is dumped even though it deduped).
 		gchar *dump = teams_jsonobj_to_string(resource);
 		if (dump != NULL) {
-			// For NewMessage, only dump media-bearing ones (amsreferences / a media schema / a video
-			// view) -- so an incoming Teams VIDEO reveals the real object type / view / card shape to
-			// mirror on send -- and skip plain text/presence chatter. Everything non-NewMessage
-			// (ConversationUpdate/MessageUpdate/unknown) is dumped as a receipt candidate.
-			gboolean is_new = purple_strequal(resourceType, "NewMessage");
-			gboolean media_like = strstr(dump, "amsreferences") || strstr(dump, "AMSVideo") ||
-				strstr(dump, "card.video") || strstr(dump, "Media_Video") ||
-				strstr(dump, "/views/video") || strstr(dump, "SkypeVideoMessage");
-			if (!is_new || media_like) {
-				purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
-					resourceType, dump);
-				if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
-						strstr(dump, "readUntil") || strstr(dump, "isRead") ||
-						strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
-					purple_debug_info("teams",
-						"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
-						resourceType);
-				}
-				if (media_like) {
-					purple_debug_info("teams",
-						"TEAMS-RCPT-CAPTURE *** media/video message in type=%s -- this is the send format to mirror ***\n",
-						resourceType);
-				}
+			purple_debug_info("teams", "TEAMS-RCPT-CAPTURE type=%s resource=%s\n",
+				resourceType, dump);
+			if (strstr(dump, "consumptionhorizon") || strstr(dump, "consumptionHorizon") ||
+					strstr(dump, "readUntil") || strstr(dump, "isRead") ||
+					strstr(dump, "readReceipt") || strstr(dump, "read_receipt")) {
+				purple_debug_info("teams",
+					"TEAMS-RCPT-CAPTURE *** read marker present in type=%s -- this is the receipt format ***\n",
+					resourceType);
 			}
 			g_free(dump);
 		}
@@ -3320,16 +3327,22 @@ teams_send_audio_card(TeamsAccount *sa, const gchar *who, const gchar *object_id
 	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
 }
 
-/* webOS video clips (SEND). Parallels teams_send_audio_card: a Teams video message is a RichText/Html
- * message carrying a video CARD in properties.cards, tying an InputExtension content span (by GUID) to
- * the card's cardClientId. The video object must have been created as a "sharing/video" ASM object with
- * its content uploaded to /content/video (so it has a /views/video view) -- see teams_xfer_send_init/
- * _begin (is_video). contentType is application/vnd.microsoft.card.video; the incoming counterpart is
- * downloaded to a file:// bubble by teams_process_cards_in_properties. */
+/* webOS video clips (SEND). A Teams video message is a RichText/Html message whose content is an inline
+ * AMSVideo <video> element -- exactly parallel to how an image is an inline AMSImage <img> (NOT a card).
+ * Verified against a real incoming Teams video:
+ *   content: <p><video src=".../objects/<id>/views/video" itemscope="" itemtype="http://schema.skype.com/AMSVideo"
+ *                       width="720" height="1280" data-duration="PT27S" alt="Media"
+ *                       style="separateMediaAttachmentEnabled:true"></video></p>
+ *   amsreferences: ["<id>"]
+ *   properties.formatVariant: "TEAMS"
+ * The object must have been created as a "sharing/video" ASM object with its content uploaded to
+ * /content/video (so it has a /views/video view) -- see teams_xfer_send_init/_begin (is_video).
+ * width/height/duration are parsed from the mp4 (teams_mp4_video_info); 0 => omit the hint. */
 void
-teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id)
+teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id,
+	guint width, guint height, guint duration_secs)
 {
-	gchar *post, *url, *content, *cards, *media_url, *thumb_url, *guid, *convname_enc;
+	gchar *post, *url, *content, *media_url, *dur_attr, *dim_attr, *convname_enc;
 	const gchar *convname;
 	JsonObject *obj, *props;
 	JsonArray *amsrefs;
@@ -3353,21 +3366,14 @@ teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id
 	clientmessageid = teams_get_js_time();
 	clientmessageid_str = g_strdup_printf("%" G_GINT64_FORMAT "", clientmessageid);
 
-	/* 32-hex GUID (no dashes), used as BOTH the content span's itemid and the card's cardClientId. */
-	guid = g_strdup_printf("%08x%08x%08x%08x", g_random_int(), g_random_int(), g_random_int(), g_random_int());
-
 	media_url = g_strdup_printf("https://%s/v1/objects/%s/views/video", TEAMS_XFER_HOST, purple_url_encode(object_id));
-	thumb_url = g_strdup_printf("https://%s/v1/objects/%s/views/thumbnail", TEAMS_XFER_HOST, purple_url_encode(object_id));
+	dim_attr = (width > 0 && height > 0) ? g_strdup_printf(" width=\"%u\" height=\"%u\"", width, height) : g_strdup("");
+	dur_attr = (duration_secs > 0) ? g_strdup_printf(" data-duration=\"PT%uS\"", duration_secs) : g_strdup("");
 
 	content = g_strdup_printf(
-		"<div><span itemid=\"%s\" itemscope=\"\" itemtype=\"http://schema.skype.com/InputExtension\"></span></div>",
-		guid);
-
-	/* properties.cards is itself a JSON STRING (a serialised one-element array), matching the wire format. */
-	cards = g_strdup_printf(
-		"[{\"cardClientId\":\"%s\",\"content\":{\"media\":[{\"url\":\"%s\",\"thumbnailUrl\":\"%s\"}]},"
-		"\"contentType\":\"application/vnd.microsoft.card.video\"}]",
-		guid, media_url, thumb_url);
+		"<p><video src=\"%s\" itemscope=\"\" itemtype=\"http://schema.skype.com/AMSVideo\"%s%s "
+		"alt=\"Media\" style=\"separateMediaAttachmentEnabled:true\"></video></p>",
+		media_url, dim_attr, dur_attr);
 
 	obj = json_object_new();
 	json_object_set_string_member(obj, "clientmessageid", clientmessageid_str);
@@ -3381,12 +3387,11 @@ teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id
 	json_object_set_array_member(obj, "amsreferences", amsrefs);
 
 	props = json_object_new();
-	json_object_set_string_member(props, "cards", cards);
 	json_object_set_string_member(props, "formatVariant", "TEAMS");
 	json_object_set_object_member(obj, "properties", props);
 
 	post = teams_jsonobj_to_string(obj);
-	purple_debug_info("teams", "sending video card: %s\n", post);
+	purple_debug_info("teams", "sending video message: %s\n", post);
 
 	teams_post_or_get(sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL, TEAMS_CONTACTS_HOST, url, post, teams_sent_message_cb, g_strdup(convname), TRUE);
 
@@ -3394,10 +3399,9 @@ teams_send_video_card(TeamsAccount *sa, const gchar *who, const gchar *object_id
 	json_object_unref(obj);
 	g_free(url);
 	g_free(content);
-	g_free(cards);
 	g_free(media_url);
-	g_free(thumb_url);
-	g_free(guid);
+	g_free(dim_attr);
+	g_free(dur_attr);
 
 	g_hash_table_insert(sa->sent_messages_hash, clientmessageid_str, clientmessageid_str);
 }

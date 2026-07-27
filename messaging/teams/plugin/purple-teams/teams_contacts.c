@@ -86,8 +86,9 @@ typedef struct {
 	TeamsAccount *sa;
 	gboolean is_image; // webOS: send as an inline AMSImage picture, not a File.1 attachment
 	gboolean is_audio; // webOS: send as a Teams voice note (audio card), not a File.1 attachment
-	gboolean is_video; // webOS: send as a Teams video clip (video card), not a File.1 attachment
-	guint duration_secs; // webOS: voice-note length, captured from the Opus source before WAV->M4A transcode
+	gboolean is_video; // webOS: send as a Teams video clip (inline AMSVideo), not a File.1 attachment
+	guint duration_secs; // webOS: voice-note / video length in seconds (captured before upload)
+	guint width, height; // webOS: video display dimensions (parsed from the mp4 tkhd) for the AMSVideo markup
 } TeamsFileTransfer;
 
 static guint active_icon_downloads = 0;
@@ -968,6 +969,69 @@ teams_audio_duration_secs(const gchar *path)
 	return secs;
 }
 
+// webOS: pull display width/height (tkhd, 16.16 fixed) and duration (mvhd) out of an mp4 for the
+// AMSVideo markup. Best-effort: reads up to the first 8 MB (faststart moov lives at the front); leaves
+// outputs at 0 if it can't parse (the recipient re-derives real dimensions from the video itself).
+static guint32 teams_be32(const guchar *b) {
+	return ((guint32)b[0] << 24) | ((guint32)b[1] << 16) | ((guint32)b[2] << 8) | (guint32)b[3];
+}
+// Return the payload (past the 8/16-byte header) of the first child box named `name` within [data,end).
+static const guchar *teams_mp4_find(const guchar *data, gsize len, const char *name, gsize *out_len) {
+	gsize i = 0;
+	while (i + 8 <= len) {
+		guint32 size = teams_be32(data + i);
+		gsize hdr = 8;
+		if (size == 1) { if (i + 16 > len) break; size = teams_be32(data + i + 12); hdr = 16; }
+		else if (size == 0) size = len - i;
+		if (size < hdr || i + size > len) break;
+		if (memcmp(data + i + 4, name, 4) == 0) { if (out_len) *out_len = size - hdr; return data + i + hdr; }
+		i += size;
+	}
+	return NULL;
+}
+static void teams_mp4_video_info(const char *path, guint *w, guint *h, guint *secs) {
+	*w = *h = *secs = 0;
+	FILE *f = g_fopen(path, "rb");
+	if (f == NULL) return;
+	gsize cap = 8 * 1024 * 1024;
+	guchar *buf = g_malloc(cap);
+	gsize n = fread(buf, 1, cap, f);
+	fclose(f);
+
+	gsize moovlen = 0;
+	const guchar *moov = teams_mp4_find(buf, n, "moov", &moovlen);
+	if (moov != NULL) {
+		gsize mvlen = 0;
+		const guchar *mvhd = teams_mp4_find(moov, moovlen, "mvhd", &mvlen);
+		if (mvhd != NULL && mvlen >= 20) {
+			guint32 ts = 0, dur = 0;
+			if (mvhd[0] == 1 && mvlen >= 32) { ts = teams_be32(mvhd + 20); dur = teams_be32(mvhd + 28); }
+			else { ts = teams_be32(mvhd + 12); dur = teams_be32(mvhd + 16); }
+			if (ts > 0) *secs = dur / ts;
+		}
+		// First trak whose tkhd carries non-zero display dimensions is the video track.
+		gsize scan = 0;
+		while (scan + 8 <= moovlen) {
+			guint32 size = teams_be32(moov + scan);
+			gsize hdr = 8;
+			if (size == 1) { if (scan + 16 > moovlen) break; size = teams_be32(moov + scan + 12); hdr = 16; }
+			else if (size == 0) size = moovlen - scan;
+			if (size < hdr || scan + size > moovlen) break;
+			if (memcmp(moov + scan + 4, "trak", 4) == 0) {
+				gsize tklen = 0;
+				const guchar *tkhd = teams_mp4_find(moov + scan + hdr, size - hdr, "tkhd", &tklen);
+				if (tkhd != NULL && tklen >= 8) {
+					guint32 tw = teams_be32(tkhd + tklen - 8) >> 16;
+					guint32 th = teams_be32(tkhd + tklen - 4) >> 16;
+					if (tw > 0 && th > 0) { *w = tw; *h = th; break; }
+				}
+			}
+			scan += size;
+		}
+	}
+	g_free(buf);
+}
+
 static void
 teams_xfer_send_done(PurpleHttpConnection *conn, PurpleHttpResponse *resp, gpointer user_data)
 {
@@ -1030,7 +1094,7 @@ teams_xfer_send_done(PurpleHttpConnection *conn, PurpleHttpResponse *resp, gpoin
 		TeamsAccount *sa = swft->sa;
 		PurpleXfer *xfer = swft->xfer;
 		purple_xfer_set_completed(xfer, TRUE);
-		teams_send_video_card(sa, swft->from, swft->id);
+		teams_send_video_card(sa, swft->from, swft->id, swft->width, swft->height, swft->duration_secs);
 		teams_free_xfer(xfer);
 		purple_xfer_unref(xfer);
 		return;
@@ -1252,6 +1316,12 @@ teams_xfer_send_init(PurpleXfer *xfer)
 		swft->is_video = dot != NULL && (
 			g_ascii_strcasecmp(dot, ".mp4")  == 0 || g_ascii_strcasecmp(dot, ".mov")  == 0 ||
 			g_ascii_strcasecmp(dot, ".m4v")  == 0 || g_ascii_strcasecmp(dot, ".3gp")  == 0);
+	}
+
+	if (swft->is_video) {
+		// Parse the mp4 for the AMSVideo width/height/duration hints (see teams_send_video_card).
+		teams_mp4_video_info(purple_xfer_get_local_filename(xfer), &swft->width, &swft->height, &swft->duration_secs);
+		purple_debug_info("teams", "video info: %ux%u %us\n", swft->width, swft->height, swft->duration_secs);
 	}
 
 	// webOS: a voice note is a "sharing/audio" object (verified against a real incoming Teams voice
