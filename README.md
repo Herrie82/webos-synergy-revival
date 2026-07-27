@@ -73,7 +73,7 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 </tr>
 </thead>
 <tbody>
-<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
@@ -122,8 +122,11 @@ Notes:
   land on the sent message's Outbox row: a peer-device receipt with no `type` = delivered, and a
   `type="read"` receipt = read — the latter fires only when the peer actually **opens** the
   conversation (a reaction or notification preview does *not* count, which is why read appears to lag
-  delivery). **Teams** is deferred (its `consumptionhorizon` inbound format needs on-device
-  confirmation to avoid false ticks) and **Discord** exposes no peer read-state at all.
+  delivery). **Teams** (consumer / TFL) does **not** deliver peer read-state at all: on-device capture
+  showed the only `consumptionhorizon` on the wire is our *own* (via the message poll), never the
+  peer's — reactions push in real time but reads do not, so a read receipt would require actively
+  polling the thread members' consumptionhorizon (deferred). **Discord** likewise exposes no peer
+  read-state.
 - **Voice messages (Audio → Send)** are recorded in the Messaging app compose bar (a mic button
   driving the native `MediaCaptureV3` 8 kHz capture), staged with an inline play/pause + waveform
   preview, then the transport transcodes the recording once to **Ogg/Opus** (`OpusEncoder`, libopus,
@@ -141,13 +144,16 @@ Notes:
   compose picker (widened to allow video + document files): **WhatsApp** (`send_file_video`),
   **Signal**, **Telegram** (`inputMessageVideo`, streamable — sending an mp4 as a plain *document*
   makes Telegram auto-convert it to a looping GIF) and **Facebook E2EE** (armadillo `VideoTransport`,
-  with width/height/duration parsed from the mp4 so Messenger renders and scrubs it) — **all four
-  confirmed on device**. **Teams** rejects our uploaded video ("Unsupported content") and is
-  back-burnered. **Video → Receive** is 🟡 across the board: the file **downloads** fine but does
-  **not play inline** — the TouchPad's hardware H.264 decoder (`palmvideodecoder`) can't negotiate
+  with width/height/duration parsed from the mp4 so Messenger renders and scrubs it) and **Teams**
+  (an inline AMSVideo `<video>` element — parallel to an inline AMSImage `<img>`, NOT a card; the clip
+  is uploaded as a `sharing/video` ASM object to `/content/video` and referenced by `/views/video`,
+  with width/height/duration parsed from the mp4) — **all five confirmed on device**. **Video →
+  Receive** is 🟡 across the board: the file **downloads / opens as a link** fine but does **not play
+  inline** — the TouchPad's hardware H.264 decoder (`palmvideodecoder`) can't negotiate
   WhatsApp/Messenger's H.264 **High profile** stream (`not-negotiated`), the same media-pipeline
-  class as the unresolved WebM video. Deferred as a research spike (software-decode autoplug shim or
-  a receive-side transcode).
+  class as the unresolved WebM video. In-app playback is being tackled via the stock
+  **`com.palm.app.videoplayer`** (launch received videos in the dedicated player instead of the
+  WebKit `<video>` element).
 - **Document attachments (files → Send)** — pdf/docx/xlsx/pptx/zip/etc. send from the same picker:
   **WhatsApp** (`send_file_document`), **Signal**, **Telegram** (`inputMessageDocument`) and
   **Facebook E2EE** (armadillo `DocumentMessage`, original filename carried on the message) all
