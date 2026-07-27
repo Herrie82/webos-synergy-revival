@@ -22,7 +22,7 @@ PRPL_NAME="libtelegram-tdlib.so"
 echo "== 1. push custom setup app com.palm.app.telegram =="
 APPDIR=/media/cryptofs/apps/usr/palm/applications/com.palm.app.telegram
 $NR -- -c "mkdir -p $APPDIR/source $APPDIR/images"
-cd "$PKG/pkg/usr/palm/applications/com.palm.app.telegram"
+cd "$PKG/apps/com.palm.app.telegram"
 for f in appinfo.json validator.html depends.js framework_config.json source/validator.js \
          images/header-icon.png images/icon-256x256.png; do
   novacom put "file://$APPDIR/$f" < "$f"
@@ -31,7 +31,7 @@ done
 echo "== 2. install account template (rootfs rw) =="
 ACC=/usr/palm/public/accounts/com.palm.telegram
 $NR -- -c "mount -o remount,rw / ; mkdir -p $ACC/images"
-cd "$PKG/pkg/usr/palm/public/accounts/com.palm.telegram"
+cd "$PKG/account/com.palm.telegram"
 novacom put "file://$ACC/com.palm.telegram.json" < com.palm.telegram.json
 for f in images/telegram-32x32.png images/telegram-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"

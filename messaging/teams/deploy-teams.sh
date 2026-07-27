@@ -21,7 +21,7 @@ PRPL="$PKG/plugin/purple-teams/libteams-personal.stripped.so"
 echo "== 1. install account template (rootfs rw) =="
 ACC=/usr/palm/public/accounts/com.palm.teams
 nr "mount -o remount,rw /dev/mapper/store-root / ; mkdir -p $ACC/images"
-cd "$PKG/apps/com.palm.app.teams/files/usr/palm/public/accounts/com.palm.teams"
+cd "$PKG/account/com.palm.teams"
 novacom put "file://$ACC/com.palm.teams.json" < com.palm.teams.json
 for f in images/teams-32x32.png images/teams-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"
