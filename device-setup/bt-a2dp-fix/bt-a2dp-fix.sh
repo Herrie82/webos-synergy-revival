@@ -62,8 +62,22 @@ start_streaming() {
 	luna-send -n 1 palm://com.palm.bluetooth/a2dp/play "{\"address\":\"$a\"}" >/dev/null 2>&1
 }
 
+# Is a VoIP call active right now? Any (protocol-agnostic) call plays through the pulse `pvoip` sink, so a
+# sink-input on it means WhatsApp/Telegram/Signal/etc. is on a call. We must NOT restart the BT stack then:
+# it would drop the call's HFP/SCO audio. Covers all protocols in one check.
+call_active() {
+	pv=$(pactl list sinks 2>/dev/null | awk '/^Sink #/{n=$0} /Name: pvoip$/{print n}' | grep -oE '[0-9]+' | head -1)
+	[ -n "$pv" ] || return 1
+	pactl list sink-inputs 2>/dev/null | awk -v idx="$pv" '
+		/^Sink Input #/{s=""} /Sink: /{s=$2; if(s==idx)f=1} END{exit(f?0:1)}'
+}
+
 restart_stack() {
 	now=$1
+	if call_active; then
+		log "A2DP stalled but a VoIP call is active - NOT restarting the BT stack (would drop the call)"
+		return 1
+	fi
 	last=$(cat "$STATEDIR/last_restart" 2>/dev/null || echo 0)
 	if [ $((now - last)) -lt $MIN_RESTART_GAP ]; then
 		log "A2DP stalled but within ${MIN_RESTART_GAP}s restart guard - not restarting"
