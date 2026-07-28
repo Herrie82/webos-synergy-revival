@@ -43,6 +43,14 @@ export AR_armv7_unknown_linux_gnueabi=${P}ar
 export CFLAGS_armv7_unknown_linux_gnueabi="-march=armv7-a -mfloat-abi=soft --sysroot=$SR -I$OSSL_INC"
 export CXXFLAGS_armv7_unknown_linux_gnueabi="-march=armv7-a -mfloat-abi=soft --sysroot=$SR -I$OSSL_INC"
 
+# boring-sys (BoringSSL, only pulled in when presage's `cdsi` feature is on for non-contact Signal
+# discovery): its bundled cmake/armv7-linux.cmake sets no compiler, so cmake falls back to the host
+# /usr/bin/cc and dies on -mfloat-abi=soft. Hand cmake our cross toolchain instead. TARGET_-prefixed
+# so it's honored by both boring-sys and the cmake crate, and only for the ARM target (not host).
+export TARGET_CMAKE_TOOLCHAIN_FILE="$REPO/messaging/signal/boring-arm-toolchain.cmake"
+# BoringSSL's build generates sources with Go and configures with cmake; make sure both are found.
+export PATH="/home/herrie/webos/gotool/go125/bin:$REPO/build-output/host-tools:$PATH"
+
 cd "$RUST"
 echo "=== STAGE 1: cargo build Rust backend staticlib --target $TARGET (387 crates, be patient) ==="
 cargo build --release --target "$TARGET" "$@"

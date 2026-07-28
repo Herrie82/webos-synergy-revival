@@ -14,7 +14,7 @@ curve25519-dalek = { git = 'https://github.com/signalapp/curve25519-dalek', tag 
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = '2a42b3354c9194700d08aa070f70a131a470e7dc' }
 
 [dependencies]
-presage = { git = "https://github.com/whisperfish/presage", rev = "63482ef" }
+presage = { git = "https://github.com/whisperfish/presage", rev = "63482ef", features = ["cdsi"] }
 presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "63482ef" }
 mime-sniffer = { git = "https://github.com/kamadorueda/rust-mime-sniffer"}
 mime_guess = "2.0"

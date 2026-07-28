@@ -20,6 +20,28 @@ async fn resolve_phone_to_uuid<C: presage::store::Store>(
     }
 }
 
+// Resolve an E.164 phone number to an ACI via Signal's Contact Discovery Service (a server lookup),
+// so a NON-contact number typed in the dialer can still be called - unlike resolve_phone_to_uuid,
+// which only knows already-stored contacts. Returns the ACI uuid, or None if the number isn't
+// registered on Signal (or discovery fails / only a PNI is returned, which can't key a call).
+async fn discover_uuid_by_phone<C: presage::store::Store>(
+    manager: &mut presage::Manager<C, presage::manager::Registered>,
+    phone: &str,
+) -> Option<presage::libsignal_service::prelude::Uuid> {
+    use presage::libsignal_service::protocol::ServiceId;
+    match manager.discover_contacts_by_phone_number([phone]).await {
+        Ok(results) => {
+            for (_pn, service_id) in results {
+                if let Some(ServiceId::Aci(aci)) = service_id {
+                    return Some(aci.into());
+                }
+            }
+            None
+        }
+        Err(_) => None,
+    }
+}
+
 /*
  * Runs a command.
  *
@@ -210,16 +232,40 @@ async fn run<C: presage::store::Store + 'static>(
             Ok(true)
         }
         crate::structs::Cmd::PlaceCall { callee } => {
-            // Resolve the callee (the dialer passes the Signal UUID) to an ACI.
-            let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(callee.trim()) {
+            // Resolve the callee to an ACI. The dialer usually passes the Signal UUID, but for a
+            // cross-service-linked contact (Alan's Signal thread keyed by his phone number) it passes an
+            // E.164 number. If it isn't a UUID, look it up like the phone-addressed send path does.
+            let callee_str = callee.trim().to_string();
+            let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(&callee_str) {
                 Ok(u) => u,
                 Err(_) => {
-                    crate::bridge::purple_debug(
-                        account,
-                        crate::bridge_structs::PURPLE_DEBUG_ERROR,
-                        format!("call bridge: place_call: cannot resolve callee '{callee}' to a UUID\n"),
-                    );
-                    return Ok(true);
+                    // Not a UUID: the dialer passed a phone number (a cross-service-linked contact, or a
+                    // bare dialpad number for someone not in Contacts). Try a stored contact first (cheap,
+                    // offline), then fall back to a Signal CDS lookup so a NON-contact number still
+                    // resolves to an ACI - mirrors the Telegram searchUserByPhoneNumber path.
+                    let resolved = match resolve_phone_to_uuid(&mut manager, &callee_str).await {
+                        Some(u) => Some(u),
+                        None => discover_uuid_by_phone(&mut manager, &callee_str).await,
+                    };
+                    match resolved {
+                        Some(u) => u,
+                        None => {
+                            crate::bridge::purple_debug(
+                                account,
+                                crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                                format!("call bridge: place_call: '{callee_str}' is not on Signal (no UUID, no stored contact, no CDS match)\n"),
+                            );
+                            // Fail cleanly: clear the dialer's "Connecting" card instead of hanging.
+                            crate::bridge::handle_call_state(
+                                account,
+                                Some(callee_str.clone()),
+                                None,
+                                crate::bridge::CALL_STATE_ENDED,
+                                0,
+                            );
+                            return Ok(true);
+                        }
+                    }
                 }
             };
             // Identity keys bound into the SRTP KDF: caller_id = OURS (we are the caller),
