@@ -354,12 +354,14 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 	senderStr := strconv.FormatInt(senderFbid, 10)
 	ts := evt.Info.Timestamp
 	dl := &fbDownloadable{integral: integral, mediaType: mediaType}
-	fbTrace(fmt.Sprintf("handleE2EEMedia SPAWN chat=%s sender=%s dataType=%d hash=%s ext=%s mime=%s len=%d", chatStr, senderStr, int(dataType), hash, extension, mimetype, length))
-	go func() {
-		fbTrace("goroutine ENTER -> purple_handle_attachment")
-		purple_handle_attachment(h.account, chatStr, false, senderStr,
-			caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
-		fbTrace("goroutine RETURN <- purple_handle_attachment")
-	}()
+	// Call purple_handle_attachment SYNCHRONOUSLY, exactly like the WhatsApp path (handle_message.go).
+	// It is cheap -- it only builds a message and purple_timeout_add()s it onto the glib main loop; the
+	// actual download runs there, NOT inline. Wrapping it in a goroutine (an earlier mis-fix for a
+	// supposed read-loop block) broke the scheduling: gowhatsapp_handle_attachment was never reached
+	// from the timeout callback, so FB media silently never downloaded. No goroutine == matches WhatsApp.
+	fbTrace(fmt.Sprintf("handleE2EEMedia -> purple_handle_attachment (sync) chat=%s dataType=%d mime=%s len=%d", chatStr, int(dataType), mimetype, length))
+	purple_handle_attachment(h.account, chatStr, false, senderStr,
+		caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
+	fbTrace("handleE2EEMedia -> purple_handle_attachment returned")
 	return true
 }
