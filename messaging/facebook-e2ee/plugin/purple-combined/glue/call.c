@@ -93,7 +93,7 @@ void gowhatsapp_call_on_state(const char *json) {
 // (not "default") -> PA pvoip/pvoipsource, which module-palm-policy routes under the
 // phone scenario, so we coexist with audiod/PA (no hw conflict).
 #define WA_RATE 16000
-#define WA_FRAME 960
+#define WA_FRAME 320  /* 20ms mic read chunk (was 960/60ms) — lower capture granularity = less mic->peer delay; still a multiple of the NS 160-sample frame */
 #define MIC_RING 16000 /* ~1s of int16 mono */
 static snd_pcm_t *g_play = NULL; // peer -> speaker (written from the sink callback)
 static snd_pcm_t *g_cap = NULL;  // mic (read by the capture thread into the ring)
@@ -112,12 +112,13 @@ static int mic_avail(void) {
 	return a;
 }
 
-static snd_pcm_t *pcm_open(const char *dev, snd_pcm_stream_t dir) {
+static snd_pcm_t *pcm_open(const char *dev, snd_pcm_stream_t dir, unsigned int latency_us) {
 	snd_pcm_t *h = NULL;
 	if (snd_pcm_open(&h, dev, dir, 0) < 0) return NULL;
-	// S16_LE, mono, 16k, soft-resample on, ~120ms latency
+	// S16_LE, mono, 16k, soft-resample on. latency_us tunes the ALSA buffer: LOW on capture cuts the
+	// mic->peer delay, but PLAYBACK needs headroom >= the peer's Opus frame (60ms) or it underruns (choppy).
 	if (snd_pcm_set_params(h, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-	                       1, WA_RATE, 1, 120000) < 0) {
+	                       1, WA_RATE, 1, latency_us) < 0) {
 		snd_pcm_close(h);
 		return NULL;
 	}
@@ -128,8 +129,8 @@ static snd_pcm_t *pcm_open(const char *dev, snd_pcm_stream_t dir) {
 // on the pulse plugin can block) then reads mic -> ring buffer. Never calls into Go.
 static void *audio_thread(void *arg) {
 	(void)arg;
-	g_play = pcm_open("voip", SND_PCM_STREAM_PLAYBACK);
-	g_cap = pcm_open("voipsource", SND_PCM_STREAM_CAPTURE);
+	g_play = pcm_open("voip", SND_PCM_STREAM_PLAYBACK, 120000);   // keep playback headroom (60ms Opus frames) -> no underrun/choppy
+	g_cap = pcm_open("voipsource", SND_PCM_STREAM_CAPTURE, 40000); // tight capture -> cut mic->peer latency (was 120ms)
 	fprintf(stderr, "wa-call: audio %s / %s\n",
 	        g_play ? "playback-ok" : "playback-FAIL",
 	        g_cap ? "capture-ok" : "capture-FAIL");

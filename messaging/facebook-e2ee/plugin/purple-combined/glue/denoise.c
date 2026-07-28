@@ -1,17 +1,53 @@
 #include "denoise.h"
 #include "modules/audio_processing/ns/noise_suppression.h"
 #include <stddef.h>
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // WebRTC float NS processes exactly one 10ms frame (fs/100 samples) per call, in the int16 value
 // range as float (NOT normalized to +/-1). For <=16kHz it is a single band. The WhatsApp mic frame
-// is 960 samples @ 16kHz (60ms) -> 6 sub-frames of 160.
+// is 320 samples @ 16kHz (20ms) -> 2 sub-frames of 160.
 static NsHandle *g_ns = NULL;
 static int g_frame = 160; // fs/100
+
+// ---- de-tinny: a low-shelf that boosts the lows the analog IN1L mic rolls off, plus a small overall
+// trim so the boosted lows don't clip. Net effect tilts the spectrum warmer (lows up, highs slightly
+// down) which is exactly what "tinny" needs. Tunable: raise EQ_LOWSHELF_DB / EQ_LOWSHELF_HZ for more
+// warmth; drop EQ_OUTPUT_GAIN if it ever clips. RBJ biquad, Direct Form II transposed. ----
+#define EQ_LOWSHELF_HZ 320.0
+#define EQ_LOWSHELF_DB 6.0
+#define EQ_OUTPUT_GAIN 0.85
+static double eq_b0, eq_b1, eq_b2, eq_a1, eq_a2, eq_z1, eq_z2;
+
+static void eq_init(int fs) {
+	double A = pow(10.0, EQ_LOWSHELF_DB / 40.0);
+	double w0 = 2.0 * M_PI * EQ_LOWSHELF_HZ / (double)fs;
+	double cw = cos(w0), sw = sin(w0);
+	double S = 0.9; // shelf slope
+	double alpha = sw / 2.0 * sqrt((A + 1.0 / A) * (1.0 / S - 1.0) + 2.0);
+	double sqrtA = sqrt(A);
+	double a0 = (A + 1) + (A - 1) * cw + 2 * sqrtA * alpha;
+	eq_b0 =        A * ((A + 1) - (A - 1) * cw + 2 * sqrtA * alpha) / a0;
+	eq_b1 =    2 * A * ((A - 1) - (A + 1) * cw)                     / a0;
+	eq_b2 =        A * ((A + 1) - (A - 1) * cw - 2 * sqrtA * alpha) / a0;
+	eq_a1 =       -2 * ((A - 1) + (A + 1) * cw)                     / a0;
+	eq_a2 =           ((A + 1) + (A - 1) * cw - 2 * sqrtA * alpha)  / a0;
+	eq_z1 = eq_z2 = 0.0;
+}
+static float eq_sample(float x) {
+	double y = eq_b0 * x + eq_z1;
+	eq_z1 = eq_b1 * x - eq_a1 * y + eq_z2;
+	eq_z2 = eq_b2 * x - eq_a2 * y;
+	return (float)(y * EQ_OUTPUT_GAIN);
+}
 
 void wa_ns_start(int fs) {
 	wa_ns_stop();
 	if (fs <= 0) return;
 	g_frame = fs / 100;
+	eq_init(fs);
 	g_ns = WebRtcNs_Create();
 	if (g_ns) {
 		if (WebRtcNs_Init(g_ns, (unsigned int)fs) != 0) { WebRtcNs_Free(g_ns); g_ns = NULL; return; }
@@ -35,13 +71,13 @@ void wa_ns_process(short *buf, int n) {
 			WebRtcNs_Process(g_ns, bands_in, 1, bands_out);
 		}
 		for (i = 0; i < g_frame; i++) {
-			float v = out[i];
+			float v = eq_sample(out[i]); // low-shelf AFTER noise suppression
 			if (v > 32767.0f) v = 32767.0f; else if (v < -32768.0f) v = -32768.0f;
 			buf[off + i] = (short)v;
 		}
 		off += g_frame;
 	}
-	// any tail < one frame (rare short read) passes through un-denoised
+	// any tail < one frame (rare short read) passes through un-processed
 }
 
 void wa_ns_stop(void) {
