@@ -341,27 +341,37 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 		h.mu.Unlock()
 	}
 	h.addContact(chatFbid, name)
-	// Run the download+display on a BACKGROUND goroutine. purple_handle_attachment performs the media
-	// download SYNCHRONOUSLY (download_to_templated_destination -> DownloadFB), and doing that on the
-	// whatsmeow read-loop goroutine (where event handlers run) blocked it long enough -- ~10s for a ~1MB
-	// FB-CDN fetch -- that whatsmeow's keepalive timed out and RECONNECTED the account, tearing down the
-	// in-progress download: valid transport, no error, but no file ever written. Off-loading it frees the
-	// read loop so keepalive stays alive and the download completes. Safe because this plugin already
-	// calls purple_* from goroutines (gowhatsapp_go_query_groups / fetch_newsletter_history / get_contacts
-	// all do the same) -- the display bridge marshals onto the glib main loop. Args are evaluated now
-	// (before the goroutine) so the whatsmeow event object isn't referenced after it's recycled.
+	// FB media CANNOT go through purple_handle_attachment: that path marshals the work onto the glib main
+	// loop via purple_timeout_add, which never fires from the FB e2ee event context (proved by the C-side
+	// fsync trace -- gowhatsapp_handle_attachment was never reached; the goroutine variant scheduled a
+	// callback that never ran, the synchronous variant blocked the read loop forever). FB TEXT works
+	// precisely because it uses the DIRECT notifyMessage/serv_got_im path, not the timeout bridge. So
+	// download the media here and display it exactly like FB text: a message whose body is the file://
+	// URL, which the Messaging app renders inline (the same media-URL bubble WhatsApp uses). Bounded
+	// context so a stalled fetch can't wedge the read loop; notifyMessage itself is cheap.
 	chatStr := strconv.FormatInt(chatFbid, 10)
 	senderStr := strconv.FormatInt(senderFbid, 10)
-	ts := evt.Info.Timestamp
-	dl := &fbDownloadable{integral: integral, mediaType: mediaType}
-	// Call purple_handle_attachment SYNCHRONOUSLY, exactly like the WhatsApp path (handle_message.go).
-	// It is cheap -- it only builds a message and purple_timeout_add()s it onto the glib main loop; the
-	// actual download runs there, NOT inline. Wrapping it in a goroutine (an earlier mis-fix for a
-	// supposed read-loop block) broke the scheduling: gowhatsapp_handle_attachment was never reached
-	// from the timeout callback, so FB media silently never downloaded. No goroutine == matches WhatsApp.
-	fbTrace(fmt.Sprintf("handleE2EEMedia -> purple_handle_attachment (sync) chat=%s dataType=%d mime=%s len=%d", chatStr, int(dataType), mimetype, length))
-	purple_handle_attachment(h.account, chatStr, false, senderStr,
-		caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
-	fbTrace("handleE2EEMedia -> purple_handle_attachment returned")
+	dir := "/media/internal/.im-attachments/facebook"
+	os.MkdirAll(dir, 0o755)
+	localPath := dir + "/" + hash + extension
+	fbTrace(fmt.Sprintf("handleE2EEMedia: DownloadFB start mime=%s len=%d -> %s", mimetype, length, localPath))
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	data, derr := h.e2ee.DownloadFB(ctx, integral, mediaType)
+	fbTrace(fmt.Sprintf("handleE2EEMedia: DownloadFB returned %d bytes err=%v", len(data), derr))
+	if derr != nil {
+		purple_debug(4, fmt.Sprintf("gometa: DownloadFB failed (mime=%s): %v", mimetype, derr))
+		return true
+	}
+	if werr := os.WriteFile(localPath, data, 0o644); werr != nil {
+		purple_debug(4, fmt.Sprintf("gometa: write FB media failed: %v", werr))
+		return true
+	}
+	fbTrace(fmt.Sprintf("handleE2EEMedia: WROTE %d bytes -> %s", len(data), localPath))
+	body := "file://" + localPath
+	if caption != "" {
+		body = body + "\n" + caption
+	}
+	h.notifyMessage(chatStr, senderStr, name, body, id, evt.Info.Timestamp.Unix(), false, evt.Info.IsFromMe, "", "", "")
 	return true
 }
