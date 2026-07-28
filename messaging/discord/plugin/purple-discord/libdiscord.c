@@ -11149,9 +11149,14 @@ discord_xfer_send_init(PurpleXfer *xfer)
 	filename = g_path_get_basename(fullpath);
 	purple_xfer_set_filename(xfer, filename);
 
-	// We don't insert this into sent messages because that will prevent it
-	// from appearing in our client
 	nonce = g_strdup_printf("%" G_GUINT32_FORMAT, g_random_int());
+	// webOS: register this upload's nonce so Discord's echo of our OWN sent attachment is recognised as
+	// self-sent and suppressed (the channel/DM self paths in discord_process_message g_hash_table_remove
+	// it), instead of being delivered again as a duplicate "https://cdn.discordapp.com/..." message.
+	// Upstream Pidgin deliberately did NOT track it (Pidgin relies on the echo to show the file), but on
+	// webOS the message already appears from its local outbox row (filePath + caption), so the echo is a
+	// pure duplicate. The row keeps its serviceMessageId via the caption's OutboxIdHandler.
+	g_hash_table_insert(da->sent_message_ids, g_strdup(nonce), NULL);
 
 	// The transport transcodes recorded voice notes to Ogg/Opus. If this is one, send it as a Discord
 	// VOICE MESSAGE (flags 1<<13) with the required duration_secs + waveform attachment metadata; the
