@@ -11,6 +11,8 @@ GLUE=$SRC/glue
 BUILD=$SRC/build-arm
 PURPLE=$REPO/messaging/libpurple
 GLIB_STAGING=/home/herrie/webos/wpe/staging-glibc-252
+# WebRTC noise-suppression sources (harvested from libtgvoip) for the WhatsApp-call mic NS (glue/denoise.c)
+WEBRTC_DSP=$REPO/messaging/telegram/plugin/libtgvoip/webrtc_dsp
 GO=${GO:-/home/herrie/webos/gotool/go125/bin/go}
 TC=/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125
 
@@ -44,11 +46,11 @@ echo "  -> $(ls -la "$BUILD/libwhatsmeow.a" | awk '{print $5}') bytes"
 echo "=== STAGE 2: compile C glue (whatsmeow + gometa_init) ==="
 GCFLAGS="$CFLAGS $CPPFLAGS -fPIC -DPURPLE_PLUGINS -DPLUGIN_VERSION=$VERSION \
 	-I$GLUE -I$SRC -I$BUILD -I$PURPLE/include $(pkg-config --cflags purple glib-2.0) -I$GLIB_STAGING/include -I$GLIB_STAGING/include/opus \
-	-I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC"
+	-I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC -I$WEBRTC_DSP"
 OBJS=()
 for s in init login qrcode bridge process_message display_message groups blist \
          send_message handle_attachment send_file presence options receipt pixbuf commands \
-         call gometa_init; do
+         call denoise gometa_init; do
 	echo "  CC glue/$s.c"; $CC $GCFLAGS -c "$GLUE/$s.c" -o "$BUILD/glue_$s.o"; OBJS+=("$BUILD/glue_$s.o")
 done
 # root C files (bridge/constants = whatsmeow; gometabridge = facebook dispatch)
@@ -56,12 +58,49 @@ for s in bridge constants gometabridge; do
 	echo "  CC $s.c"; $CC $GCFLAGS -c "$SRC/$s.c" -o "$BUILD/root_$s.o"; OBJS+=("$BUILD/root_$s.o")
 done
 
+echo "=== STAGE 2b: WebRTC float noise-suppression static lib (libwarns.a) ==="
+# The proven source set libtgvoip compiles for its float NS (signal_processing + fft4g + ns), built
+# standalone here so glue/denoise.c can WebRtcNs_* without pulling the whole voip engine. NDEBUG makes
+# the NS's RTC_DCHECK_* no-ops (the only rtc_base dep), so it's pure C -- no libstdc++ needed.
+NSFLAGS="-O2 -fPIC -std=gnu11 -DNDEBUG -DWEBRTC_POSIX -DWEBRTC_APM_DEBUG_DUMP=0 -DWEBRTC_NS_FLOAT -I$WEBRTC_DSP"
+NS_SRCS=(
+	common_audio/signal_processing/auto_correlation.c common_audio/signal_processing/auto_corr_to_refl_coef.c
+	common_audio/signal_processing/complex_fft.c common_audio/signal_processing/copy_set_operations.c
+	common_audio/signal_processing/cross_correlation.c common_audio/signal_processing/division_operations.c
+	common_audio/signal_processing/downsample_fast.c common_audio/signal_processing/energy.c
+	common_audio/signal_processing/filter_ar.c common_audio/signal_processing/filter_ar_fast_q12.c
+	common_audio/signal_processing/filter_ma_fast_q12.c common_audio/signal_processing/get_hanning_window.c
+	common_audio/signal_processing/get_scaling_square.c common_audio/signal_processing/ilbc_specific_functions.c
+	common_audio/signal_processing/levinson_durbin.c common_audio/signal_processing/lpc_to_refl_coef.c
+	common_audio/signal_processing/min_max_operations.c common_audio/signal_processing/randomization_functions.c
+	common_audio/signal_processing/real_fft.c common_audio/signal_processing/refl_coef_to_lpc.c
+	common_audio/signal_processing/resample_48khz.c common_audio/signal_processing/resample_by_2.c
+	common_audio/signal_processing/resample_by_2_internal.c common_audio/signal_processing/resample.c
+	common_audio/signal_processing/resample_fractional.c common_audio/signal_processing/spl_init.c
+	common_audio/signal_processing/spl_inl.c common_audio/signal_processing/splitting_filter1.c
+	common_audio/signal_processing/spl_sqrt.c common_audio/signal_processing/sqrt_of_one_minus_x_squared.c
+	common_audio/signal_processing/vector_scaling_operations.c common_audio/signal_processing/dot_product_with_scale.cc
+	common_audio/third_party/fft4g/fft4g.c
+	modules/audio_processing/ns/ns_core.c modules/audio_processing/ns/noise_suppression.c
+)
+WOBJS=()
+for s in "${NS_SRCS[@]}"; do
+	o="$BUILD/warns_$(echo "$s" | tr '/.' '__').o"
+	case "$s" in
+		*.cc) arm-unknown-linux-gnueabi-g++ $NSFLAGS -c "$WEBRTC_DSP/$s" -o "$o" ;;
+		*)    $CC $NSFLAGS -c "$WEBRTC_DSP/$s" -o "$o" ;;
+	esac
+	WOBJS+=("$o")
+done
+arm-unknown-linux-gnueabi-ar rcs "$BUILD/libwarns.a" "${WOBJS[@]}"
+echo "  -> libwarns.a $(ls -la "$BUILD/libwarns.a" | awk '{print $5}') bytes"
+
 echo "=== STAGE 3: link libwhatsmeow.so ==="
 $CC -shared -fPIC $LDFLAGS -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
-	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" \
+	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" "$BUILD/libwarns.a" \
 	-L"$PURPLE/lib" -L"$GLIB_STAGING/lib" $(pkg-config --libs purple glib-2.0) \
 	"$LSSTUB" -lasound \
-	-lopusfile -lopus -logg -lpthread -ldl -lm -lresolv
+	-lopusfile -lopus -logg -lpthread -ldl -lm -lresolv -lstdc++
 
 echo "=== Stripping ==="
 cp "$BUILD/libwhatsmeow.so" "$BUILD/libwhatsmeow.stripped.so"

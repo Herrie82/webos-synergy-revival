@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "denoise.h"
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
 
@@ -132,6 +133,9 @@ static void *audio_thread(void *arg) {
 	fprintf(stderr, "wa-call: audio %s / %s\n",
 	        g_play ? "playback-ok" : "playback-FAIL",
 	        g_cap ? "capture-ok" : "capture-FAIL");
+	// WebRTC noise-suppression on the outbound mic (the webOS voip capture path applies no audiod DSP,
+	// so the raw analog-mic frames carry heavy background noise). Denoise in place before the ring.
+	wa_ns_start(WA_RATE);
 	short buf[WA_FRAME];
 	while (g_audio_on && g_cap) {
 		snd_pcm_sframes_t r = snd_pcm_readi(g_cap, buf, WA_FRAME);
@@ -139,6 +143,7 @@ static void *audio_thread(void *arg) {
 			snd_pcm_recover(g_cap, (int)r, 1);
 			continue;
 		}
+		wa_ns_process(buf, (int)r);
 		pthread_mutex_lock(&g_mic_mx);
 		for (int i = 0; i < r; i++) {
 			int nt = (g_mic_tail + 1) % MIC_RING;
@@ -149,6 +154,7 @@ static void *audio_thread(void *arg) {
 		pthread_cond_signal(&g_mic_cv);
 		pthread_mutex_unlock(&g_mic_mx);
 	}
+	wa_ns_stop();
 	return NULL;
 }
 
