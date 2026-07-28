@@ -24,6 +24,19 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
+// fbTrace appends a line to a dedicated file and fsyncs it, so the marker SURVIVES a hard native crash
+// (unlike purple_debug -> block-buffered stdout, whose buffer is lost on SIGSEGV). Temporary: used to
+// pin down where incoming FB media downloads crash the transport.
+func fbTrace(msg string) {
+	f, err := os.OpenFile("/media/internal/fbtrace.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	f.WriteString(msg + "\n")
+	f.Sync()
+	f.Close()
+}
+
 func extension_from_mimetype(mimeType *string) string {
 	extension := ".data"
 	if mimeType != nil {
@@ -171,10 +184,15 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	// us WHERE it dies (e.g. inside whatsmeow DownloadFB / refreshMediaConn for the FB e2ee client).
 	defer func() {
 		if r := recover(); r != nil {
+			fbTrace(fmt.Sprintf("download_attachment PANIC: %v", r))
 			purple_debug(4, fmt.Sprintf("gometa: download_attachment PANIC recovered: %v", r))
 			retErr = fmt.Errorf("download panic: %v", r)
 		}
 	}()
+	_, isFB := message.(*fbDownloadable)
+	if isFB {
+		fbTrace(fmt.Sprintf("download_attachment ENTER path=%s", local_file_path))
+	}
 	os.MkdirAll(filepath.Dir(local_file_path), 0o755)
 	// Download to memory then write the file ourselves. whatsmeow's DownloadToFile streams to an
 	// *os.File and unconditionally calls fallocate(2), which webOS filesystems (tmpfs/vfat) reject
@@ -198,8 +216,10 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 		if !gok || g.e2ee == nil {
 			return fmt.Errorf("facebook e2ee not connected")
 		}
+		fbTrace(fmt.Sprintf("DownloadFB START type=%d directPathLen=%d path=%s", fb.mediaType, len(fb.integral.GetDirectPath()), local_file_path))
 		purple_debug(2, fmt.Sprintf("gometa: DownloadFB start (type=%d directPathLen=%d)", fb.mediaType, len(fb.integral.GetDirectPath())))
 		data, err = g.e2ee.DownloadFB(ctx, fb.integral, fb.mediaType)
+		fbTrace(fmt.Sprintf("DownloadFB RETURNED %d bytes err=%v", len(data), err))
 		purple_debug(2, fmt.Sprintf("gometa: DownloadFB returned %d bytes err=%v", len(data), err))
 		if err != nil {
 			// Log (do NOT purple_error - that disconnects the account); the caller renders the failure
@@ -217,6 +237,9 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	}
 	if err := os.WriteFile(local_file_path, data, 0o644); err != nil {
 		return err
+	}
+	if _, ok := message.(*fbDownloadable); ok {
+		fbTrace(fmt.Sprintf("WROTE %d bytes -> %s", len(data), local_file_path))
 	}
 	purple_debug(2, fmt.Sprintf("gometa: wrote attachment %d bytes -> %s", len(data), local_file_path))
 	// For videos, also drop the sender's embedded JPEG thumbnail next to the file as "<base>.jpg".
@@ -331,7 +354,12 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 	senderStr := strconv.FormatInt(senderFbid, 10)
 	ts := evt.Info.Timestamp
 	dl := &fbDownloadable{integral: integral, mediaType: mediaType}
-	go purple_handle_attachment(h.account, chatStr, false, senderStr,
-		caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
+	fbTrace(fmt.Sprintf("handleE2EEMedia SPAWN chat=%s sender=%s dataType=%d hash=%s ext=%s mime=%s len=%d", chatStr, senderStr, int(dataType), hash, extension, mimetype, length))
+	go func() {
+		fbTrace("goroutine ENTER -> purple_handle_attachment")
+		purple_handle_attachment(h.account, chatStr, false, senderStr,
+			caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
+		fbTrace("goroutine RETURN <- purple_handle_attachment")
+	}()
 	return true
 }
