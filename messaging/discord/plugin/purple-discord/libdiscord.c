@@ -1724,7 +1724,15 @@ discord_fetch_url_with_method_len(DiscordAccount *ya, const gchar *method, const
 	purple_http_request_header_set(request, "Cookie", cookies);
 	purple_http_request_header_set(request, "X-Super-Properties", discord_build_x_super_properties_header(ya));
 	purple_http_request_header_set(request, "Origin", "https://" DISCORD_API_SERVER);
-	purple_http_request_set_keepalive_pool(request, ya->http_keepalive_pool);
+	// webOS: a file upload is a multipart POST (postdata starts with "--") with a large body. If the
+	// pooled keep-alive connection has gone stale, purple_http CANNOT auto-retry a body-POST (the body
+	// stream is already consumed) -- it just reports "performed without success" and the attachment
+	// silently doesn't send (e.g. a picture to a DM). Give uploads a FRESH connection instead of a
+	// pooled one so a dead keep-alive socket can't kill them. Other (small/idempotent) requests keep
+	// using the pool, and purple_http retries those fine.
+	if (!(postdata != NULL && postdata[0] == '-' && postdata[1] == '-')) {
+		purple_http_request_set_keepalive_pool(request, ya->http_keepalive_pool);
+	}
 
 	if (ya->token) {
 		purple_http_request_header_set(request, "Authorization", ya->token);
