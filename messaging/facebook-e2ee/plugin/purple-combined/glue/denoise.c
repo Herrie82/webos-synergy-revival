@@ -12,10 +12,11 @@
 static NsHandle *g_ns = NULL;
 static int g_frame = 160; // fs/100
 
-// ---- de-tinny: a low-shelf that boosts the lows the analog IN1L mic rolls off, plus a small overall
-// trim so the boosted lows don't clip. Net effect tilts the spectrum warmer (lows up, highs slightly
-// down) which is exactly what "tinny" needs. Tunable: raise EQ_LOWSHELF_DB / EQ_LOWSHELF_HZ for more
-// warmth; drop EQ_OUTPUT_GAIN if it ever clips. RBJ biquad, Direct Form II transposed. ----
+// ---- OPTIONAL low-shelf (default OFF). Offline measurement of the raw voipsource mic showed it is
+// already WARM (tilt -3.1 dB/oct, centroid 637Hz, full 102..7898Hz band) and the NS keeps it warm at
+// every policy -- so a low-shelf here only ADDS mud. Left in, gated by EQ_ENABLE, for the day a
+// different mic route needs spectral shaping. RBJ biquad, Direct Form II transposed. ----
+#define EQ_ENABLE 0
 #define EQ_LOWSHELF_HZ 320.0
 #define EQ_LOWSHELF_DB 6.0
 #define EQ_OUTPUT_GAIN 0.85
@@ -47,7 +48,7 @@ void wa_ns_start(int fs) {
 	wa_ns_stop();
 	if (fs <= 0) return;
 	g_frame = fs / 100;
-	eq_init(fs);
+	if (EQ_ENABLE) eq_init(fs);
 	g_ns = WebRtcNs_Create();
 	if (g_ns) {
 		if (WebRtcNs_Init(g_ns, (unsigned int)fs) != 0) { WebRtcNs_Free(g_ns); g_ns = NULL; return; }
@@ -71,7 +72,7 @@ void wa_ns_process(short *buf, int n) {
 			WebRtcNs_Process(g_ns, bands_in, 1, bands_out);
 		}
 		for (i = 0; i < g_frame; i++) {
-			float v = eq_sample(out[i]); // low-shelf AFTER noise suppression
+			float v = EQ_ENABLE ? eq_sample(out[i]) : out[i]; // optional low-shelf AFTER noise suppression
 			if (v > 32767.0f) v = 32767.0f; else if (v < -32768.0f) v = -32768.0f;
 			buf[off + i] = (short)v;
 		}

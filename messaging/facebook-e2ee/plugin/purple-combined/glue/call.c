@@ -95,6 +95,11 @@ void gowhatsapp_call_on_state(const char *json) {
 #define WA_RATE 16000
 #define WA_FRAME 320  /* 20ms mic read chunk (was 960/60ms) — lower capture granularity = less mic->peer delay; still a multiple of the NS 160-sample frame */
 #define MIC_RING 16000 /* ~1s of int16 mono */
+/* The analog IN1L mic captures quiet (~-29dBFS rms), so the peer's AGC has to boost hard, which lifts
+ * the noise floor over the voice fundamentals and reads as thin/"tinny". Apply a modest makeup gain
+ * (post-NS) to hand the peer a healthier level. 2.0x = +6dB -> ~-23dBFS rms, ~-8dBFS peak (measured):
+ * safely below clip. Raise toward ~3x if still quiet, back off if it distorts. */
+#define MIC_GAIN 2.0f
 static snd_pcm_t *g_play = NULL; // peer -> speaker (written from the sink callback)
 static snd_pcm_t *g_cap = NULL;  // mic (read by the capture thread into the ring)
 static pthread_t g_cap_thread;
@@ -130,7 +135,7 @@ static snd_pcm_t *pcm_open(const char *dev, snd_pcm_stream_t dir, unsigned int l
 static void *audio_thread(void *arg) {
 	(void)arg;
 	g_play = pcm_open("voip", SND_PCM_STREAM_PLAYBACK, 120000);   // keep playback headroom (60ms Opus frames) -> no underrun/choppy
-	g_cap = pcm_open("voipsource", SND_PCM_STREAM_CAPTURE, 40000); // tight capture -> cut mic->peer latency (was 120ms)
+	g_cap = pcm_open("voipsource", SND_PCM_STREAM_CAPTURE, 96000); // 96ms: keep most of the latency win over the old 120ms, but enough slack above the 20ms reads that scheduling jitter doesn't xrun (40ms garbled the mic)
 	fprintf(stderr, "wa-call: audio %s / %s\n",
 	        g_play ? "playback-ok" : "playback-FAIL",
 	        g_cap ? "capture-ok" : "capture-FAIL");
@@ -167,7 +172,9 @@ int gowhatsapp_call_read_mic(float *out, int n) {
 		pthread_cond_wait(&g_mic_cv, &g_mic_mx);
 	int i = 0;
 	while (i < n && g_mic_head != g_mic_tail) {
-		out[i++] = (float)g_mic[g_mic_head] / 32768.0f;
+		float v = (float)g_mic[g_mic_head] / 32768.0f * MIC_GAIN;
+		if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f; // clamp so the makeup gain can't clip
+		out[i++] = v;
 		g_mic_head = (g_mic_head + 1) % MIC_RING;
 	}
 	pthread_mutex_unlock(&g_mic_mx);
