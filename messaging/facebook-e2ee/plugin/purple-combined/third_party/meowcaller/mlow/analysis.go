@@ -367,7 +367,7 @@ func runCelpSubframes(cs *celpFrameCtx, predcoefs *[SmplSubfrCount][17]float32, 
 
 	enc := BitrateControllerInputs{
 		InternalSampleRate: 16000, PayloadSizeMs: 60, FecBitRate: 0, MainBitRate: smplMainBitRate,
-		Complexity: smplComplexity, UseFecRateCompensation: 0, UseDtx: 0, SubFrameImportanceFactor: 1.0,
+		Complexity: adaptiveComplexity, UseFecRateCompensation: 0, UseDtx: 0, SubFrameImportanceFactor: 1.0,
 	}
 
 	for sf := 0; sf < SmplSubfrCount; sf++ {
@@ -385,7 +385,7 @@ func runCelpSubframes(cs *celpFrameCtx, predcoefs *[SmplSubfrCount][17]float32, 
 		for i := range numsurv {
 			numsurv[i] = 1
 		}
-		totSurv := int32(1000 * (smplFcbTotSurv20msMax * smplCelpFcbSubfrlen) / (20 * 16000))
+		totSurv := int32(1000 * (int(adaptiveFcbSurvMax) * smplCelpFcbSubfrlen) / (20 * 16000))
 		smplDistributeFcbSurv(numsurv, int32(maxPulses[1]), totSurv)
 
 		lags := []float32{blockLags[sf][0], blockLags[sf][1], blockLags[sf][1]}

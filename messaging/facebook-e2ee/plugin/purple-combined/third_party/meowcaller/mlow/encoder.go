@@ -3,6 +3,7 @@ package mlow
 import (
 	"errors"
 	"math"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -641,6 +642,9 @@ func (e *MlowEncoder) Encode(pcm []float32) ([]byte, error) {
 		}
 		clean[i] = s
 	}
+	start := time.Now()
 	fp := smplAnalyzeFrameSt(&e.state, clean)
-	return EncodeSmplFrame(&fp, e.log)
+	out, err := EncodeSmplFrame(&fp, e.log)
+	adaptObserve(time.Since(start)) // webOS: keep the next frame's encode within the real-time budget
+	return out, err
 }
