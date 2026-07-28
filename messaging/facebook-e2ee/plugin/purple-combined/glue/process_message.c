@@ -179,6 +179,23 @@ gowhatsapp_process_message(gowhatsapp_message_t *gwamsg)
                     gwamsg->messageId ? gwamsg->messageId : "",
                     gwamsg->text ? gwamsg->text : "");
             break;
+        case gowhatsapp_message_type_edit:
+            // webOS message edit-in-place: the sender edited a previously-sent message. messageId = that
+            // message's server id (== serviceMessageId), text = the new body. HTML-escape it exactly like a
+            // normal incoming message (gowhatsapp_display_message, glue/display_message.c) so the stored text
+            // stays consistent (the conversation view renders bodies as HTML), then forward to the transport's
+            // "webos-im-edit" signal, which merges it onto the original bubble. Runs on the libpurple main thread.
+            {
+                const char *raw = gwamsg->text ? gwamsg->text : "";
+                gchar *html = purple_markup_escape_text(raw, -1);
+                gchar *escaped = purple_strdup_withhtml(html);
+                purple_signal_emit(purple_conversations_get_handle(), "webos-im-edit",
+                        gwamsg->account, gwamsg->messageId ? gwamsg->messageId : "",
+                        escaped ? escaped : "");
+                g_free(escaped);
+                g_free(html);
+            }
+            break;
         case gowhatsapp_message_type_profile_picture:
             gowhatsapp_handle_profile_picture(gwamsg);
             break;

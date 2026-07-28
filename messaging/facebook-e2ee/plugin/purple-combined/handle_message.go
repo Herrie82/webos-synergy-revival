@@ -103,11 +103,15 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 		return
 	}
 	isEdit := false
+	editTargetId := ""
 	{
 		if pm := message.GetProtocolMessage(); pm != nil {
 			if em := pm.GetEditedMessage(); em != nil {
 				message = em
 				isEdit = true
+				// pm.Key points at the ORIGINAL message being edited; its id is the serviceMessageId under
+				// which we stored that message, so the transport can find & update that bubble in place.
+				editTargetId = pm.GetKey().GetID()
 			}
 		}
 	}
@@ -264,11 +268,18 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 		}
 	}
 	if text != "" {
-		if isEdit {
-			text = "[EDIT] " + text
+		if isEdit && editTargetId != "" {
+			// webOS edit-in-place: update the ORIGINAL bubble's text (found by editTargetId ==
+			// serviceMessageId) instead of posting a separate "[EDIT] ..." message. If we somehow lack the
+			// target id we fall through below to a normal display so the edit isn't silently lost.
+			purple_handle_message_edit(handler.account, editTargetId, text)
+		} else {
+			if isEdit {
+				text = "[EDIT] " + text
+			}
+			// note: info.PushName always denotes the sender (not the chat)
+			purple_display_text_message(handler.account, info.MessageSource.Chat.ToNonAD().String(), info.MessageSource.IsGroup, false, info.MessageSource.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID, quotedText, quotedFrom, quotedId)
 		}
-		// note: info.PushName always denotes the sender (not the chat)
-		purple_display_text_message(handler.account, info.MessageSource.Chat.ToNonAD().String(), info.MessageSource.IsGroup, false, info.MessageSource.Sender.ToNonAD().String(), &info.PushName, info.Timestamp, text, &info.ID, quotedText, quotedFrom, quotedId)
 	}
 	if !isEdit { // edited messages contain the changed texts, but attachments are absent since they cannot be changed
 		handler.handle_attachment(message, info.ID, info.MessageSource, info.Timestamp)

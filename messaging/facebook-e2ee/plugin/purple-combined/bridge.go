@@ -620,6 +620,21 @@ func purple_handle_receipt(account *PurpleAccount, id string, status string) {
 // to a timestamp. scope is the transport match rule ("ts:<threadKey>"), watermark the boundary (ms
 // decimal), status "delivered" or "read". Forwarded to the transport's "webos-im-receipt-hwm" signal
 // (scope in remoteJid, watermark in messageId, status in text).
+// purple_handle_message_edit: the sender edited a previously-sent message (targetId = that message's
+// server id == serviceMessageId); newText is the new body. The transport finds the stored bubble by
+// serviceMessageId and updates its text in place (rather than showing a separate "[EDIT]" message).
+func purple_handle_message_edit(account *PurpleAccount, targetId string, newText string) {
+	if targetId == "" {
+		return
+	}
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_edit),
+		messageId: C.CString(targetId),
+		text:      C.CString(newText),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
 func purple_handle_receipt_watermark(account *PurpleAccount, scope string, watermark string, status string) {
 	if scope == "" || watermark == "" {
 		return
