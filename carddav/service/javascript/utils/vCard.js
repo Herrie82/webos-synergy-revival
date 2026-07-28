@@ -414,9 +414,11 @@ var vCard = (function () {
 					photoName = photoPath + (input.account.name || "nameless") +
 						directObj.name.givenName + directObj.name.familyName + photo.photoType;
 					reader.writePhoto(photo, photoName).then(function () {
-						directObj.photos.push({localPath: photoName, primary: true, type: "type_big"});
-						directObj.photos.push({localPath: photoName, primary: false, type: "type_square"});
-						directObj.photos.push({localPath: photoName, primary: false, type: "type_list"});
+						// com.palm.contact:1 REQUIRES a "value" on every photos[] entry; without it db8
+						// rejects the whole (transactional) put batch and the sync framework crashes.
+						directObj.photos.push({value: photoName, localPath: photoName, primary: true, type: "type_big"});
+						directObj.photos.push({value: photoName, localPath: photoName, primary: false, type: "type_square"});
+						directObj.photos.push({value: photoName, localPath: photoName, primary: false, type: "type_list"});
 						resFuture.result = {returnValue: true, result: directObj};
 					});
 				} else {
@@ -485,9 +487,9 @@ var vCard = (function () {
 						reader.writePhoto(photo, filename).then(function () {
 							//storing those here and NOT using ContactsLib to set photos introduces the issue that photos will always stay
 							//but I did not manage to show the photo in all places in webos.
-							obj.photos.push({localPath: filename, primary: true, type: "type_big"});
-							obj.photos.push({localPath: filename, primary: false, type: "type_square"});
-							obj.photos.push({localPath: filename, primary: false, type: "type_list"});
+							obj.photos.push({value: filename, localPath: filename, primary: true, type: "type_big"});
+							obj.photos.push({value: filename, localPath: filename, primary: false, type: "type_square"});
+							obj.photos.push({value: filename, localPath: filename, primary: false, type: "type_list"});
 							future.result = {returnValue: true, obj: obj};
 						});
 					} else {

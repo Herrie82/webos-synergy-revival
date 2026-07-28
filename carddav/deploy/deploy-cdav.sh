@@ -105,8 +105,14 @@ cat > "$STAGE/cdav-postinstall.sh" <<'POST'
 set -u
 SVCID=org.webosports.service.cdav
 APPID=org.webosports.app.cdav
+# rootfs comes up read-only after a reboot; make it writable before extracting.
+mount -o remount,rw / 2>/dev/null
 echo "-- extracting payload to / --"
-cd / && tar xf /tmp/cdav-payload.tar || { echo "!! extract failed"; exit 1; }
+# /media/cryptofs (the encrypted apps partition) is a FUSE mount that rejects chown, so tar
+# prints "Cannot change ownership" and exits non-zero even though every file extracted fine.
+# Ignore tar's exit code and instead verify the key artifacts actually landed.
+cd / && tar xf /tmp/cdav-payload.tar 2>/dev/null
+if [ ! -f /usr/palm/services/$SVCID/services.json ]; then echo "!! extract failed (service missing)"; exit 1; fi
 chmod +x /tmp/provision-cdav-db.sh 2>/dev/null
 
 echo "-- provisioning db8 kinds + permissions --"
