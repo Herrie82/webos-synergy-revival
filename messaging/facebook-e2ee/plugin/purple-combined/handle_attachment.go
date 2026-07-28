@@ -162,7 +162,19 @@ func sanitize_attachment_name(name string) string {
 	}, name)
 }
 
-func (handler *Handler) download_attachment(local_file_path string, message whatsmeow.DownloadableMessage) error {
+func (handler *Handler) download_attachment(local_file_path string, message whatsmeow.DownloadableMessage) (retErr error) {
+	// webOS: FB E2EE media receive was CRASHING the whole transport (~15s after arrival, during the
+	// download, with no error and no file). This function is invoked across the cgo boundary
+	// (C download_to_templated_destination -> gowhatsapp_go_download_attachment), where an UNRECOVERED Go
+	// panic aborts the entire process (no usable trace). Recover here so a bad FB download degrades to a
+	// failed attachment instead of taking every account offline -- and the recovered value finally tells
+	// us WHERE it dies (e.g. inside whatsmeow DownloadFB / refreshMediaConn for the FB e2ee client).
+	defer func() {
+		if r := recover(); r != nil {
+			purple_debug(4, fmt.Sprintf("gometa: download_attachment PANIC recovered: %v", r))
+			retErr = fmt.Errorf("download panic: %v", r)
+		}
+	}()
 	os.MkdirAll(filepath.Dir(local_file_path), 0o755)
 	// Download to memory then write the file ourselves. whatsmeow's DownloadToFile streams to an
 	// *os.File and unconditionally calls fallocate(2), which webOS filesystems (tmpfs/vfat) reject
@@ -186,7 +198,9 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 		if !gok || g.e2ee == nil {
 			return fmt.Errorf("facebook e2ee not connected")
 		}
+		purple_debug(2, fmt.Sprintf("gometa: DownloadFB start (type=%d directPathLen=%d)", fb.mediaType, len(fb.integral.GetDirectPath())))
 		data, err = g.e2ee.DownloadFB(ctx, fb.integral, fb.mediaType)
+		purple_debug(2, fmt.Sprintf("gometa: DownloadFB returned %d bytes err=%v", len(data), err))
 		if err != nil {
 			// Log (do NOT purple_error - that disconnects the account); the caller renders the failure
 			// as a per-message error. directPath/key lengths help distinguish a bad-integral extraction
@@ -204,6 +218,7 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	if err := os.WriteFile(local_file_path, data, 0o644); err != nil {
 		return err
 	}
+	purple_debug(2, fmt.Sprintf("gometa: wrote attachment %d bytes -> %s", len(data), local_file_path))
 	// For videos, also drop the sender's embedded JPEG thumbnail next to the file as "<base>.jpg".
 	// The Messaging app uses it as a <video poster> — a first-view preview that loads as a plain
 	// image (independent of the clip's own data), which lets the player stay preload="none". The old
