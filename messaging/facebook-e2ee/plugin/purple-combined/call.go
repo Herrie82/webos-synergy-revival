@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 	"unsafe"
@@ -69,6 +70,8 @@ var (
 	callMu  sync.Mutex
 	calls   = map[string]*callInfo{} // id -> call
 	dialing bool                     // an outgoing dial is in flight (guards double-dial)
+
+	callPrevGCPercent = 100 // GC threshold saved on call start, restored on disconnect
 )
 
 // startCalling attaches meowcaller to the plugin's already-created whatsmeow client.
@@ -209,6 +212,7 @@ func setCallState(id, state, cause string) {
 				ci.mic.Close()
 			}
 			C.gowhatsapp_call_audio_active(C.int(0)) // close ALSA playback + stop mic capture
+			debug.SetGCPercent(callPrevGCPercent)   // restore normal GC pacing after the call
 			// keep the disconnected call briefly so CallSynergizer logs it, then drop
 			go func(delID string) { time.Sleep(1500 * time.Millisecond); dropCall(delID) }(id)
 		}
@@ -227,6 +231,11 @@ func dropCall(id string) {
 // attachMedia connects a call's mic source and speaker sink, and opens the ALSA
 // playback+capture path so the call is audible on the loudspeaker.
 func attachMedia(ci *callInfo) {
+	// The MLow encoder runs on a tight 60ms budget; a mid-call GC stop-the-world can stall the send
+	// loop and drop a frame. Raise the GC threshold for the call's duration (fewer, and with
+	// GOMAXPROCS>=2 concurrent, collections), then restore it on disconnect. Scoped to calls so the
+	// transport's steady-state memory is unaffected.
+	callPrevGCPercent = debug.SetGCPercent(400)
 	C.gowhatsapp_call_audio_active(C.int(1)) // open playback + start mic capture -> read_mic
 	ci.c.Play(ci.mic)
 	ci.c.Receive(meowcaller.SinkFunc(func(frame []float32) {
