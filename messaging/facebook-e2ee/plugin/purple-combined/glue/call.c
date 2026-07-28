@@ -97,9 +97,10 @@ void gowhatsapp_call_on_state(const char *json) {
 #define MIC_RING 16000 /* ~1s of int16 mono */
 /* The analog IN1L mic captures quiet (~-29dBFS rms), so the peer's AGC has to boost hard, which lifts
  * the noise floor over the voice fundamentals and reads as thin/"tinny". Apply a modest makeup gain
- * (post-NS) to hand the peer a healthier level. 2.0x = +6dB -> ~-23dBFS rms, ~-8dBFS peak (measured):
- * safely below clip. Raise toward ~3x if still quiet, back off if it distorts. */
-#define MIC_GAIN 2.0f
+ * to hand the peer a healthier level. PESQ over the MLow round-trip found 1.5x marginally BEST (3.38
+ * vs 3.35 at unity, 3.33 at 2x) — essentially neutral on quality, so keep it modest for the level lift
+ * (which helps the peer's AGC, a factor the offline PESQ-vs-clean test can't see). */
+#define MIC_GAIN 1.5f
 static snd_pcm_t *g_play = NULL; // peer -> speaker (written from the sink callback)
 static snd_pcm_t *g_cap = NULL;  // mic (read by the capture thread into the ring)
 static pthread_t g_cap_thread;
@@ -139,8 +140,8 @@ static void *audio_thread(void *arg) {
 	fprintf(stderr, "wa-call: audio %s / %s\n",
 	        g_play ? "playback-ok" : "playback-FAIL",
 	        g_cap ? "capture-ok" : "capture-FAIL");
-	// WebRTC noise-suppression on the outbound mic (the webOS voip capture path applies no audiod DSP,
-	// so the raw analog-mic frames carry heavy background noise). Denoise in place before the ring.
+	// Optional outbound-mic NS (default OFF — objectively hurts the MLow codec, see denoise.c). When
+	// disabled these are no-ops: wa_ns_start creates no handle so wa_ns_process passes the mic through.
 	wa_ns_start(WA_RATE);
 	short buf[WA_FRAME];
 	while (g_audio_on && g_cap) {

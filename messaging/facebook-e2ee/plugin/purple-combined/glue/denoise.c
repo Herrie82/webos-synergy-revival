@@ -9,6 +9,14 @@
 // WebRTC float NS processes exactly one 10ms frame (fs/100 samples) per call, in the int16 value
 // range as float (NOT normalized to +/-1). For <=16kHz it is a single band. The WhatsApp mic frame
 // is 320 samples @ 16kHz (20ms) -> 2 sub-frames of 160.
+// NS_ENABLE default OFF. Objective measurement (PESQ MOS over the real MLow round-trip, see
+// scratchpad quality.py) proved the pre-codec WebRTC NS HURTS: it drops MLow output ~1 MOS on clean
+// input (3.35->2.27) AND on noisy input (2.31->1.94), monotonically worse with a higher policy. MLow
+// is CELP with its own internal noise model (mlow/noise.go); pre-suppressing corrupts the signal
+// statistics its LPC/pitch analysis relies on -- double-processing. A real WhatsApp client feeds the
+// mic straight to MLow, so we do too. Kept behind the flag for a future Opus path (Opus is waveform,
+// not parametric, and may benefit from NS).
+#define NS_ENABLE 0
 static NsHandle *g_ns = NULL;
 static int g_frame = 160; // fs/100
 
@@ -46,7 +54,7 @@ static float eq_sample(float x) {
 
 void wa_ns_start(int fs) {
 	wa_ns_stop();
-	if (fs <= 0) return;
+	if (!NS_ENABLE || fs <= 0) return; // NS off -> g_ns stays NULL -> wa_ns_process is a pass-through
 	g_frame = fs / 100;
 	if (EQ_ENABLE) eq_init(fs);
 	g_ns = WebRtcNs_Create();
