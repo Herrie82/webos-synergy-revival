@@ -266,8 +266,12 @@ void callLunaSetCallAudio(bool active)
 {
     tgcLog("callLunaSetCallAudio active=%d g_prv=%p", (int)active, (void*)g_prv);
     if (active) {
+        // NB: "id" MUST be a STRING (not int): PmBtEngine's HFG reads the call id as a string; an int makes
+        // it log "Failed to find call ID" and drop the call, so BT call audio never sets up. See the WhatsApp
+        // plugin (glue/call.c) + the bluetooth-call-audio-sco note. "transport" stays com.palm.telegram (a
+        // 1-byte PmBtEngine patch accepts non-skype transports).
         audiodSend("palm://com.palm.audio/phone/CallStatusUpdate",
-                   "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":1,\"address\":\"telegram\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.telegram\"}]}]}");
+                   "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":\"1\",\"address\":\"telegram\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.telegram\"}]}]}");
         audiodSend("palm://com.palm.audio/phone/setCurrentScenario", "{\"scenario\":\"phone_back_speaker\"}");
     } else {
         audiodSend("palm://com.palm.audio/phone/CallStatusUpdate", "{\"lines\":[]}");

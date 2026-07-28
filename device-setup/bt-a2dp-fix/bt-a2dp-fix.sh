@@ -62,14 +62,12 @@ start_streaming() {
 	luna-send -n 1 palm://com.palm.bluetooth/a2dp/play "{\"address\":\"$a\"}" >/dev/null 2>&1
 }
 
-# Is a VoIP call active right now? Any (protocol-agnostic) call plays through the pulse `pvoip` sink, so a
-# sink-input on it means WhatsApp/Telegram/Signal/etc. is on a call. We must NOT restart the BT stack then:
-# it would drop the call's HFP/SCO audio. Covers all protocols in one check.
+# Is a VoIP call active right now? The IM transport plays call audio via ALSA, which appears as an
+# "ALSA plug-in [imlibpurpletransport]" sink-input. NB: check by that app name, NOT by the pvoip sink
+# index - audiod/module-palm-policy ROUTES the stream to the physical sink (pcm_output) for the active
+# scenario, so its "Sink:" shows pcm_output, not pvoip. Protocol-agnostic (WhatsApp/Telegram/Signal/...).
 call_active() {
-	pv=$(pactl list sinks 2>/dev/null | awk '/^Sink #/{n=$0} /Name: pvoip$/{print n}' | grep -oE '[0-9]+' | head -1)
-	[ -n "$pv" ] || return 1
-	pactl list sink-inputs 2>/dev/null | awk -v idx="$pv" '
-		/^Sink Input #/{s=""} /Sink: /{s=$2; if(s==idx)f=1} END{exit(f?0:1)}'
+	pactl list sink-inputs 2>/dev/null | grep -qi "imlibpurpletransport"
 }
 
 restart_stack() {
@@ -92,9 +90,26 @@ restart_stack() {
 log "started (poll ${POLL}s, stall ${STALL_SECS}s, restart-gap ${MIN_RESTART_GAP}s)"
 prev_state=""
 connected_since=0
+in_call=""
 while true; do
 	st=$(a2dp_state)
 	now=$(date +%s)
+	# During a VoIP call, YIELD the headset to audiod. audiod is designed to pause A2DP and switch the
+	# headset to SCO (phone_bluetooth_sco) when a call is active - but our a2dp/play workaround (for the
+	# media-streaming bug) fights that and starves the call's Bluetooth audio (media_a2dp out-competes
+	# phone_bluetooth_sco). So on a call: pause A2DP ONCE and stand down until the call ends; do NOT touch
+	# A2DP again. Lets audiod do its built-in A2DP<->SCO handoff. (call_active() = a stream on the pvoip
+	# sink; could be swapped for a com.palm.phonecall db8 watch - the more webOS-native signal.)
+	if call_active; then
+		if [ "$in_call" != "1" ]; then
+			in_call=1
+			a=$(a2dp_addr)
+			[ -n "$a" ] && luna-send -n 1 palm://com.palm.bluetooth/a2dp/pause "{\"address\":\"$a\"}" >/dev/null 2>&1
+			log "VoIP call active -> paused A2DP; standing down so audiod owns the headset for the call"
+		fi
+		prev_state="$st"; sleep $POLL; continue
+	fi
+	if [ "$in_call" = "1" ]; then in_call=""; log "call ended -> resuming A2DP media management"; fi
 	case "$st" in
 		"Connected")
 			# entered Connected? start the stall clock
