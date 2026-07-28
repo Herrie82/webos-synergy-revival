@@ -3,6 +3,21 @@
 #include "constants.h"
 #include "pixbuf.h"
 #include "glib/gstdio.h"
+#include <stdio.h>
+#include <unistd.h>
+
+// TEMP diagnostic: append + fsync a line to /media/internal/fbtrace.log so it survives a native crash
+// (buffered stdout is lost on SIGSEGV). Used to see which branch gowhatsapp_handle_attachment takes for
+// incoming Facebook media and why the download isn't triggered.
+static void fb_ctrace(const char *msg) {
+    FILE *f = fopen("/media/internal/fbtrace.log", "a");
+    if (!f) { return; }
+    fputs(msg, f);
+    fputc('\n', f);
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+}
 
 static void gowhatsapp_display_image_inline(gowhatsapp_message_t *gwamsg, const char *local_file_path) {
     const gboolean inline_images = !purple_strequal(purple_account_get_string(gwamsg->account, GOWHATSAPP_HANDLE_IMAGES_OPTION, GOWHATSAPP_HANDLE_IMAGES_CHOICE_BOTH), GOWHATSAPP_HANDLE_IMAGES_CHOICE_ATTACHMENT);
@@ -267,14 +282,25 @@ static gboolean download_to_temporary_directory(gowhatsapp_message_t *gwamsg) {
 void gowhatsapp_handle_attachment(gowhatsapp_message_t *gwamsg) {
     gboolean inline_only = purple_strequal(purple_account_get_string(gwamsg->account, GOWHATSAPP_HANDLE_IMAGES_OPTION, GOWHATSAPP_HANDLE_IMAGES_CHOICE_BOTH), GOWHATSAPP_HANDLE_IMAGES_CHOICE_INLINE);
     inline_only &= pixbuf_is_loadable_image_mimetype(gwamsg->mimetype); // only inline images which can be loaded
+    {
+        const char *tmpl = purple_account_get_string(gwamsg->account, GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_OPTION, GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_DEFAULT);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "C handle_attachment: mime=%s inline_only=%d template=[%s]",
+                 gwamsg->mimetype ? gwamsg->mimetype : "(null)", (int)inline_only, tmpl ? tmpl : "(null)");
+        fb_ctrace(buf);
+    }
     if (inline_only) {
+        fb_ctrace("C branch: inline");
         download_to_temporary_directory(gwamsg);
     } else {
         const char *local_path_template = purple_account_get_string(gwamsg->account, GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_OPTION, GOWHATSAPP_ATTACHMENT_PATH_TEMPLATE_DEFAULT);
         if (local_path_template && local_path_template[0]) {
             // local path set, invoke auto-downloader
+            fb_ctrace("C branch: templated (calling download_to_templated_destination)");
             download_to_templated_destination(gwamsg, local_path_template);
+            fb_ctrace("C branch: templated returned");
         } else {
+            fb_ctrace("C branch: XFER (download_via_xfer_mechanism)");
             download_via_xfer_mechanism(gwamsg);
         }
     }
