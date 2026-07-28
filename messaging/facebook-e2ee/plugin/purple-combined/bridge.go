@@ -151,6 +151,17 @@ func gowhatsapp_go_send_file(account *PurpleAccount, who *C.char, filename *C.ch
 //export gowhatsapp_go_download_attachment
 func gowhatsapp_go_download_attachment(account *PurpleAccount, local_file_path *C.char, download_handle C.uintptr_t) *C.char {
 	handler, ok := handlers[account]
+	if !ok {
+		// webOS: Facebook (E2EE / gometa) accounts are NOT in the WhatsApp handlers[] map -- they live in
+		// gometaHandlers[]. Without this, every incoming FB image/video/document hit "Not connected." here
+		// and download_attachment was NEVER called (no file, silently dropped). download_attachment's FB
+		// branch resolves the media client via gometaHandlers[handler.account] and only reads
+		// handler.account, so a minimal synthesized handler is sufficient for the download.
+		if _, gok := gometaHandlers[account]; gok {
+			handler = &Handler{account: account}
+			ok = true
+		}
+	}
 	if ok {
 		h := cgo.Handle(download_handle)
 		var err error = nil
