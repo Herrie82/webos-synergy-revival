@@ -36,9 +36,11 @@
 #include "denoise.h"
 #include "aec.h"
 
-// Acoustic-echo-cancellation delay hint (render -> mic echo). Tuned against the playback ALSA buffer
-// (WA_PLAY_LATENCY_US) plus the acoustic path; AECM's own estimator refines around it.
-#define WA_AEC_DELAY_MS 120
+// Acoustic-echo-cancellation delay hint (render -> mic echo). MEASURED on-device by cross-correlating
+// the played far-end against the raw mic echo (AEC_CALIB build + scratchpad/echo_delay.py): 179ms,
+// peak/median 17.8 (confident). AECM's own estimator refines around it. Re-run the calibration if the
+// audio path (ALSA buffer sizes, kernel) changes.
+#define WA_AEC_DELAY_MS 179
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
 
@@ -129,6 +131,13 @@ static volatile int g_audio_on = 0;
 static FILE *g_dump_capraw = NULL; // written by the C capture thread
 static FILE *g_dump_send = NULL;   // written by read_mic (Go thread)
 
+/* AEC_CALIB: auto-tune the echo delay. Dumps the far-end reference (what we play) and the raw pre-AEC
+ * mic on the SAME capture-thread clock (via the far-end ring below), and BYPASSES AEC so the mic keeps
+ * the full echo. Cross-correlate the two offline -> the peak lag is the render->capture echo delay to
+ * bake into WA_AEC_DELAY_MS. One calibration call, one measurement. Set 0 for production. */
+#define AEC_CALIB 0
+static FILE *g_dump_farend = NULL;
+
 /* TONE_TEST: replace the mic with a synthetic, phase-continuous 1kHz sine in the capture thread. A
  * known steady signal makes "breaking up" unambiguous: the send dump / peer / meowcaller media_out
  * rms must be a rock-steady tone. Any amplitude modulation, gaps, or pitch error isolates WHERE the
@@ -141,6 +150,32 @@ static short g_mic[MIC_RING];
 static int g_mic_head = 0, g_mic_tail = 0; // tail=write, head=read
 static pthread_mutex_t g_mic_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_mic_cv = PTHREAD_COND_INITIALIZER;
+
+/* Far-end ring (calibration only): on_speaker pushes what we play; the capture thread drains it in
+ * lockstep with the mic so the two dumps share one clock. */
+static short g_far[MIC_RING];
+static int g_far_head = 0, g_far_tail = 0;
+static pthread_mutex_t g_far_mx = PTHREAD_MUTEX_INITIALIZER;
+static void far_push(const short *f, int n) {
+	pthread_mutex_lock(&g_far_mx);
+	for (int i = 0; i < n; i++) {
+		int nt = (g_far_tail + 1) % MIC_RING;
+		if (nt == g_far_head) g_far_head = (g_far_head + 1) % MIC_RING; // drop oldest
+		g_far[g_far_tail] = f[i];
+		g_far_tail = nt;
+	}
+	pthread_mutex_unlock(&g_far_mx);
+}
+static void far_pull(short *out, int n) { // pull n samples, zero-padding if the ring underruns
+	pthread_mutex_lock(&g_far_mx);
+	int i = 0;
+	while (i < n && g_far_head != g_far_tail) {
+		out[i++] = g_far[g_far_head];
+		g_far_head = (g_far_head + 1) % MIC_RING;
+	}
+	pthread_mutex_unlock(&g_far_mx);
+	for (; i < n; i++) out[i] = 0;
+}
 
 static int mic_avail(void) {
 	int a = g_mic_tail - g_mic_head;
@@ -190,7 +225,13 @@ static void *audio_thread(void *arg) {
 			}
 		}
 		if (g_dump_capraw) fwrite(buf, 2, (size_t)r, g_dump_capraw); // raw live mic (or injected tone), pre-gain
-		wa_aec_process(buf, (int)r); // remove the far-end echo (near-end speech survives) before encode
+		if (g_dump_farend) { // calibration: dump the far-end reference on the mic clock (drain the ring)
+			short fbuf[WA_FRAME];
+			far_pull(fbuf, (int)r);
+			fwrite(fbuf, 2, (size_t)r, g_dump_farend);
+		}
+		if (!AEC_CALIB)
+			wa_aec_process(buf, (int)r); // remove the far-end echo (near-end speech survives) before encode
 		wa_ns_process(buf, (int)r);
 		pthread_mutex_lock(&g_mic_mx);
 		for (int i = 0; i < r; i++) {
@@ -243,6 +284,7 @@ void gowhatsapp_call_on_speaker(const float *frame, int n) {
 		buf[i] = (short)(f * 32767.0f);
 	}
 	wa_aec_farend(buf, n); // this is exactly what hits the loudspeaker -> AECM's echo reference
+	if (AEC_CALIB) far_push(buf, n); // calibration: mirror it into the ring for the aligned dump
 	snd_pcm_sframes_t w = snd_pcm_writei(h, buf, n);
 	if (w < 0) snd_pcm_recover(h, (int)w, 1);
 }
@@ -350,6 +392,12 @@ void gowhatsapp_call_audio_active(int on) {
 			g_dump_send = fopen("/media/internal/wacall_send.raw", "wb");
 			fprintf(stderr, "wa-call: CALL_DUMP capraw=%p send=%p\n", (void*)g_dump_capraw, (void*)g_dump_send);
 		}
+		if (AEC_CALIB) { // echo-delay calibration: aligned mic + far-end dumps, AEC bypassed
+			g_dump_capraw = fopen("/media/internal/wacall_capraw.raw", "wb");
+			g_dump_farend = fopen("/media/internal/wacall_farend.raw", "wb");
+			g_far_head = g_far_tail = 0;
+			fprintf(stderr, "wa-call: AEC_CALIB mic=%p farend=%p\n", (void*)g_dump_capraw, (void*)g_dump_farend);
+		}
 		g_idle_add(audiod_status_idle, GINT_TO_POINTER(1));
 		pthread_create(&g_cap_thread, NULL, audio_thread, NULL);
 	} else if (!on && g_audio_on) {
@@ -370,6 +418,7 @@ void gowhatsapp_call_audio_active(int on) {
 		// capture thread joined + Go has stopped pulling: safe to close the dump files
 		if (g_dump_capraw) { fclose(g_dump_capraw); g_dump_capraw = NULL; }
 		if (g_dump_send)   { fclose(g_dump_send);   g_dump_send = NULL; }
+		if (g_dump_farend) { fclose(g_dump_farend); g_dump_farend = NULL; }
 	}
 }
 
