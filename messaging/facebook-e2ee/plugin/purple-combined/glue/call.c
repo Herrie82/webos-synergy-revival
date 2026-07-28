@@ -27,10 +27,18 @@
 #include <math.h>
 #include <dirent.h>
 #include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/input.h> // EVIOCGSW / SW_HEADPHONE_INSERT — detect a plugged headset for call routing
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 #include "denoise.h"
+#include "aec.h"
+
+// Acoustic-echo-cancellation delay hint (render -> mic echo). Tuned against the playback ALSA buffer
+// (WA_PLAY_LATENCY_US) plus the acoustic path; AECM's own estimator refines around it.
+#define WA_AEC_DELAY_MS 120
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
 
@@ -165,6 +173,7 @@ static void *audio_thread(void *arg) {
 	// Optional outbound-mic NS (default OFF — objectively hurts the MLow codec, see denoise.c). When
 	// disabled these are no-ops: wa_ns_start creates no handle so wa_ns_process passes the mic through.
 	wa_ns_start(WA_RATE);
+	wa_aec_start(WA_RATE, WA_AEC_DELAY_MS); // cancel the loudspeaker echo from the mic (speakerphone)
 	short buf[WA_FRAME];
 	while (g_audio_on && g_cap) {
 		snd_pcm_sframes_t r = snd_pcm_readi(g_cap, buf, WA_FRAME);
@@ -181,6 +190,7 @@ static void *audio_thread(void *arg) {
 			}
 		}
 		if (g_dump_capraw) fwrite(buf, 2, (size_t)r, g_dump_capraw); // raw live mic (or injected tone), pre-gain
+		wa_aec_process(buf, (int)r); // remove the far-end echo (near-end speech survives) before encode
 		wa_ns_process(buf, (int)r);
 		pthread_mutex_lock(&g_mic_mx);
 		for (int i = 0; i < r; i++) {
@@ -193,6 +203,7 @@ static void *audio_thread(void *arg) {
 		pthread_mutex_unlock(&g_mic_mx);
 	}
 	wa_ns_stop();
+	wa_aec_stop();
 	return NULL;
 }
 
@@ -231,6 +242,7 @@ void gowhatsapp_call_on_speaker(const float *frame, int n) {
 		if (f < -1.0f) f = -1.0f;
 		buf[i] = (short)(f * 32767.0f);
 	}
+	wa_aec_farend(buf, n); // this is exactly what hits the loudspeaker -> AECM's echo reference
 	snd_pcm_sframes_t w = snd_pcm_writei(h, buf, n);
 	if (w < 0) snd_pcm_recover(h, (int)w, 1);
 }
@@ -249,16 +261,56 @@ static void audiod_send(const char *uri, const char *payload) {
 		LSErrorFree(&e);
 	}
 }
+// Is a wired headset/headphone plugged in right now? Read the kernel switch state directly (EVIOCGSW on
+// the "headset" input device) — the ground truth. audiod's own /sys/devices/platform/headset-detect nodes
+// don't exist on this custom kernel, so we can't rely on it choosing the route; we pick the scenario
+// ourselves. We key on SW_HEADPHONE_INSERT only (audio out present); the headset's own mic (bit
+// SW_MICROPHONE_INSERT) is deliberately ignored so capture always stays on the tablet mic (see below).
+#ifndef SW_HEADPHONE_INSERT
+#define SW_HEADPHONE_INSERT 0x02
+#endif
+#ifndef SW_MAX
+#define SW_MAX 0x0f
+#endif
+static int wa_headset_present(void) {
+	int present = 0;
+	for (int i = 0; i < 32; i++) {
+		char path[32];
+		snprintf(path, sizeof path, "/dev/input/event%d", i);
+		int fd = open(path, O_RDONLY | O_NONBLOCK);
+		if (fd < 0) continue;
+		char name[64] = "";
+		if (ioctl(fd, EVIOCGNAME(sizeof name), name) >= 0 && strcmp(name, "headset") == 0) {
+			unsigned long sw[(SW_MAX / (sizeof(long) * 8)) + 1];
+			memset(sw, 0, sizeof sw);
+			if (ioctl(fd, EVIOCGSW(sizeof sw), sw) >= 0) {
+				present = (sw[SW_HEADPHONE_INSERT / (sizeof(long) * 8)]
+				           >> (SW_HEADPHONE_INSERT % (sizeof(long) * 8))) & 1;
+			}
+			close(fd);
+			return present; // the "headset" device is unique — done
+		}
+		close(fd);
+	}
+	return present;
+}
+
 static gboolean audiod_status_idle(gpointer d) {
 	int active = GPOINTER_TO_INT(d);
 	if (active) {
 		audiod_send("palm://com.palm.audio/phone/CallStatusUpdate",
 		            "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":1,\"address\":\"whatsapp\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.whatsapp\"}]}]}");
-		// The TouchPad has NO earpiece/receiver — default call audio to the LOUDSPEAKER
-		// (phone_back_speaker). audiod auto-switches to headset / Bluetooth when present.
+		// The TouchPad has NO earpiece/receiver, so with nothing plugged in we force the LOUDSPEAKER
+		// (phone_back_speaker) — audiod would otherwise default an active phone call to the (silent)
+		// earpiece scenario. When a headset IS plugged in, use phone_headset: it routes DAC -> headphone
+		// while leaving the CAPTURE path untouched (verified: the mic mixer state is byte-identical between
+		// the two scenarios), so playback moves to the headset but the mic stays on the tablet — exactly
+		// what we want (and headsets here are typically 3-pole/no-mic anyway).
+		int headset = wa_headset_present();
 		audiod_send("palm://com.palm.audio/phone/setCurrentScenario",
-		            "{\"scenario\":\"phone_back_speaker\"}");
-		fprintf(stderr, "wa-call: audiod voip call ON (loudspeaker)\n");
+		            headset ? "{\"scenario\":\"phone_headset\"}"
+		                    : "{\"scenario\":\"phone_back_speaker\"}");
+		fprintf(stderr, "wa-call: audiod voip call ON (%s)\n", headset ? "headset" : "loudspeaker");
 	} else {
 		audiod_send("palm://com.palm.audio/phone/CallStatusUpdate", "{\"lines\":[]}");
 		fprintf(stderr, "wa-call: audiod voip call OFF\n");

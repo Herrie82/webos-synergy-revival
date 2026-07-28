@@ -50,7 +50,7 @@ GCFLAGS="$CFLAGS $CPPFLAGS -fPIC -DPURPLE_PLUGINS -DPLUGIN_VERSION=$VERSION \
 OBJS=()
 for s in init login qrcode bridge process_message display_message groups blist \
          send_message handle_attachment send_file presence options receipt pixbuf commands \
-         call denoise gometa_init; do
+         call denoise aec gometa_init; do
 	echo "  CC glue/$s.c"; $CC $GCFLAGS -c "$GLUE/$s.c" -o "$BUILD/glue_$s.o"; OBJS+=("$BUILD/glue_$s.o")
 done
 # root C files (bridge/constants = whatsmeow; gometabridge = facebook dispatch)
@@ -81,8 +81,18 @@ NS_SRCS=(
 	common_audio/signal_processing/spl_sqrt.c common_audio/signal_processing/sqrt_of_one_minus_x_squared.c
 	common_audio/signal_processing/vector_scaling_operations.c common_audio/signal_processing/dot_product_with_scale.cc
 	common_audio/third_party/fft4g/fft4g.c
+	common_audio/signal_processing/complex_bit_reverse.c common_audio/ring_buffer.c
+	common_audio/third_party/spl_sqrt_floor/spl_sqrt_floor.c
 	modules/audio_processing/ns/ns_core.c modules/audio_processing/ns/noise_suppression.c
 )
+# AECM (mobile acoustic echo canceller) C++ sources for glue/aec.c. C path only (no WEBRTC_HAS_NEON),
+# so no cpu_features/NEON-core dep; shares the signal_processing objects above.
+AEC_SRCS=(
+	modules/audio_processing/aecm/aecm_core.cc modules/audio_processing/aecm/aecm_core_c.cc
+	modules/audio_processing/aecm/echo_control_mobile.cc
+	modules/audio_processing/utility/delay_estimator.cc modules/audio_processing/utility/delay_estimator_wrapper.cc
+)
+AECFLAGS="-O2 -fPIC -std=c++11 -DNDEBUG -DWEBRTC_POSIX -DWEBRTC_APM_DEBUG_DUMP=0 -I$WEBRTC_DSP"
 WOBJS=()
 for s in "${NS_SRCS[@]}"; do
 	o="$BUILD/warns_$(echo "$s" | tr '/.' '__').o"
@@ -90,6 +100,11 @@ for s in "${NS_SRCS[@]}"; do
 		*.cc) arm-unknown-linux-gnueabi-g++ $NSFLAGS -c "$WEBRTC_DSP/$s" -o "$o" ;;
 		*)    $CC $NSFLAGS -c "$WEBRTC_DSP/$s" -o "$o" ;;
 	esac
+	WOBJS+=("$o")
+done
+for s in "${AEC_SRCS[@]}"; do
+	o="$BUILD/warns_$(echo "$s" | tr '/.' '__').o"
+	arm-unknown-linux-gnueabi-g++ $AECFLAGS -c "$WEBRTC_DSP/$s" -o "$o"
 	WOBJS+=("$o")
 done
 arm-unknown-linux-gnueabi-ar rcs "$BUILD/libwarns.a" "${WOBJS[@]}"
