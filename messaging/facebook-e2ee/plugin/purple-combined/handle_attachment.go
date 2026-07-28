@@ -171,6 +171,14 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	// The in-memory Download() path does io.ReadAll (no fallocate, no *os.File) and verifies the HMAC.
 	var data []byte
 	var err error
+	// This runs SYNCHRONOUSLY on the whatsmeow read-loop goroutine (purple_handle_attachment ->
+	// download_to_templated_destination -> gowhatsapp_go_download_attachment is a blocking cgo call).
+	// context.TODO() has no deadline, so a failing/stalled download (esp. FB E2EE, whose retry-across-
+	// hosts can spin) blocked the read loop for minutes: no pings went out, the transport was declared
+	// dead and got killed + respawned - wedging ALL accounts. Bound every download so a bad media fetch
+	// surfaces as a per-message error instead of taking the whole transport down.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	if fb, ok := message.(*fbDownloadable); ok {
 		// Facebook E2EE (armadillo) media: download via the FB e2ee whatsmeow client with the explicit
 		// media type (a different client + endpoint than WhatsApp's handler.client).
@@ -178,9 +186,17 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 		if !gok || g.e2ee == nil {
 			return fmt.Errorf("facebook e2ee not connected")
 		}
-		data, err = g.e2ee.DownloadFB(context.TODO(), fb.integral, fb.mediaType)
+		data, err = g.e2ee.DownloadFB(ctx, fb.integral, fb.mediaType)
+		if err != nil {
+			// Log (do NOT purple_error - that disconnects the account); the caller renders the failure
+			// as a per-message error. directPath/key lengths help distinguish a bad-integral extraction
+			// (wrong nesting) from a genuine network/HMAC failure.
+			purple_debug(4, fmt.Sprintf("gometa: DownloadFB failed (type=%d directPathLen=%d keyLen=%d fileSHA=%d encSHA=%d): %v",
+				fb.mediaType, len(fb.integral.GetDirectPath()), len(fb.integral.GetMediaKey()),
+				len(fb.integral.GetFileSHA256()), len(fb.integral.GetFileEncSHA256()), err))
+		}
 	} else {
-		data, err = handler.client.Download(context.TODO(), message)
+		data, err = handler.client.Download(ctx, message)
 	}
 	if err != nil {
 		return err
@@ -233,6 +249,8 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 			wa = t.GetIntegral().GetTransport()
 			caption = t.GetAncillary().GetCaption().GetText()
 			mediaType, dataType = whatsmeow.MediaVideo, C.gowhatsapp_attachment_type_video
+		} else {
+			purple_debug(4, fmt.Sprintf("gometa: VideoMessage.Decode failed: %v", err))
 		}
 	} else if im := content.GetImageMessage(); im != nil {
 		if t, err := im.Decode(); err == nil {
@@ -258,6 +276,9 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 	if integral == nil {
 		return false
 	}
+	purple_debug(2, fmt.Sprintf("gometa: E2EE media type=%d mime=%q len=%d directPathLen=%d keyLen=%d encSHA=%d -> queueing download",
+		mediaType, wa.GetAncillary().GetMimetype(), wa.GetAncillary().GetFileLength(),
+		len(integral.GetDirectPath()), len(integral.GetMediaKey()), len(integral.GetFileEncSHA256())))
 	mimetype := wa.GetAncillary().GetMimetype()
 	length := wa.GetAncillary().GetFileLength()
 	hash := hex.EncodeToString(integral.GetFileSHA256())
