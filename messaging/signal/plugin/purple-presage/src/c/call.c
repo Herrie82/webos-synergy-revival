@@ -280,6 +280,24 @@ void callLunaShutdown(PurpleAccount *account)
     /* keep the service registered for the process lifetime (other accounts may use it) */
 }
 
+/* Tell audiod about the call so it sets up the phone-audio scenario AND - with the PmBtEngine HFG
+ * transport-gate patch (device-setup/bt-hfg-call-patch) - so Bluetooth call audio can route to a BT
+ * headset. Mirrors WhatsApp (facebook-e2ee glue/call.c) and Telegram (tdlib-purple call-luna.cpp).
+ * NB: the call "id" MUST be a STRING - PmBtEngine's HFG reads it as one; an int makes it log
+ * "Failed to find call ID" and drop the call. transport stays com.palm.signal (the patch accepts
+ * non-skype transports). Fire-and-forget on the private (trusted) handle. */
+static bool audiod_reply(LSHandle *sh, LSMessage *m, void *ctx) { (void)sh; (void)m; (void)ctx; return true; }
+static void audiod_send(const char *uri, const char *payload)
+{
+    if (!g_prv) return;
+    LSError err; LSErrorInit(&err);
+    LSMessageToken tok;
+    if (!LSCallOneReply(g_prv, uri, payload, audiod_reply, NULL, &tok, &err)) {
+        purple_debug_warning(PLUGIN_NAME, "audiod %s: %s\n", uri, err.message);
+        LSErrorFree(&err);
+    }
+}
+
 /* heap-marshalled call event: the Rust receive loop runs on a worker pthread, so (like
  * presage_append_message) we copy the data and hop to the main thread before touching LS2. */
 typedef struct {
@@ -342,6 +360,17 @@ static gboolean call_state_apply(gpointer data)
             if (LSErrorIsSet(&err)) { purple_debug_warning(PLUGIN_NAME, "call pushState prv: %s\n", err.message); LSErrorFree(&err); }
         }
         g_free(payload);
+    }
+
+    /* audiod: a live call needs the phone-audio scenario (and, with the PmBtEngine patch, lets BT call
+     * audio reach a headset). On "active" -> active CallStatusUpdate + scenario; on teardown -> empty
+     * lines. Must run BEFORE the idle reset below (which clears g_state). */
+    if (g_strcmp0(g_state, "active") == 0) {
+        audiod_send("palm://com.palm.audio/phone/CallStatusUpdate",
+                    "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":\"sig\",\"address\":\"signal\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.signal\"}]}]}");
+        audiod_send("palm://com.palm.audio/phone/setCurrentScenario", "{\"scenario\":\"phone_back_speaker\"}");
+    } else if (g_strcmp0(g_state, "disconnected") == 0) {
+        audiod_send("palm://com.palm.audio/phone/CallStatusUpdate", "{\"lines\":[]}");
     }
 
     /* after a terminal state, return to idle so the next call starts clean */

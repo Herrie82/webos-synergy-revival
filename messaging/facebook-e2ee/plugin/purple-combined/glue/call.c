@@ -340,8 +340,12 @@ static int wa_headset_present(void) {
 static gboolean audiod_status_idle(gpointer d) {
 	int active = GPOINTER_TO_INT(d);
 	if (active) {
+		// NB: "id" MUST be a STRING, not an integer. PmBtEngine's HFG (CurrentCallsCallback ->
+		// PmBtCreateCallStatusMessage) reads the call "id" as a string via PmBtJsonGetData; an integer makes
+		// it log "Failed to find call ID" and drop the call, so BT call audio never sets up. (Skype's call id
+		// was a string.) "transport" stays our real service (a 1-byte PmBtEngine patch accepts non-skype).
 		audiod_send("palm://com.palm.audio/phone/CallStatusUpdate",
-		            "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":1,\"address\":\"whatsapp\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.whatsapp\"}]}]}");
+		            "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":\"1\",\"address\":\"whatsapp\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.whatsapp\"}]}]}");
 		// The TouchPad has NO earpiece/receiver, so with nothing plugged in we force the LOUDSPEAKER
 		// (phone_back_speaker) — audiod would otherwise default an active phone call to the (silent)
 		// earpiece scenario. When a headset IS plugged in, use phone_headset: it routes DAC -> headphone
