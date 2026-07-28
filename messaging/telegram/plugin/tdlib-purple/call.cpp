@@ -24,17 +24,21 @@ bool initiateCall(int64_t userId, TdAccountData &account, TdTransceiver &transce
     // 8823012961), so this MUST be 64-bit - an int32_t param truncated large ids to a garbage user and
     // the call silently never started (no state pushed -> Phone app stuck on the video tab).
 #ifndef NoVoip
-    if (!account.hasActiveCall()) {
+    if (!account.hasActiveCall() && !account.isCallInitiating()) {
+        account.beginCallInitiation();   // synchronous: block a 2nd dial arriving in the same tick
         td::td_api::object_ptr<td::td_api::createCall> callRequest = td::td_api::make_object<td::td_api::createCall>();
         callRequest->user_id_  = userId;
         callRequest->protocol_ = getCallProtocol();
         transceiver.sendQuery(std::move(callRequest), nullptr);
         return true;   // call request sent; report success so the dial isn't logged as FAILED TO DIAL
-    } else
-        // TRANSLATOR: Dialog title of an error message.
-        purple_notify_warning(account.purpleAccount, _("Voice call"),
-                              // TRANSLATOR: Dialog content of an error message.
-                              _("Cannot start new call, already in another call"), NULL);
+    } else {
+        // A call is already active or being initiated. This is the expected dedup of the dialer's
+        // double-dial (it fires both the resolved "id<n>" and the raw phone number for one contact),
+        // so drop the duplicate silently instead of popping "already in another call".
+        tgcLog("initiateCall: dropping duplicate dial to user %lld (call already active/initiating)",
+               (long long)userId);
+        return false;
+    }
 #endif
 
     return false;
@@ -115,9 +119,12 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     // in-engine WebRTC DSP -- it's already compiled in (Makefile.am builds webrtc_dsp with -DWEBRTC_NS_FLOAT).
     // NS suppresses the analog-mic background-noise floor (the webOS capture path applies no audiod DSP on
     // the voip source, unlike the recording path voice notes use); AGC normalizes the quiet/uneven level.
-    // AEC stays OFF for now: on a LOUDSPEAKER call the echo canceller can over-cancel the mic to silence,
-    // and it needs the speaker-reference wired first -- enable only once that's in place.
-    config.enableAEC = false;
+    // AEC ON: the TouchPad has no earpiece so calls run on the loudspeaker and the mic re-captures the
+    // far-end (the peer hears themselves). libtgvoip's AEC3 owns BOTH the render and capture streams
+    // inside the VoIPController, so it gets the speaker reference natively (no manual wiring/delay hint,
+    // unlike the WhatsApp AECM path). NS suppresses the analog-mic noise floor (safe here: Opus is a
+    // waveform codec, so NS helps it, unlike WhatsApp's parametric MLow); AGC normalizes the level.
+    config.enableAEC = true;
     config.enableNS  = true;
     config.enableAGC = true;
     // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
@@ -197,6 +204,11 @@ static void notifyCallError(const td::td_api::callStateError &error, const std::
 void updateCall(const td::td_api::call &call, TdAccountData &account, TdTransceiver &transceiver)
 {
     std::string buddyName = getPurpleUserName(getUserId(call), account);
+    // For an OUTGOING call, report the card under the exact address the dialer dialed (it keyed its
+    // card to that string). A phone-number dial gets resolved to this user's "id<n>", so pushing under
+    // buddyName would split from the dialer's "+E.164" card and leave a phantom "Connecting" one.
+    const std::string &dialedAddr = account.getCallDialedAddress();
+    std::string peerAddr = (call.is_outgoing_ && !dialedAddr.empty()) ? dialedAddr : buddyName;
 
 #ifndef NoVoip
     // webOS (Path C): the call UI + audio is the stock Phone app via com.palm.telegram.call (see
@@ -243,7 +255,7 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             // The stock Phone app's CallSynergizer keys the "dialing/ringback" UI off the line
             // state string STATES.DIALING == "dialing" (not "outgoing"); send that so the call
             // card shows "Connecting..." while the outgoing call is pending, same as WhatsApp.
-            callLunaPushState("dialing", buddyName.c_str(),
+            callLunaPushState("dialing", peerAddr.c_str(),
                               account.getDisplayName(getUserId(call)).c_str(), true, NULL);
         } else if (call.id_ != account.getActiveCallId()) {
             // This would happen if there was no active call when sending createCall, but there is one
@@ -256,7 +268,7 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             discardCall(call.id_, transceiver);
             account.removeActiveCall();
         } else {
-            callLunaPushState("active", buddyName.c_str(),
+            callLunaPushState("active", peerAddr.c_str(),
                               account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, NULL);
         }
     }
@@ -275,7 +287,7 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
         } else if (call.state_->get_id() == td::td_api::callStateError::ID) {
             cause = "error";
         }
-        callLunaPushState("disconnected", buddyName.c_str(),
+        callLunaPushState("disconnected", peerAddr.c_str(),
                           account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, cause);
         if (call.state_->get_id() == td::td_api::callStateError::ID) {
             const td::td_api::callStateError &error = static_cast<const td::td_api::callStateError &>(*call.state_);

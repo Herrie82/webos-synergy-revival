@@ -63,6 +63,8 @@ public:
     void cancelUpload(PurpleXfer *xfer);
 
     bool startVoiceCall(const char *buddyName);
+    // async result of searchUserByPhoneNumber when a bare phone number is dialed (see startVoiceCall)
+    void       voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     bool terminateCall(PurpleConversation *conv);
     void acceptCurrentCall();   // accept the pending incoming call (driven by com.palm.telegram.call)
     void hangupVoiceCall();     // end the active call
@@ -167,6 +169,9 @@ private:
     // through a "Telegram" IM conversation and capturing the user's reply in
     // tgprpl_send_im -> sendMessage. This tracks which auth value we're waiting for.
     AuthInput             m_authInputPending = AuthInput::None;
+    // the +E.164 being resolved by searchUserByPhoneNumber for an outgoing call; used to push a
+    // clean "disconnected" state (so the Phone app card doesn't hang) if the number isn't on Telegram
+    std::string           m_pendingCallPhone;
 
     PurpleAccount        *m_account;
     TdTransceiver         m_transceiver;

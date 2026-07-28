@@ -1024,6 +1024,7 @@ bool TdAccountData::hasActiveCall()
 
 void TdAccountData::setActiveCall(int32_t callId)
 {
+    m_callInitiating = false;   // the call really started; drop the synchronous initiation guard
     if (!m_callData) {
         m_callData = std::make_unique<tgvoip::VoIPController>();
         m_callId = callId;
@@ -1039,6 +1040,8 @@ void TdAccountData::removeActiveCall()
 {
     m_callData.reset();
     m_callId = 0;
+    m_callInitiating = false;   // failed/ended: allow a fresh dial
+    m_callDialedAddress.clear();
 }
 
 void TdAccountData::addPendingReadReceipt(ChatId chatId, MessageId messageId)

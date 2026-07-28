@@ -17,7 +17,7 @@ source /home/herrie/webos/wpe/env-glibc-gcc125.sh 2>/dev/null || true
 
 # -fPIC: the .a gets linked into libtelegram-tdlib.so (a shared object).
 ARCH="-march=armv7-a -mtune=cortex-a8 -mfpu=neon -mfloat-abi=softfp -O2 -fPIC"
-export CPPFLAGS="-I$ST/include -I$ST/include/opus -DTGVOIP_NO_DSP"
+export CPPFLAGS="-I$ST/include -I$ST/include/opus"
 export CFLAGS="$ARCH -D_DEFAULT_SOURCE"
 export CXXFLAGS="$ARCH -std=c++14"
 export LDFLAGS="-L$ST/lib -Wl,-rpath-link,$ST/lib"
@@ -27,7 +27,7 @@ export PKG_CONFIG_LIBDIR=$ST/lib/pkgconfig
 cd "$SRC"
 if [ "$1" = "-r" ] || [ ! -f Makefile ]; then
 	echo "=== configure ==="
-	./configure --host=$HOST --without-pulse --with-alsa --disable-dsp \
+	./configure --host=$HOST --without-pulse --with-alsa \
 		--enable-static --disable-shared --prefix="$PREFIX"
 fi
 echo "=== build ==="

@@ -2542,9 +2542,30 @@ bool PurpleTdClient::startVoiceCall(const char *buddyName)
     // call fails with "User not found" / the Phone app shows "Call cannot be placed through this
     // device". createCall only needs the numeric user id, so when the buddy name parses to one, call
     // it directly; tdlib resolves the user server-side. Named/phone dials still go the lookup route.
+    // Remember exactly what the dialer dialed so updateCall can report the call under this same
+    // address (the Phone app keyed its card to it). Without this a phone-number dial resolves to an
+    // "id<n>" and the plugin's card splits from the dialer's -> two cards, one stuck "Connecting".
+    if (buddyName)
+        m_data.setCallDialedAddress(buddyName);
+
     UserId directId = purpleBuddyNameToUserId(buddyName);
     if (directId.valid())
         return initiateCall(directId.value(), m_data, m_transceiver);
+
+    // The dialer hands us a bare phone number (e.g. "+31621489831") when a number is typed on the
+    // dialpad, or dialed for a contact that isn't linked to a Telegram "id<n>" buddy. Telegram calls
+    // are placed on a numeric user id, not a phone number, so resolve it server-side first
+    // (only_local_=false lets a NON-contact number resolve too). initiateCall's own guard dedups this
+    // against a simultaneous "id<n>" dial for the same contact, so the raw-number call is dropped
+    // once the resolved-id call is in flight (the double-dial collapses to one).
+    if (buddyName && (buddyName[0] == '+')) {
+        m_pendingCallPhone = buddyName;
+        auto request = td::td_api::make_object<td::td_api::searchUserByPhoneNumber>();
+        request->phone_number_ = buddyName;
+        request->only_local_   = false;
+        m_transceiver.sendQuery(std::move(request), &PurpleTdClient::voiceCallPhoneLookupResponse);
+        return true;   // resolution in progress; report success so the dial isn't logged as FAILED
+    }
 
     std::vector<const td::td_api::user *> users = getUsersByPurpleName(buddyName, m_data, "start voice call");
     if (users.size() != 1) {
@@ -2559,6 +2580,29 @@ bool PurpleTdClient::startVoiceCall(const char *buddyName)
     }
 
     return initiateCall(users.front()->id_, m_data, m_transceiver);
+}
+
+void PurpleTdClient::voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+{
+    std::string phone = m_pendingCallPhone;
+    m_pendingCallPhone.clear();
+
+    if (object && (object->get_id() == td::td_api::user::ID)) {
+        const td::td_api::user &user = static_cast<const td::td_api::user &>(*object);
+        // initiateCall dedups against an in-flight "id<n>" dial for the same contact (double-dial),
+        // and starts the call otherwise.
+        if (!initiateCall(user.id_, m_data, m_transceiver))
+            // Deduped: the resolved-id dial for this same contact is already ringing. Clear this
+            // raw-number card (keyed by its own +E.164 address) so the double-dial collapses to one.
+            callLunaPushState("disconnected", phone.c_str(), NULL, true, "normal");
+        return;
+    }
+
+    // Not on Telegram (or lookup failed): fail cleanly so the Phone app's "Connecting" card clears
+    // instead of hanging forever.
+    purple_debug_misc(config::pluginId, "voice call: phone %s not resolvable on Telegram: %s\n",
+                      phone.c_str(), getDisplayedError(object).c_str());
+    callLunaPushState("disconnected", phone.c_str(), NULL, true, "error");
 }
 
 bool PurpleTdClient::terminateCall(PurpleConversation *conv)

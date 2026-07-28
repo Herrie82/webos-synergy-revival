@@ -74,7 +74,7 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 </thead>
 <tbody>
 <tr><td><b>Teams</b> (<code>purple-teams</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>🟡</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Telegram</b> (<code>tdlib-purple</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Signal</b> (<code>purple-presage</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
@@ -87,8 +87,8 @@ Notes:
 - **IM ✅** means the ARM plugin cross-compiles and loads and the connector rides the proven
   libpurple 2.14 + ssl-openssl (Teams-port) backend. **Teams, Telegram, Discord, WhatsApp and
   Facebook** are the active connectors verified end-to-end on device (IM + reactions + replies);
-  **Teams** now also sends and receives image and audio attachments on device. **WhatsApp** also has
-  working voice calls. **Signal** is enabled again (the crash-loop is contained
+  **Teams** now also sends and receives image and audio attachments on device. **WhatsApp** and
+  **Telegram** both have working two-way voice calls (place and answer). **Signal** is enabled again (the crash-loop is contained
   by the transport try/catch) with IM + reactions + voice notes working, though not every capability
   is re-verified; **Google Chat** is built but largely untested on device.
 - **Replies** render as an inline quote card above the message (not the raw `> …` / `┌──@name`
@@ -171,8 +171,8 @@ Notes:
   that open in the native viewers — see [`messaging/README.md`](messaging/README.md). (Documents are
   not a separate column above; they ride the same file-transfer path as the other attachments.)
 - **Telegram** has the most advanced calling: TDLib signaling + libtgvoip media bridged to the
-  stock Phone app — **calls connect with audio on device**; outbound mic capture is still being
-  brought up. No video.
+  stock Phone app — **incoming and outgoing calls connect with two-way audio on device** (outbound
+  mic capture is now working, so placed calls carry your voice both ways). No video.
 - **Signal** is **enabled again**: `libpresage` used to SIGABRT-crash-loop the whole transport on
   login (uncaught "Couldn't find prpl" panic), taking every account offline; the transport-level
   try/catch around account creation now contains that so Signal loads alongside the others. **IM,

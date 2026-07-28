@@ -415,6 +415,21 @@ public:
     int32_t                    getActiveCallId() const { return m_callId; }
     tgvoip::VoIPController    *getCallData();
     void                       removeActiveCall();
+    // createCall is async: hasActiveCall() only turns true once callStatePending arrives, so two
+    // dials fired in the same tick (e.g. the dialer sending both a resolved "id<n>" and the raw
+    // phone number for the same contact) both pass the guard and start two calls. This flag is set
+    // synchronously the instant a dial begins (createCall sent OR a phone->user lookup started) so
+    // the second dial is rejected. Cleared when the call really starts (setActiveCall) or fails.
+    bool                       isCallInitiating() const { return m_callInitiating; }
+    void                       beginCallInitiation() { m_callInitiating = true; }
+    void                       endCallInitiation()   { m_callInitiating = false; }
+    // The exact address the dialer dialed for the current OUTGOING call (e.g. "+31621489831" when a
+    // phone number was typed, or "id<n>" for a contact). The Phone app creates its call card keyed to
+    // that string; if the plugin then reports the call under the *resolved* "id<n>" (phone numbers get
+    // resolved via searchUserByPhoneNumber) the two don't match and TWO cards show. Push state under
+    // this dialed address so the plugin's card merges with the dialer's instead of splitting.
+    void                       setCallDialedAddress(const std::string &a) { m_callDialedAddress = a; }
+    const std::string         &getCallDialedAddress() const { return m_callDialedAddress; }
 
     PendingMessageQueue        pendingMessages;
 
@@ -490,6 +505,8 @@ private:
     // Voice call data
     std::unique_ptr<tgvoip::VoIPController> m_callData;
     int32_t                                 m_callId;
+    bool                                    m_callInitiating = false;
+    std::string                             m_callDialedAddress;
 
     std::unique_ptr<PendingRequest> getPendingRequestImpl(uint64_t requestId);
     PendingRequest *                findPendingRequestImpl(uint64_t requestId);
