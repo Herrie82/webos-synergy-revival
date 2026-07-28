@@ -6434,7 +6434,7 @@ discord_seen_ids_path(DiscordAccount *da)
 	return path;
 }
 
-static void
+static void G_GNUC_UNUSED
 discord_load_received_ids(DiscordAccount *da)
 {
 	gchar *path = discord_seen_ids_path(da);
@@ -6464,7 +6464,7 @@ discord_snowflake_cmp_desc(gconstpointer a, gconstpointer b)
 	return (ia < ib) ? 1 : ((ia > ib) ? -1 : 0);   /* newest (highest) first */
 }
 
-static void
+static void G_GNUC_UNUSED
 discord_save_received_ids(DiscordAccount *da)
 {
 	if (!da->received_message_ids) {
@@ -6612,7 +6612,13 @@ discord_login(PurpleAccount *account)
 	da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
 	da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-	discord_load_received_ids(da);   /* webOS: restore dedup set so a re-login doesn't re-backfill */
+	/* webOS: received_message_ids is now IN-MEMORY ONLY (session-scoped) -- do NOT restore it from the
+	 * persisted discord_seen_*.txt. That file outlived db8 (prunes, app-side re-threading) and its stale
+	 * ids made backfill skip messages whose db8 rows were gone -> permanent gaps ("~5 messages missing").
+	 * Cross-session/reconnect duplicates are now prevented db8-side (IncomingIMHandler dedups by
+	 * serviceMessageId), which is self-healing; this in-memory set only suppresses same-session
+	 * overlapping-fetch duplicates before they reach the transport. See discord_load_received_ids. */
+	/* discord_load_received_ids(da); -- intentionally disabled (db8 is now the dedup authority) */
 	da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->msgid_to_channel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	da->webos_quote_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -6721,7 +6727,8 @@ discord_close(PurpleConnection *pc)
 	da->last_message_id_dm = NULL;
 	g_hash_table_unref(da->sent_message_ids);
 	da->sent_message_ids = NULL;
-	discord_save_received_ids(da);   /* webOS: persist dedup set across the re-login gap */
+	/* discord_save_received_ids(da); -- intentionally disabled: the set is in-memory only now (db8 is the
+	 * dedup authority). Persisting it re-created the stale-file-vs-db8 divergence that dropped messages. */
 	g_hash_table_unref(da->received_message_ids);
 	da->received_message_ids = NULL;
 	g_hash_table_unref(da->result_callbacks);
@@ -7559,7 +7566,7 @@ discord_start_socket(DiscordAccount *da)
 		da->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
 	if (da->received_message_ids == NULL) {
 		da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-		discord_load_received_ids(da);   /* restore the persisted dedup set */
+		/* discord_load_received_ids(da); -- disabled: in-memory only now, db8 is the dedup authority. */
 	}
 	if (da->result_callbacks == NULL)
 		da->result_callbacks = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
