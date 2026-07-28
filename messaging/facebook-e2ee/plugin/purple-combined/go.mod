@@ -74,3 +74,8 @@ require (
 )
 
 replace github.com/imroc/req/v3 => github.com/beeper/req/v3 v3.0.0-20260703124114-47a4e2aa147e
+
+// Local fork of meowcaller with the MLow encoder FFT twiddle-cache + DCT-table-cache optimizations
+// (~2x faster encode, bit-exact output) so the pure-Go MLow codec runs real-time on the TouchPad's
+// ARMv7. See third_party/meowcaller/mlow/{fft.go,lpc.go}. Upstream: v0.0.0-20260717112041-9769d5aaaeca.
+replace github.com/purpshell/meowcaller => ./third_party/meowcaller

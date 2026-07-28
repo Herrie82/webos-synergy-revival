@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -80,6 +81,11 @@ func (handler *Handler) startCalling() {
 		mcClient = nil
 	}
 	callHandler = handler
+	// The MLow encoder runs inline in meowcaller's 60ms send-ticker; on the dual-core ARMv7 give the Go
+	// runtime both cores so GC and the ALSA/network work overlap the encode instead of stealing from it.
+	if runtime.GOMAXPROCS(0) < 2 {
+		runtime.GOMAXPROCS(2)
+	}
 	mcClient = meowcaller.NewClient(handler.client)
 	mcClient.OnIncomingCall(handleIncoming)
 	fmt.Fprintln(os.Stderr, "wacall: calling engine attached to messaging session")

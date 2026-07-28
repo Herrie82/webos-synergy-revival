@@ -24,6 +24,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include "denoise.h"
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
@@ -114,6 +118,13 @@ static volatile int g_audio_on = 0;
 #define CALL_DUMP 0
 static FILE *g_dump_capraw = NULL; // written by the C capture thread
 static FILE *g_dump_send = NULL;   // written by read_mic (Go thread)
+
+/* TONE_TEST: replace the mic with a synthetic, phase-continuous 1kHz sine in the capture thread. A
+ * known steady signal makes "breaking up" unambiguous: the send dump / peer / meowcaller media_out
+ * rms must be a rock-steady tone. Any amplitude modulation, gaps, or pitch error isolates WHERE the
+ * pipeline breaks (our ring vs encode cadence vs network), independent of the mic + acoustics. 0=off. */
+#define TONE_TEST 0
+#define TONE_HZ 1000.0
 // Mic ring buffer: the capture thread (pure C) fills it; Go PULLS via
 // gowhatsapp_call_read_mic (Go->C, always safe). No C-thread->Go calls.
 static short g_mic[MIC_RING];
@@ -159,7 +170,15 @@ static void *audio_thread(void *arg) {
 			snd_pcm_recover(g_cap, (int)r, 1);
 			continue;
 		}
-		if (g_dump_capraw) fwrite(buf, 2, (size_t)r, g_dump_capraw); // raw live mic, pre-gain
+		if (TONE_TEST) { // overwrite the mic with a phase-continuous 1kHz sine (known steady signal)
+			static double ph = 0.0;
+			for (int i = 0; i < r; i++) {
+				buf[i] = (short)(8000.0 * sin(ph)); // ~-12dBFS, well below clip
+				ph += 2.0 * M_PI * TONE_HZ / WA_RATE;
+				if (ph > 2.0 * M_PI) ph -= 2.0 * M_PI;
+			}
+		}
+		if (g_dump_capraw) fwrite(buf, 2, (size_t)r, g_dump_capraw); // raw live mic (or injected tone), pre-gain
 		wa_ns_process(buf, (int)r);
 		pthread_mutex_lock(&g_mic_mx);
 		for (int i = 0; i < r; i++) {
