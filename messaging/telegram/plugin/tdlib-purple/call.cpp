@@ -111,12 +111,15 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
         return false;
 
     static tgvoip::VoIPController::Config config;
-    // DIAG: disable the software AEC/NS/AGC while bringing up capture. On a loudspeaker call libtgvoip's
-    // echo canceller/noise suppressor can over-cancel the mic to silence (the peer hears nothing) - rule
-    // it out first; re-enable once two-way audio is confirmed.
+    // Two-way audio is confirmed (voice gets through the analog IN1L route), so re-enable libtgvoip's
+    // in-engine WebRTC DSP -- it's already compiled in (Makefile.am builds webrtc_dsp with -DWEBRTC_NS_FLOAT).
+    // NS suppresses the analog-mic background-noise floor (the webOS capture path applies no audiod DSP on
+    // the voip source, unlike the recording path voice notes use); AGC normalizes the quiet/uneven level.
+    // AEC stays OFF for now: on a LOUDSPEAKER call the echo canceller can over-cancel the mic to silence,
+    // and it needs the speaker-reference wired first -- enable only once that's in place.
     config.enableAEC = false;
-    config.enableNS  = false;
-    config.enableAGC = false;
+    config.enableNS  = true;
+    config.enableAGC = true;
     // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
     // "Connecting") is invisible. Point it at a file to see the reflector connection + audio init.
     config.logFilePath       = "/media/internal/tgvoip.log";
