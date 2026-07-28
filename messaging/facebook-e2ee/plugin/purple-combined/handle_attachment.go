@@ -303,8 +303,20 @@ func (h *gometaHandler) handleE2EEMedia(content *waConsumerApplication.ConsumerA
 		h.mu.Unlock()
 	}
 	h.addContact(chatFbid, name)
-	purple_handle_attachment(h.account, strconv.FormatInt(chatFbid, 10), false, strconv.FormatInt(senderFbid, 10),
-		caption, id, evt.Info.Timestamp, dataType, filename, extension, mimetype, hash, length,
-		&fbDownloadable{integral: integral, mediaType: mediaType})
+	// Run the download+display on a BACKGROUND goroutine. purple_handle_attachment performs the media
+	// download SYNCHRONOUSLY (download_to_templated_destination -> DownloadFB), and doing that on the
+	// whatsmeow read-loop goroutine (where event handlers run) blocked it long enough -- ~10s for a ~1MB
+	// FB-CDN fetch -- that whatsmeow's keepalive timed out and RECONNECTED the account, tearing down the
+	// in-progress download: valid transport, no error, but no file ever written. Off-loading it frees the
+	// read loop so keepalive stays alive and the download completes. Safe because this plugin already
+	// calls purple_* from goroutines (gowhatsapp_go_query_groups / fetch_newsletter_history / get_contacts
+	// all do the same) -- the display bridge marshals onto the glib main loop. Args are evaluated now
+	// (before the goroutine) so the whatsmeow event object isn't referenced after it's recycled.
+	chatStr := strconv.FormatInt(chatFbid, 10)
+	senderStr := strconv.FormatInt(senderFbid, 10)
+	ts := evt.Info.Timestamp
+	dl := &fbDownloadable{integral: integral, mediaType: mediaType}
+	go purple_handle_attachment(h.account, chatStr, false, senderStr,
+		caption, id, ts, dataType, filename, extension, mimetype, hash, length, dl)
 	return true
 }
