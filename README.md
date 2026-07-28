@@ -148,10 +148,17 @@ Notes:
   (an inline AMSVideo `<video>` element — parallel to an inline AMSImage `<img>`, NOT a card; the clip
   is uploaded as a `sharing/video` ASM object to `/content/video` and referenced by `/views/video`,
   with width/height/duration parsed from the mp4) — **all five confirmed on device**. **Video →
-  Receive** now **plays** on device — **confirmed for WhatsApp, Telegram, Signal, Discord and Teams**:
-  the H.264 mp4 decodes via the **Snapdragon S3 (APQ8060) OMX hardware decoder** and plays (tapping an
-  mp4 opens the stock `com.palm.app.videoplayer`; a sender JPEG thumbnail rides along as the
-  `<video poster>` preview). The earlier "won't play / not-negotiated"
+  Receive** now **plays** on device — **confirmed for WhatsApp, Telegram, Signal, Discord, Teams and
+  Facebook E2EE**: the H.264 mp4 decodes via the **Snapdragon S3 (APQ8060) OMX hardware decoder** and
+  plays (tapping an mp4 opens the stock `com.palm.app.videoplayer`; a sender JPEG thumbnail rides along
+  as the `<video poster>` preview). **Facebook E2EE media receive** (image + video + document) takes a
+  **different path** from the other prpls: an armadillo media message can't use the shared
+  `purple_handle_attachment` bridge — that marshals the download onto the glib main loop via
+  `purple_timeout_add`, which never fires from the FB e2ee event context — so `handleE2EEMedia`
+  downloads the media itself (`whatsmeow DownloadFB`, 90 s-bounded) to
+  `/media/internal/.im-attachments/facebook/` and posts it through the **same direct `notifyMessage`
+  path FB text uses**, with the body set to the `file://` URL the Messaging app renders inline. The
+  earlier "won't play / not-negotiated"
   symptom was **NOT** a decoder limit — it was the **`device-setup/videoplayer-webm` autoplug shim**
   (`libmp-autoplug.so`) breaking H.264 video-session creation. That shim is now **kept OFF** (stock
   media-pipeline) — it only ever helped WebM, which no IM connector sends. (Heavy back-to-back playback
