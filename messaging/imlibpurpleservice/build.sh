@@ -76,10 +76,12 @@ RPATHLINK="-Wl,-rpath-link,$LIBSTUB -Wl,-rpath-link,$PURPLE/lib -Wl,-rpath-link,
 # glibc 2.23 but different builds; the ld-teams build SIGSEGVs purple-signal's in-process JVM
 # (libjvm.so), while the wpe-glibc build runs it. Since the JVM is created in-process
 # (JNI_CreateJavaVM), the whole transport must load under the JVM-compatible glibc. imwrap.sh pairs
-# this by putting /media/internal/wpe-glibc/lib first on LD_LIBRARY_PATH so the matching libc/pthread
+# this by putting /media/cryptofs/wpe-glibc/lib first on LD_LIBRARY_PATH so the matching libc/pthread
 # load. The stock 2011 /lib/ld-linux.so.3 mis-resolves GNU_UNIQUE symbols and is not an option either.
+# NB: wpe-glibc lives on /media/cryptofs (NOT /media/internal) so the transport's mmap'd glibc doesn't
+# pin the USB-exported vfat and block "USB drive" mode (see usb-drive-mode-media-internal-blockers).
 $CXX $CXXFLAGS $OBJS -o "$OUT" \
-  -Wl,--dynamic-linker=/media/internal/wpe-glibc/lib/ld-linux.so.3 \
+  -Wl,--dynamic-linker=/media/cryptofs/wpe-glibc/lib/ld-linux.so.3 \
   $LIBDIRS $RPATHLINK -Wl,--allow-shlib-undefined \
   -lmojodb -lmojocore -lmojoluna -llunaservice \
   -lpurple -ltidy -lrt -lpthread \
