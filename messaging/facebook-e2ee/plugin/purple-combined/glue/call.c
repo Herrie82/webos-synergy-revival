@@ -95,16 +95,25 @@ void gowhatsapp_call_on_state(const char *json) {
 #define WA_RATE 16000
 #define WA_FRAME 320  /* 20ms mic read chunk (was 960/60ms) — lower capture granularity = less mic->peer delay; still a multiple of the NS 160-sample frame */
 #define MIC_RING 16000 /* ~1s of int16 mono */
-/* The analog IN1L mic captures quiet (~-29dBFS rms), so the peer's AGC has to boost hard, which lifts
- * the noise floor over the voice fundamentals and reads as thin/"tinny". Apply a modest makeup gain
- * to hand the peer a healthier level. PESQ over the MLow round-trip found 1.5x marginally BEST (3.38
- * vs 3.35 at unity, 3.33 at 2x) — essentially neutral on quality, so keep it modest for the level lift
- * (which helps the peer's AGC, a factor the offline PESQ-vs-clean test can't see). */
-#define MIC_GAIN 1.5f
+/* Makeup gain — UNITY. An earlier +gain was based on a standalone `arecord` of voipsource that read
+ * quiet (~-29dBFS). But a DUMP of the mic DURING A REAL CALL (CALL_DUMP) showed the call scenario's
+ * AGC already drives it ~12dB hotter: -16.8dBFS rms, peaks at 0dBFS. Any makeup gain there just
+ * hard-clips (1.5x clipped 2.45% of samples -> the harsh "distorted/tinny" the peer heard). PESQ over
+ * the real call mic confirmed unity is best (1.0x: 0% clip, 3.93; 1.5x: 0.9% clip, 3.78). Leave at 1.0
+ * unless a future mic route actually captures quiet. */
+#define MIC_GAIN 1.0f
 static snd_pcm_t *g_play = NULL; // peer -> speaker (written from the sink callback)
 static snd_pcm_t *g_cap = NULL;  // mic (read by the capture thread into the ring)
 static pthread_t g_cap_thread;
 static volatile int g_audio_on = 0;
+
+/* ---- CALL_DUMP: ground-truth capture of the LIVE call audio (the call-scenario mic differs from a
+ * standalone arecord — audiod switches routing/DSP when a call is active, which the offline PESQ test
+ * can't see). Writes raw s16le/16k/mono. capraw = straight off voipsource (pre-gain); send = what we
+ * hand meowcaller (post-gain). Pull + analyze offline. Set 0 for release builds. */
+#define CALL_DUMP 0
+static FILE *g_dump_capraw = NULL; // written by the C capture thread
+static FILE *g_dump_send = NULL;   // written by read_mic (Go thread)
 // Mic ring buffer: the capture thread (pure C) fills it; Go PULLS via
 // gowhatsapp_call_read_mic (Go->C, always safe). No C-thread->Go calls.
 static short g_mic[MIC_RING];
@@ -150,6 +159,7 @@ static void *audio_thread(void *arg) {
 			snd_pcm_recover(g_cap, (int)r, 1);
 			continue;
 		}
+		if (g_dump_capraw) fwrite(buf, 2, (size_t)r, g_dump_capraw); // raw live mic, pre-gain
 		wa_ns_process(buf, (int)r);
 		pthread_mutex_lock(&g_mic_mx);
 		for (int i = 0; i < r; i++) {
@@ -180,6 +190,12 @@ int gowhatsapp_call_read_mic(float *out, int n) {
 	}
 	pthread_mutex_unlock(&g_mic_mx);
 	for (; i < n; i++) out[i] = 0.0f; // pad with silence if stopping
+	if (g_dump_send) { // what meowcaller actually encodes (post-gain), as s16le
+		short s[2048];
+		int m = n > 2048 ? 2048 : n;
+		for (int k = 0; k < m; k++) s[k] = (short)(out[k] * 32767.0f);
+		fwrite(s, 2, (size_t)m, g_dump_send);
+	}
 	return n;
 }
 
@@ -236,6 +252,11 @@ static gboolean audiod_status_idle(gpointer d) {
 void gowhatsapp_call_audio_active(int on) {
 	if (on && !g_audio_on) {
 		g_audio_on = 1;
+		if (CALL_DUMP) {
+			g_dump_capraw = fopen("/media/internal/wacall_capraw.raw", "wb");
+			g_dump_send = fopen("/media/internal/wacall_send.raw", "wb");
+			fprintf(stderr, "wa-call: CALL_DUMP capraw=%p send=%p\n", (void*)g_dump_capraw, (void*)g_dump_send);
+		}
 		g_idle_add(audiod_status_idle, GINT_TO_POINTER(1));
 		pthread_create(&g_cap_thread, NULL, audio_thread, NULL);
 	} else if (!on && g_audio_on) {
@@ -252,6 +273,9 @@ void gowhatsapp_call_audio_active(int on) {
 		snd_pcm_t *p = g_play;
 		g_play = NULL;
 		if (p) snd_pcm_close(p);
+		// capture thread joined + Go has stopped pulling: safe to close the dump files
+		if (g_dump_capraw) { fclose(g_dump_capraw); g_dump_capraw = NULL; }
+		if (g_dump_send)   { fclose(g_dump_send);   g_dump_send = NULL; }
 	}
 }
 
