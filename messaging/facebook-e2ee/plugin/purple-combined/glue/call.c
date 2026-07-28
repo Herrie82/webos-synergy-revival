@@ -25,6 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <dirent.h>
+#include <sys/resource.h>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -264,6 +266,25 @@ static gboolean audiod_status_idle(gpointer d) {
 	return G_SOURCE_REMOVE;
 }
 
+// Raise (or restore) the scheduling priority of EVERY thread in this process. The MLow encoder is
+// fast enough (~40ms/60ms frame) but the TouchPad runs ~2x oversubscribed during a call (chatthreader,
+// mojodb, WebAppMgr all fighting for the 2 cores, load avg ~4). When one steals a core mid-frame the
+// encode slips past its 60ms deadline and the peer hears a dropped frame. Nicing the whole transport
+// down for the call's duration lets its encoder thread win that contention. Per-thread because Linux
+// nice is per-task and the encoder runs on a migrating Go thread; renice all of /proc/self/task.
+static void wa_renice_all_threads(int nice_val) {
+	DIR *d = opendir("/proc/self/task");
+	if (!d) return;
+	struct dirent *e;
+	int n = 0;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+		if (setpriority(PRIO_PROCESS, (id_t)atoi(e->d_name), nice_val) == 0) n++;
+	}
+	closedir(d);
+	fprintf(stderr, "wa-call: reniced %d threads to %d\n", n, nice_val);
+}
+
 // Called from Go (a goroutine thread) when a call becomes active (1) / ends (0).
 // MUST NOT BLOCK — it just starts/stops the audio thread; the ALSA open (which can
 // block on the pulse plugin) happens inside that thread. The audiod call is dispatched
@@ -271,6 +292,7 @@ static gboolean audiod_status_idle(gpointer d) {
 void gowhatsapp_call_audio_active(int on) {
 	if (on && !g_audio_on) {
 		g_audio_on = 1;
+		wa_renice_all_threads(-15); // win CPU contention for the duration of the call
 		if (CALL_DUMP) {
 			g_dump_capraw = fopen("/media/internal/wacall_capraw.raw", "wb");
 			g_dump_send = fopen("/media/internal/wacall_send.raw", "wb");
@@ -281,6 +303,7 @@ void gowhatsapp_call_audio_active(int on) {
 	} else if (!on && g_audio_on) {
 		g_idle_add(audiod_status_idle, GINT_TO_POINTER(0));
 		g_audio_on = 0;
+		wa_renice_all_threads(0); // restore normal priority once the call ends
 		pthread_mutex_lock(&g_mic_mx);
 		pthread_cond_broadcast(&g_mic_cv); // wake any blocked read_mic
 		pthread_mutex_unlock(&g_mic_mx);
