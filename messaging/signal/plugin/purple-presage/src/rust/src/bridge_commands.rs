@@ -73,6 +73,19 @@ pub unsafe extern "C" fn presage_rust_place_call(
     send_cmd(account, rt, tx, cmd);
 }
 
+/// The user tapped Answer on an incoming call: tell the media engine to emit the RingRTC rtp-data
+/// `Accepted` so the caller connects (stops ringing + ungates audio). Local only, no callee needed.
+#[no_mangle]
+pub unsafe extern "C" fn presage_rust_accept_call(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    rt: *mut tokio::runtime::Runtime,
+    tx: *mut tokio::sync::mpsc::Sender<crate::structs::Cmd>,
+    call_id: u64,
+) {
+    let cmd = crate::structs::Cmd::AcceptCall { call_id };
+    send_cmd(account, rt, tx, cmd);
+}
+
 /// The user hung up: send the peer a Hangup for `call_id` and tear down our media engine. `c_callee`
 /// is the peer's Signal UUID (the dialer's call address).
 #[no_mangle]

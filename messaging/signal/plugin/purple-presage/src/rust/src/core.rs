@@ -246,6 +246,11 @@ async fn run<C: presage::store::Store + 'static>(
             crate::call_bridge::stop(call_id);
             Ok(true)
         }
+        crate::structs::Cmd::AcceptCall { call_id } => {
+            // Local only: tell the engine to emit the RingRTC rtp-data `Accepted`. No network send.
+            crate::call_bridge::accept(call_id);
+            Ok(true)
+        }
         crate::structs::Cmd::PlaceCall { callee } => {
             // Resolve the callee to an ACI. The dialer usually passes the Signal UUID, but for a
             // cross-service-linked contact (Alan's Signal thread keyed by his phone number) it passes an

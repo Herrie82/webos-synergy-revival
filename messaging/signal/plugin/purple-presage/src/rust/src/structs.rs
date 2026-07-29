@@ -58,6 +58,12 @@ pub enum Cmd {
         uuid: presage::libsignal_service::prelude::Uuid,
         call_id: u64,
     },
+    // User tapped Answer on an INCOMING call: tell the media engine to start sending the RingRTC
+    // rtp-data `Accepted` message (PT 101 / SSRC 0xD, SRTP) so the caller's phone stops ringing and
+    // both sides ungate media. Purely local -> no CallMessage; just drives the engine over its stdin.
+    AcceptCall {
+        call_id: u64,
+    },
 }
 
 // Cmd already crosses threads today: it is pushed onto a tokio mpsc from the C-invoked send_cmd

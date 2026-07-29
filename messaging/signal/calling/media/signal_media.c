@@ -23,6 +23,7 @@
  */
 
 #include <gst/gst.h>
+#include <gst/app/gstappsrc.h>
 #include <nice/agent.h>
 #include <glib.h>
 #include <string.h>
@@ -76,6 +77,80 @@ typedef struct {
 } SignalMedia;
 
 static SignalMedia g_sm;         /* single active call (the device rings one at a time) */
+
+/* --- RingRTC rtp-data channel (the "Accepted" signal) ----------------------------------------------
+ * A 1:1 RingRTC call stays "ringing" on the caller and gates ALL media until the callee sends an
+ * `Accepted` message over RingRTC's RTP data channel: a tiny proto2 `rtp_data.Message{accepted{id}}`
+ * carried as an RTP packet on PT 101 / SSRC 0xD, SRTP-encrypted with the same key as audio, re-sent
+ * at 1 Hz (ref: ringrtc core/connection.rs). We inject it via a dedicated appsrc->srtpenc->funnel TX
+ * branch. signal_media_accept() (from the ACCEPT stdin cmd, i.e. the user tapped Answer) turns it on. */
+#define RTP_DATA_PT       101
+static GstElement *g_datasrc      = NULL;  /* appsrc feeding the data branch (pushed from any thread) */
+static guint64     g_accept_id    = 0;     /* RingRTC call_id -> Accepted.id */
+static gboolean    g_accepted     = FALSE; /* user accepted -> keep resending */
+static guint       g_accept_timer = 0;     /* 1 Hz resend source id on g_sm.ctx */
+static guint16     g_data_seq     = 0;     /* RTP seq for the data stream */
+static guint32     g_data_ts      = 0;     /* RTP timestamp for the data stream */
+
+/* minimal LEB128 varint writer (proto wire type 0) */
+static int sm_varint(guint8 *out, guint64 v)
+{
+    int i = 0;
+    do { guint8 b = v & 0x7f; v >>= 7; if (v) b |= 0x80; out[i++] = b; } while (v);
+    return i;
+}
+
+/* Build one rtp_data.Message{ accepted{id=call_id}, seqnum } and push it as an RTP packet into the
+ * data branch (srtpenc encrypts it with our TX key). */
+static void sm_push_accepted(void)
+{
+    if (!g_datasrc) return;
+    /* proto: Accepted{ id(1,varint) } */
+    guint8 acc[16]; int an = 0;
+    acc[an++] = 0x08; an += sm_varint(acc + an, g_accept_id);
+    /* proto: Message{ accepted(1,LEN), seqnum(4,varint) } */
+    guint8 body[48]; int bn = 0;
+    body[bn++] = 0x0A; body[bn++] = (guint8)an; memcpy(body + bn, acc, an); bn += an;
+    static guint64 seqnum = 0; seqnum++;
+    body[bn++] = 0x20; bn += sm_varint(body + bn, seqnum);
+    /* 12-byte RTP header: V=2, PT=101, incrementing seq/ts, SSRC=0x0000000D */
+    guint8 pkt[12 + 48];
+    pkt[0] = 0x80; pkt[1] = RTP_DATA_PT;
+    g_data_seq++; pkt[2] = (guint8)(g_data_seq >> 8); pkt[3] = (guint8)g_data_seq;
+    g_data_ts++;  pkt[4] = (guint8)(g_data_ts >> 24); pkt[5] = (guint8)(g_data_ts >> 16);
+                  pkt[6] = (guint8)(g_data_ts >> 8);  pkt[7] = (guint8)g_data_ts;
+    pkt[8] = 0; pkt[9] = 0; pkt[10] = 0; pkt[11] = 0x0D;
+    memcpy(pkt + 12, body, bn);
+    int total = 12 + bn;
+    GstBuffer *buf = gst_buffer_new_allocate(NULL, total, NULL);
+    gst_buffer_fill(buf, 0, pkt, (gsize)total);
+    GstFlowReturn fr = gst_app_src_push_buffer(GST_APP_SRC(g_datasrc), buf); /* takes ownership */
+    if (fr != GST_FLOW_OK) g_message("signal_media: data-channel push flow=%d", (int)fr);
+}
+
+static gboolean sm_accept_tick(gpointer u)
+{
+    (void)u;
+    if (!g_accepted) { g_accept_timer = 0; return G_SOURCE_REMOVE; }
+    sm_push_accepted();
+    return G_SOURCE_CONTINUE;
+}
+
+/* The user tapped Answer (ACCEPT stdin cmd): start emitting the RingRTC Accepted at 1 Hz so the
+ * caller's phone stops ringing and both sides ungate audio. Idempotent. */
+void signal_media_accept(guint64 call_id)
+{
+    g_accept_id = call_id;
+    g_accepted  = TRUE;
+    sm_push_accepted();  /* one immediately, don't wait a full second */
+    if (!g_accept_timer && g_sm.ctx) {
+        GSource *s = g_timeout_source_new_seconds(1);
+        g_source_set_callback(s, sm_accept_tick, NULL, NULL);
+        g_accept_timer = g_source_attach(s, g_sm.ctx);  /* resend on the media thread */
+        g_source_unref(s);
+    }
+    g_message("signal_media: ACCEPT call_id=%" G_GUINT64_FORMAT " -> emitting rtp-data Accepted at 1Hz", call_id);
+}
 
 /* STUN/TURN relays for the nice agent, populated from RELAY lines (Signal's /v2/calling/relays,
  * fetched by the presage bridge) BEFORE the START line. Kept out of SignalMedia because
@@ -352,9 +427,14 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
     GstElement *nsink  = mk("nicesink",      "tx-nicesink");
+    /* RingRTC rtp-data branch: appsrc -> srtpenc(same key) -> funnel(merge with audio) -> nicesink. */
+    GstElement *dsrc   = mk("appsrc",        "tx-datasrc");
+    GstElement *denc   = mk("srtpenc",       "tx-datasrtpenc");
+    GstElement *funnel = mk("funnel",        "tx-funnel");
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
-        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink) {
+        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink ||
+        !dsrc || !denc || !funnel) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
@@ -379,16 +459,28 @@ static gboolean build_pipeline(SignalMedia *sm)
       g_object_set(txcaps, "caps", c, NULL); gst_caps_unref(c); }
     g_object_set(asrc, "device", "voipsource", NULL);
     g_object_set(pay,  "pt", SIGNAL_OPUS_PT, NULL);
-    /* TX (encrypt our stream): answerer uses answer_key, caller uses offer_key. */
-    { GstBuffer *tx_master = sm->is_caller
-          ? master_key_buffer(sm->keys.offer_key,  sm->keys.offer_salt)
-          : master_key_buffer(sm->keys.answer_key, sm->keys.answer_salt);
-      configure_srtpenc(senc, tx_master);
-      gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
+    /* TX (encrypt our stream): answerer uses answer_key, caller uses offer_key. The data branch's
+     * srtpenc uses the SAME master key but a DISJOINT SSRC (0xD), so no SRTP keystream reuse. */
+    { const unsigned char *k = sm->is_caller ? sm->keys.offer_key  : sm->keys.answer_key;
+      const unsigned char *s = sm->is_caller ? sm->keys.offer_salt : sm->keys.answer_salt;
+      GstBuffer *m1 = master_key_buffer(k, s); configure_srtpenc(senc, m1); gst_buffer_unref(m1);
+      GstBuffer *m2 = master_key_buffer(k, s); configure_srtpenc(denc, m2); gst_buffer_unref(m2); }
+
+    /* data appsrc: hand-built RTP (application/x-rtp), live, produces nothing until the user accepts. */
+    { GstCaps *dc = gst_caps_new_simple("application/x-rtp",
+                                        "media",         G_TYPE_STRING, "application",
+                                        "clock-rate",    G_TYPE_INT,    90000,
+                                        "encoding-name", G_TYPE_STRING, "X-RINGRTC-DATA",
+                                        "payload",       G_TYPE_INT,    RTP_DATA_PT, NULL);
+      g_object_set(dsrc, "caps", dc, "is-live", TRUE, "format", GST_FORMAT_TIME,
+                   "do-timestamp", TRUE, "stream-type", 0, NULL);
+      gst_caps_unref(dc); }
+    g_datasrc = dsrc;
 
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
-                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL);
+                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink,
+                     dsrc, denc, funnel, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -403,8 +495,13 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL)) {
-        g_printerr("signal_media: TX link failed\n"); return FALSE;
+    /* Audio TX: ... -> srtpenc -> funnel.sink_0 -> nicesink.  Data TX: appsrc -> srtpenc -> funnel.sink_1.
+     * The funnel merges the two SRTP streams (audio SSRC + data SSRC 0xD) onto the one nice component. */
+    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, nsink, NULL)) {
+        g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
+    }
+    if (!gst_element_link_many(dsrc, denc, funnel, NULL)) {
+        g_printerr("signal_media: TX (data) link failed\n"); return FALSE;
     }
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(sm->pipeline));
@@ -504,6 +601,9 @@ void signal_media_stop(void)
 {
     if (!g_sm.running) return;
     g_sm.running = FALSE;
+
+    /* stop the rtp-data Accepted resend (its GSource lives on g_sm.ctx, torn down below) */
+    g_accepted = FALSE; g_accept_timer = 0; g_datasrc = NULL;
 
     if (g_sm.pipeline) gst_element_set_state(g_sm.pipeline, GST_STATE_NULL);
     if (g_sm.audiod_on && g_sm.audiod_cb) g_sm.audiod_cb(0, g_sm.audiod_user);
@@ -828,6 +928,10 @@ static int run_ipc(int is_caller)
         } else if (strncmp(line, "RCAND ", 6) == 0) {
             if (!started) { emit("ERR rcand-before-start\n"); continue; }
             signal_media_add_remote_candidate(line + 6);
+        } else if (strncmp(line, "ACCEPT ", 7) == 0) {
+            /* user tapped Answer -> start emitting the RingRTC rtp-data Accepted (stops caller ringing) */
+            if (!started) { emit("ERR accept-before-start\n"); continue; }
+            signal_media_accept(g_ascii_strtoull(line + 7, NULL, 10));
         } else if (strcmp(line, "STOP") == 0) {
             break;
         } else {

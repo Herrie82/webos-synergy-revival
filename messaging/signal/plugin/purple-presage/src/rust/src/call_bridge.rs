@@ -465,6 +465,17 @@ pub fn feed_remote_ice(call_id: u64, candidate_opaques: &[Vec<u8>]) {
     }
 }
 
+/// User accepted an incoming call: tell the engine to start sending the RingRTC rtp-data `Accepted`
+/// message (repeated at 1 Hz by the engine). Until the caller receives it, RingRTC keeps the caller
+/// "ringing" and gates all media - so this is what actually connects an incoming call's audio.
+pub fn accept(call_id: u64) {
+    let mut guard = calls().lock().unwrap();
+    if let Some(cp) = guard.get_mut(&call_id) {
+        let _ = writeln!(cp.stdin, "ACCEPT {call_id}");
+        let _ = cp.stdin.flush();
+    }
+}
+
 /// Tear down the engine for a call (hangup/busy). Also drops any pending outgoing state (the peer
 /// declined/was-busy before answering, so the engine was never started).
 pub fn stop(call_id: u64) {

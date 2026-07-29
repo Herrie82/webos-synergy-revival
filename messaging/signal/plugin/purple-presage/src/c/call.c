@@ -207,6 +207,16 @@ static bool cb_dial(LSHandle *sh, LSMessage *msg, void *ctx)
  * audio. Mirrors Telegram's cbAnswer -> callBridgeAnswer + callLunaSetCallAudio(true). */
 static bool cb_answer(LSHandle *sh, LSMessage *msg, void *ctx)
 {
+    /* Tell the engine to emit the RingRTC rtp-data Accepted (PT101/SSRC0xD) so the caller's phone
+     * stops ringing and both sides ungate audio. Without this the media pre-connects but RingRTC keeps
+     * the call "ringing" forever with muted audio. */
+    if (g_account && g_call_id) {
+        PurpleConnection *pc = purple_account_get_connection(g_account);
+        Presage *presage = pc ? (Presage *)purple_connection_get_protocol_data(pc) : NULL;
+        if (presage && presage->tx_ptr)
+            presage_rust_accept_call(g_account, rust_runtime, presage->tx_ptr, g_call_id);
+    }
+    /* Flip the local line to active + turn on the audiod voip scenario (mic/speaker routing). */
     presage_handle_call_state(g_account, g_addr, g_name, SIG_CALL_ANSWERED, g_call_id);
     LSError err; LSErrorInit(&err);
     LSMessageReply(sh, msg, "{\"returnValue\":true}", &err);
