@@ -17,7 +17,7 @@ CC=${CROSS}gcc
 
 export PKG_CONFIG_PATH=$SYSROOT/lib/pkgconfig
 export PKG_CONFIG_LIBDIR=$SYSROOT/lib/pkgconfig
-PKGS="gstreamer-1.0 gstreamer-base-1.0 nice glib-2.0 gobject-2.0 gthread-2.0"
+PKGS="gstreamer-1.0 gstreamer-base-1.0 gstreamer-app-1.0 nice glib-2.0 gobject-2.0 gthread-2.0"
 CFLAGS=$(pkg-config --cflags $PKGS)
 LIBS=$(pkg-config --libs $PKGS)
 

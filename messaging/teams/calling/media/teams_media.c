@@ -29,12 +29,17 @@
  */
 
 #include <gst/gst.h>
+#include <gst/app/gstappsink.h>
 #include <nice/agent.h>
 #include <glib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 /* Opus RTP: 48 kHz. PT is dictated by the peer's offer (Teams uses 102); parsed from START. */
 #define TM_OPUS_CLOCKRATE 48000
@@ -126,6 +131,74 @@ static GstCaps *on_srtpdec_request_key(GstElement *dec, guint ssrc, gpointer use
                                         "srtcp-auth",   G_TYPE_STRING, SRTP_AUTH_NULL, NULL);
     gst_caps_set_simple(caps, "srtp-key", GST_TYPE_BUFFER, gst_buffer_ref(tm->rx_master), NULL);
     return caps;
+}
+
+/* ---- direct qspkd speaker output (bypasses the atlasqspksink element, which fails to activate in
+ * the live call pipeline). We take decoded PCM off an appsink and write it straight to qspkd's unix
+ * socket: header {magic,format,rate,channels} once, then raw interleaved S16LE. Same wire protocol as
+ * libgstatlasqspksink.so; qspkd relays to system PulseAudio -> speaker. One client at a time. ---- */
+#define QSPK_SOCK  "/tmp/qspkd.sock"
+#define QSPK_MAGIC 0x5153504bU
+#define QSPK_FMT_S16LE 0
+struct qspk_hdr { guint32 magic, format, rate, channels; };
+static int      g_qspk_fd = -1;
+static gboolean g_qspk_hdr_sent = FALSE;
+
+static gboolean qspk_send_all(int fd, const void *buf, gsize n)
+{
+    const guint8 *p = buf;
+    while (n) {
+        gssize w = send(fd, p, n, MSG_NOSIGNAL);
+        if (w < 0) { if (errno == EINTR) continue; return FALSE; }
+        p += w; n -= (gsize) w;
+    }
+    return TRUE;
+}
+
+static void qspk_close(void)
+{
+    if (g_qspk_fd >= 0) { close(g_qspk_fd); g_qspk_fd = -1; }
+    g_qspk_hdr_sent = FALSE;
+}
+
+/* appsink "new-sample": pull decoded PCM, lazily connect to qspkd (sending the header from the
+ * negotiated caps), then stream the raw samples. Runs on the RX streaming thread. */
+static GstFlowReturn on_rx_sample(GstElement *sink, gpointer user)
+{
+    (void) user;
+    GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    if (!sample) return GST_FLOW_OK;
+    GstBuffer *buf = gst_sample_get_buffer(sample);
+    GstCaps   *caps = gst_sample_get_caps(sample);
+    GstMapInfo map;
+    if (buf && caps && gst_buffer_map(buf, &map, GST_MAP_READ)) {
+        if (g_qspk_fd < 0) {
+            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX;
+            g_strlcpy(a.sun_path, QSPK_SOCK, sizeof a.sun_path);
+            if (fd >= 0 && connect(fd, (struct sockaddr *)&a, sizeof a) == 0) {
+                g_qspk_fd = fd; g_qspk_hdr_sent = FALSE;
+                tm_trace("qspk: connected to qspkd");
+            } else { if (fd >= 0) close(fd); tm_trace("qspk: connect FAILED"); }
+        }
+        if (g_qspk_fd >= 0 && !g_qspk_hdr_sent) {
+            GstStructure *s = gst_caps_get_structure(caps, 0);
+            gint rate = 48000, ch = 1;
+            gst_structure_get_int(s, "rate", &rate);
+            gst_structure_get_int(s, "channels", &ch);
+            struct qspk_hdr h = { QSPK_MAGIC, QSPK_FMT_S16LE, (guint32) rate, (guint32) ch };
+            if (qspk_send_all(g_qspk_fd, &h, sizeof h)) {
+                g_qspk_hdr_sent = TRUE;
+                { char t[64]; g_snprintf(t, sizeof t, "qspk: header sent %dch %dHz", ch, rate); tm_trace(t); }
+            } else { qspk_close(); }
+        }
+        if (g_qspk_fd >= 0 && g_qspk_hdr_sent) {
+            if (!qspk_send_all(g_qspk_fd, map.data, map.size)) { tm_trace("qspk: write failed"); qspk_close(); }
+        }
+        gst_buffer_unmap(buf, &map);
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
 }
 
 static GstCaps *opus_rtp_caps(int pt)
@@ -272,16 +345,18 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *nsrc  = mk("nicesrc",      "rx-nicesrc");
     GstElement *rxcap = mk("capsfilter",   "rx-srtpcaps");
     GstElement *sdec  = mk("srtpdec",      "rx-srtpdec");
+    GstElement *rtcpfake = mk("fakesink",  "rx-rtcpfake");   /* discards rtcp-mux'd RTCP from srtpdec */
     GstElement *rxrtp = mk("capsfilter",   "rx-rtpcaps");
     GstElement *depay = mk("rtpopusdepay", "rx-depay");
     GstElement *odec  = mk("opusdec",      "rx-opusdec");
     GstElement *aconv = mk("audioconvert", "rx-aconv");
     GstElement *ares  = mk("audioresample","rx-ares");
-    /* Output/capture via the Atlas qspkd/qmicd daemons (unix sockets), NOT ALSA voip: teams_media is a
-     * new-glibc wpe-gst process and cannot reach PulseAudio's pvoip (no wpe pulse/alsa-pulse plugin).
-     * atlasqspksink pipes S16LE PCM to qspkd (-> system PulseAudio -> speaker); qmicsrc reads 16k mono
-     * S16LE from qmicd. This is the same glibc-bridge the browser uses. */
-    GstElement *asink = mk("atlasqspksink", "rx-qspksink");
+    GstElement *rxs16 = mk("capsfilter",   "rx-s16");   /* force S16LE for the qspkd wire format */
+    /* RX speaker output: appsink -> we write PCM straight to qspkd's socket (on_rx_sample). We use an
+     * appsink instead of the atlasqspksink element because that element fails to ACTIVATE in the live
+     * call pipeline (-> "not-linked"); appsink is a pure software sink that always accepts buffers, and
+     * we control the qspkd socket lifecycle ourselves. qspkd -> system PulseAudio -> speaker. */
+    GstElement *asink = mk("appsink", "rx-appsink");
 
     /* TX mic source. qmicsrc (real mic via qmicd) currently errors (-5) and tears down the pipeline;
      * with /media/internal/teams-txtone present, substitute a silent audiotestsrc so TX keeps flowing
@@ -296,10 +371,11 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *senc  = mk("srtpenc",      "tx-srtpenc");
     GstElement *nsink = mk("nicesink",     "tx-nicesink");
 
-    if (!nsrc||!rxcap||!sdec||!rxrtp||!depay||!odec||!aconv||!ares||!asink||
+    if (!nsrc||!rxcap||!sdec||!rxrtp||!depay||!odec||!aconv||!ares||!rxs16||!asink||!rtcpfake||
         !asrc||!tconv||!tres||!tcap||!oenc||!pay||!senc||!nsink) {
         if (tm->pipeline) { gst_object_unref(tm->pipeline); tm->pipeline = NULL; } return FALSE;
     }
+    g_object_set(rtcpfake, "sync", FALSE, "async", FALSE, NULL);
 
     g_object_set(nsrc,  "agent", tm->agent, "stream", tm->stream_id, "component", tm->component, NULL);
     g_object_set(nsink, "agent", tm->agent, "stream", tm->stream_id, "component", tm->component, NULL);
@@ -307,7 +383,12 @@ static gboolean build_pipeline(TeamsMedia *tm)
     { GstCaps *c = gst_caps_new_empty_simple("application/x-srtp"); g_object_set(rxcap, "caps", c, NULL); gst_caps_unref(c); }
     g_signal_connect(sdec, "request-key", G_CALLBACK(on_srtpdec_request_key), tm);
     { GstCaps *c = opus_rtp_caps(tm->pt); g_object_set(rxrtp, "caps", c, NULL); gst_caps_unref(c); }
-    g_object_set(asink, "sync", FALSE, NULL);   /* qspkd ring buffer paces playback; no clock sync */
+    { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE", NULL);
+      g_object_set(rxs16, "caps", c, NULL); gst_caps_unref(c); }
+    /* appsink: hand every decoded buffer to on_rx_sample (writes to qspkd). No clock sync - qspkd's
+     * blocking pa_simple_write paces us to real time. */
+    g_object_set(asink, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 8, "drop", FALSE, NULL);
+    g_signal_connect(asink, "new-sample", G_CALLBACK(on_rx_sample), &g_tm);
 
     { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
         "rate", G_TYPE_INT, TM_OPUS_CLOCKRATE, "channels", G_TYPE_INT, TM_OPUS_CHANNELS, NULL);
@@ -319,11 +400,22 @@ static gboolean build_pipeline(TeamsMedia *tm)
     configure_srtpenc(senc, tm->tx_master);
 
     gst_bin_add_many(GST_BIN(tm->pipeline),
-        nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, asink,
+        nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, rxs16, asink, rtcpfake,
         asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL);
 
-    if (!gst_element_link_many(nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, asink, NULL)) {
+    if (!gst_element_link_many(nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, rxs16, asink, NULL)) {
         g_printerr("teams_media: RX link failed\n"); return FALSE; }
+    /* srtpdec has a STATIC "always" rtcp_src pad (rtcp-mux'd RTCP, decrypted). link_many only touched
+     * rtp_src, so rtcp_src stays unlinked -> its push returns NOT_LINKED and kills the RX chain. Drain
+     * it to the fakesink explicitly (get_static_pad, since it exists at creation - no pad-added). */
+    { GstPad *rtcp = gst_element_get_static_pad(sdec, "rtcp_src");
+      GstPad *fsink = gst_element_get_static_pad(rtcpfake, "sink");
+      if (rtcp && fsink)
+          tm_trace(gst_pad_link(rtcp, fsink) == GST_PAD_LINK_OK ? "rtcp_src -> fakesink linked"
+                                                                : "rtcp_src -> fakesink link FAILED");
+      else tm_trace("rtcp_src/fakesink pad missing");
+      if (rtcp) gst_object_unref(rtcp);
+      if (fsink) gst_object_unref(fsink); }
     if (!gst_element_link_many(asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL)) {
         g_printerr("teams_media: TX link failed\n"); return FALSE; }
 
@@ -452,6 +544,7 @@ static void tm_stop(void)
     if (!g_tm.running) return;
     g_tm.running = FALSE;
     if (g_tm.pipeline) gst_element_set_state(g_tm.pipeline, GST_STATE_NULL);
+    qspk_close();   /* release the qspkd socket (one client at a time) */
     if (g_tm.audiod_on && g_tm.audiod_cb) g_tm.audiod_cb(0);
     g_tm.audiod_on = FALSE;
     if (g_tm.loop) g_main_loop_quit(g_tm.loop);

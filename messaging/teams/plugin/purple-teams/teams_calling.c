@@ -471,7 +471,7 @@ teams_media_start(TeamsCall *call)
 	envp = g_environ_setenv(envp, "GST_PLUGIN_SYSTEM_PATH_1_0", strchr(gstenv, '=') + 1, TRUE);
 	envp = g_environ_setenv(envp, "GST_REGISTRY", strchr(regenv, '=') + 1, TRUE);
 	/* capture detailed GStreamer errors (esp. srtp decrypt / rtp depay) to a file for diagnosis */
-	envp = g_environ_setenv(envp, "GST_DEBUG", "2,srtp*:5,rtpopusdepay:5,opusdec:4,alsasink:5,nicesrc:4", TRUE);
+	envp = g_environ_setenv(envp, "GST_DEBUG", "2,GST_PADS:5,srtpdec:5,rtpopusdepay:5,opusdec:4,nicesrc:5,appsink:5", TRUE);
 	envp = g_environ_setenv(envp, "GST_DEBUG_FILE", "/media/internal/teams-gst.log", TRUE);
 	envp = g_environ_setenv(envp, "GST_DEBUG_NO_COLOR", "1", TRUE);
 	/* ALSA "voip"/"voipsource" are PulseAudio PCMs defined ONLY in the system /etc/asound.conf, which
