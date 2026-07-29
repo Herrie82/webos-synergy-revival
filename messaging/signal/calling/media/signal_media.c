@@ -111,7 +111,12 @@ static gboolean sm_data_srtp_init(void)
 {
     if (g_data_srtp) return TRUE;
     if (!g_srtp_inited) {
-        if (srtp_init() != srtp_err_status_ok) { g_message("signal_media: srtp_init failed"); return FALSE; }
+        /* GStreamer's srtpenc/srtpdec have already srtp_init()'d libsrtp2 (audio SRTP works), and a
+         * second srtp_init() returns non-ok ("already initialized") on this build. That's NOT fatal -
+         * the library is ready - so log and proceed to srtp_create rather than bailing. */
+        srtp_err_status_t is = srtp_init();
+        if (is != srtp_err_status_ok)
+            g_message("signal_media: srtp_init returned %d (already init by gstreamer) - continuing", (int)is);
         g_srtp_inited = TRUE;
     }
     unsigned char master[SIGNAL_SRTP_MASTER_SIZE];
