@@ -175,6 +175,11 @@ pub fn start_incoming(
         .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
         .env("GST_DEBUG", "2")
+        // TEMP diagnostic: libnice's ICE conncheck internals (why us->peer checks never validate ->
+        // ICE FAILED even though inbound SRTP arrives). Goes to the engine's stderr = sigmedia_call.log.
+        // Remove once ICE nomination works. G_MESSAGES_DEBUG is needed for glib to print g_debug().
+        .env("NICE_DEBUG", "all")
+        .env("G_MESSAGES_DEBUG", "all")
         // Force gst's alsasink/alsasrc to use the SYSTEM libasound (which knows /usr/lib/alsa-lib's
         // pulse plugin + /etc/asound.conf's voip/voipsource PCMs). Without this, gst loads the Atlas
         // wpe-252 libasound, which can't find its pulse module -> "Cannot open shared library" ->
@@ -289,6 +294,11 @@ fn engine_command(mode: &str) -> Command {
         .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
         .env("GST_DEBUG", "2")
+        // TEMP diagnostic: libnice's ICE conncheck internals (why us->peer checks never validate ->
+        // ICE FAILED even though inbound SRTP arrives). Goes to the engine's stderr = sigmedia_call.log.
+        // Remove once ICE nomination works. G_MESSAGES_DEBUG is needed for glib to print g_debug().
+        .env("NICE_DEBUG", "all")
+        .env("G_MESSAGES_DEBUG", "all")
         .env("LD_PRELOAD", "/usr/lib/libasound.so.2");
     c
 }
