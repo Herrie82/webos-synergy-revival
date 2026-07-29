@@ -246,13 +246,16 @@ pub fn start_incoming(
     // Reader thread: turn the engine's PUB/CAND lines into outgoing CallMessages.
     let ufrag_c = our_ufrag.clone();
     let pwd_c = our_pwd.clone();
+    eprintln!("call_bridge: [DIAG] incoming-side reader thread SPAWNING for call_id={call_id}");
     std::thread::spawn(move || {
+        eprintln!("call_bridge: [DIAG] incoming-side reader thread RUNNING for call_id={call_id}");
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
-                Err(_) => break,
+                Err(e) => { eprintln!("call_bridge: [DIAG] reader.lines() Err: {e}"); break; }
             };
+            eprintln!("call_bridge: [DIAG] incoming-side reader RAW LINE: {line:?}");
             if let Some(pubhex) = line.strip_prefix("PUB ") {
                 if let Some(pk) = unhex(pubhex.trim()) {
                     let opaque = crate::call_media::encode_answer_opaque(&pk, &ufrag_c, &pwd_c);
