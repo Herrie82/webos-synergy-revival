@@ -1,5 +1,43 @@
 # Teams NGC voice calling — status & morning runway
 
+## ⭐ 2026-07-29 overnight: FULL PATH BUILT + DEPLOYED (signaling verified, media = first attempt)
+
+**Verified working on device:** incoming personal-Teams call is delivered → parsed → **rings the
+stock Phone app → answers → shows connected**. The registration fix (SkypeSpacesWeb @
+teams.microsoft.com, TFL context — see below) made delivery work; a **single** transport instance
+is required (respawn storms break delivery). Full offer captured (`scratchpad/teams-offer.json`):
+`application/sdp`, RTP/SAVP, **SDES `a=crypto` AEAD_AES_256_GCM** (key inline), codecs **opus(102)+
+G722(9)**, real **ICE + MS-TURN relay**, answer→`links.attach`.
+
+**Built + deployed (this is the "build everything" drop):**
+- `teams_media` engine (`calling/media/teams_media.c`) — fork of Signal's gst-1.20 engine; GCM SRTP
+  + Opus + libnice ICE, SDES keying. **`--loopback` PASSES on device.** Deployed patchelf'd at
+  `/media/internal/teams_media`.
+- `teams_calling.c` integration: on answer it parses the offer, spawns `teams_media --answer`, feeds
+  START + peer candidates, reads back our ICE creds + TX key + candidates, builds an SDP answer and
+  POSTs it to `links.attach`. Deployed in the plugin.
+
+**MORNING TEST (device must be at ONE transport instance — check `pidof imlibpurpletransport | wc -w`):**
+1. From Android/another Teams client, **call `luneostest@herrie.org`**. It should ring on webOS; answer it.
+2. Watch: `tail -f /media/internal/teams-call.log` (signaling + integration) and
+   `tail -f /media/internal/teams-media.log` (ICE/pipeline). Look for: `INCOMING call` → `answer:` →
+   `media_start: spawned teams_media` → `media engine READY` → `ICE state ...` → `ANSWER SDP built,
+   posting to attach` → `post_answer -> ...`.
+3. **What likely needs iteration (this is a first, un-live-tested attempt):**
+   - the **answer-SDP shape** (currently a best-effort mirror of the offer — `media_send_answer()`),
+   - the **attach POST body/auth** (currently `{"mediaContent":{contentType,blob,mediaLegId}}` — may
+     need the exact web-client shape / a specific token; `teams_calling_post_answer()`),
+   - **ICE**: whether libnice pairs with Teams' MS-ICE candidates, or needs the MS-TURN relay (the
+     `udpTransport` + `udpKey.ticket`) added via a `RELAY turn` line to the engine,
+   - the caller connecting = answer accepted + ICE connected + SRTP flowing.
+   The captured offer in `scratchpad/teams-offer.json` (and a fresh capture) is the reference for all four.
+4. Debug the engine alone: `teams_media --loopback` (env in `calling/media/`); it already passes.
+5. Commits: `fd8a147` (signaling+reg fix), `258725d` (engine), `368d212` (integration).
+
+---
+
+
+
 Overnight build of native Microsoft Teams 1:1 voice calling for the webOS Teams connector
 (`purple-teams`). This is the "Option A" full-native path. Everything that does **not** need a
 live-call capture is built, compiling for ARM, and ready to deploy. The remaining work is the
