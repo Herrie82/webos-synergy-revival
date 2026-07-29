@@ -34,6 +34,8 @@
 #include <signal.h>     /* SIGBUS/SIGSEGV crash handler (temp diagnostic) */
 #include <execinfo.h>   /* backtrace/backtrace_symbols_fd */
 #include <unistd.h>     /* write, _exit */
+#include <sys/resource.h>  /* setpriority - realtime nice for the call */
+#include <sched.h>         /* SCHED_FIFO for the capture/send threads */
 
 #include "srtp_kdf.h"
 #include "signal_media.h"
@@ -635,6 +637,14 @@ static void sm_crash_handler(int sig, siginfo_t *si, void *uctx)
 int signal_media_init(int *argc, char ***argv)
 {
     if (g_once_init_enter(&g_inited)) {
+        /* Realtime priority for the whole call. The mic (alsasrc) kept overrunning ("Can't record
+         * audio fast enough") because this spawned engine ran at default nice and got CPU-starved by
+         * the transport + others while doing Opus enc+dec + GCM SRTP + ICE. WhatsApp calling renices
+         * during a call for the same reason (see whatsapp-call-audio-quality). The transport runs as
+         * root so a negative nice is permitted; -15 puts us well above normal work. */
+        if (setpriority(PRIO_PROCESS, 0, -15) != 0)
+            g_message("signal_media: setpriority(-15) failed (continuing at default nice)");
+
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
         sa.sa_sigaction = sm_crash_handler;
