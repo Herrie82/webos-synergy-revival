@@ -85,6 +85,7 @@ typedef struct {
 } SignalMedia;
 
 static SignalMedia g_sm;         /* single active call (the device rings one at a time) */
+static void sm_enable_nice_debug(void);  /* fwd decl - defined near signal_media_init, called from build_ice */
 
 /* --- Acoustic echo cancellation (SpeexDSP) --------------------------------------------------------
  * The tablet is on speakerphone: the mic captures the far-end audio coming out of the speaker and
@@ -490,6 +491,7 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     /* RFC5245 full ICE, controlled role is set implicitly (we are the answerer). Using the private
      * context so all agent signals fire on our media thread. */
     sm_trace("build_ice: enter");
+    sm_enable_nice_debug();   /* before nice_agent_new so nice_debug_init() (called from agent init) sees it */
     sm->agent = nice_agent_new(sm->ctx, NICE_COMPATIBILITY_RFC5245);
     if (!sm->agent) { g_printerr("signal_media: nice_agent_new failed\n"); return FALSE; }
     sm_trace("build_ice: agent created");
@@ -794,6 +796,29 @@ static void sm_crash_handler(int sig, siginfo_t *si, void *uctx)
     if (write(2, hdr, len) < 0) { /* ignore */ }
     backtrace_symbols_fd(bt, n, 2);   /* fd 2 = stderr = sigmedia_call.log */
     _exit(128 + sig);
+}
+
+/* Force libnice's conncheck-level debug logging to actually reach sigmedia_call.log.
+ * NICE_DEBUG/G_MESSAGES_DEBUG=all env vars were set on the engine spawn but produced NOTHING - the
+ * device's libnice.so (independently confirmed to have nice_debug()/the debug strings compiled in, so
+ * it's NOT an NDEBUG-stripped build) never actually printed conncheck internals. Rather than keep
+ * guessing at g_parse_debug_string/G_MESSAGES_DEBUG env-var mechanics, force it directly: call the
+ * public nice_debug_enable() API (bypasses NICE_DEBUG parsing) and install our own handler for the
+ * "libnice"/"libnice-stun" log domains that unconditionally writes to stderr (bypasses any
+ * G_MESSAGES_DEBUG gating in the default handler). */
+static void sm_nice_log_handler(const gchar *domain, GLogLevelFlags level, const gchar *msg, gpointer u)
+{
+    (void)level; (void)u;
+    fprintf(stderr, "[%s] %s\n", domain ? domain : "libnice", msg ? msg : "");
+    fflush(stderr);
+}
+
+static void sm_enable_nice_debug(void)
+{
+    nice_debug_enable(TRUE);   /* TRUE = also enable STUN-level logging */
+    g_log_set_handler("libnice", G_LOG_LEVEL_MASK, sm_nice_log_handler, NULL);
+    g_log_set_handler("libnice-stun", G_LOG_LEVEL_MASK, sm_nice_log_handler, NULL);
+    g_message("signal_media: forced libnice debug logging on (nice_debug_enable + custom log handler)");
 }
 
 int signal_media_init(int *argc, char ***argv)
