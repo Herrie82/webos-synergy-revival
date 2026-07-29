@@ -97,14 +97,12 @@ pub unsafe extern "C" fn presage_rust_hangup_call(
     call_id: u64,
 ) {
     let callee = match std::ffi::CStr::from_ptr(c_callee).to_str() {
-        Ok(s) => s.to_string(),
+        Ok(s) => s.trim().to_string(),
         Err(_) => return,
     };
-    let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(callee.trim()) {
-        Ok(u) => u,
-        Err(_) => return,
-    };
-    let cmd = crate::structs::Cmd::HangupCall { uuid, call_id };
+    // Pass the raw address through - it may be a UUID or (for an outgoing call reported under the dialed
+    // number) an E.164. The command handler resolves it, so hangup works either way.
+    let cmd = crate::structs::Cmd::HangupCall { callee, call_id };
     send_cmd(account, rt, tx, cmd);
 }
 

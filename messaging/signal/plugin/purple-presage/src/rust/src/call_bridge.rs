@@ -305,6 +305,23 @@ pub fn is_outgoing_call(call_id: u64) -> bool {
     outgoing().lock().unwrap().contains(&call_id)
 }
 
+/// For an OUTGOING call, the EXACT address the user dialed (e.g. "+31621489831") vs the resolved Signal
+/// UUID we place the call to. The stock dialer keys its pending "Connecting" card on the dialed address,
+/// so every state we push for this call (dialing/active/ended) must report the dialed address too - else
+/// the dialer sees a second call (a UUID it never dialed) and shows TWO cards. Mirrors Telegram's
+/// getCallDialedAddress. Keyed by call_id; set in place_call, read in the state pushes, cleared in stop.
+static DIALED: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+fn dialed() -> &'static Mutex<HashMap<u64, String>> {
+    DIALED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub fn set_dialed_address(call_id: u64, addr: String) {
+    dialed().lock().unwrap().insert(call_id, addr);
+}
+/// The dialed address for an outgoing call_id, or None (incoming / unknown).
+pub fn dialed_address(call_id: u64) -> Option<String> {
+    dialed().lock().unwrap().get(&call_id).cloned()
+}
+
 /// call_ids the user has ACCEPTED on THIS (linked) device. webOS is a secondary Signal device; an
 /// incoming call rings this device AND the user's primary phone. When we accept, the caller broadcasts
 /// `Hangup{type=ACCEPTED, device_id=<us>}` to the account so the OTHER devices stop ringing - but Signal
@@ -520,6 +537,7 @@ pub fn stop(call_id: u64) {
     pending().lock().unwrap().remove(&call_id);
     outgoing().lock().unwrap().remove(&call_id);
     accepted().lock().unwrap().remove(&call_id);
+    dialed().lock().unwrap().remove(&call_id);
     let cp = calls().lock().unwrap().remove(&call_id);
     if let Some(CallProc { mut child, mut stdin }) = cp {
         let _ = writeln!(stdin, "STOP");

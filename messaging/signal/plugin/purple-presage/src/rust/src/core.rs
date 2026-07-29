@@ -231,18 +231,29 @@ async fn run<C: presage::store::Store + 'static>(
             send_call_message(&mut manager, account, uuid, cm, "IceUpdate").await;
             Ok(true)
         }
-        crate::structs::Cmd::HangupCall { uuid, call_id } => {
-            // Tell the peer the call is over (so their phone stops ringing / hangs up) ...
-            let cm = presage::proto::CallMessage {
-                hangup: Some(presage::proto::call_message::Hangup {
-                    id: Some(call_id),
-                    r#type: Some(0), // HANGUP_NORMAL
-                    device_id: Some(1),
-                }),
-                ..Default::default()
+        crate::structs::Cmd::HangupCall { callee, call_id } => {
+            // Resolve the address to a UUID (it's the dialer-card address: a UUID for incoming, or the
+            // dialed E.164 for an outgoing call). Same resolution order as place_call.
+            let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(&callee) {
+                Ok(u) => Some(u),
+                Err(_) => match resolve_phone_to_uuid(&mut manager, &callee).await {
+                    Some(u) => Some(u),
+                    None => discover_uuid_by_phone(&mut manager, &callee).await,
+                },
             };
-            send_call_message(&mut manager, account, uuid, cm, "Hangup").await;
-            // ... and tear down our local media engine.
+            // Tell the peer the call is over (so their phone stops ringing / hangs up) ...
+            if let Some(uuid) = uuid {
+                let cm = presage::proto::CallMessage {
+                    hangup: Some(presage::proto::call_message::Hangup {
+                        id: Some(call_id),
+                        r#type: Some(0), // HANGUP_NORMAL
+                        device_id: Some(1),
+                    }),
+                    ..Default::default()
+                };
+                send_call_message(&mut manager, account, uuid, cm, "Hangup").await;
+            }
+            // ... and tear down our local media engine (always, even if the address didn't resolve).
             crate::call_bridge::stop(call_id);
             Ok(true)
         }
@@ -328,13 +339,17 @@ async fn run<C: presage::store::Store + 'static>(
                     ..Default::default()
                 };
                 send_call_message(&mut manager, account, uuid, cm, "Offer").await;
-                // Now drive the dialer with the REAL call_id (matching the Answer/Hangup that follow),
-                // so the outgoing card is one call - not the two the dialer logged when cb_dial pushed
-                // its own state with call_id 0 and the Answer then arrived with a different id.
+                // Drive the dialer with the REAL call_id (matching the Answer/Hangup that follow) AND
+                // the DIALED address, not the resolved UUID: the dialer's pending "Connecting" card is
+                // keyed on what the user dialed (e.g. "+31621489831"), so reporting the UUID here makes
+                // it show a SECOND card for a number it never dialed. Stash the dialed address so the
+                // later active/ended pushes (receive.rs) stay consistent. Mirrors Telegram's
+                // getCallDialedAddress. blist_get_alias resolves the name off the UUID (correct person).
+                crate::call_bridge::set_dialed_address(call_id, callee_str.clone());
                 let name = crate::bridge::blist_get_alias(account, uuid.to_string());
                 crate::bridge::handle_call_state(
                     account,
-                    Some(uuid.to_string()),
+                    Some(callee_str.clone()),
                     Some(name),
                     crate::bridge::CALL_STATE_DIALING,
                     call_id,

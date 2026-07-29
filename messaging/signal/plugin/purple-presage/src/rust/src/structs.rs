@@ -53,9 +53,11 @@ pub enum Cmd {
         callee: String,
     },
     // End the current call locally (the user pressed hang up): send the peer a Hangup CallMessage so
-    // their phone stops ringing / the call ends, and tear down our media engine.
+    // their phone stops ringing / the call ends, and tear down our media engine. `callee` is the address
+    // from the dialer's card - a Signal UUID OR (for an outgoing call now reported under the dialed
+    // number) an E.164; the handler resolves a non-UUID like place_call does.
     HangupCall {
-        uuid: presage::libsignal_service::prelude::Uuid,
+        callee: String,
         call_id: u64,
     },
     // User tapped Answer on an INCOMING call: tell the media engine to start sending the RingRTC

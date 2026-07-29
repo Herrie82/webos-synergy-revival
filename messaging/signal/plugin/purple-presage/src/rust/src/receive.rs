@@ -505,7 +505,11 @@ async fn process_received_message<C: presage::store::Store>(
                 let name = message.name.clone().or_else(|| {
                     message.who.clone().map(|uuid| crate::bridge::blist_get_alias(message.account, uuid))
                 });
-                crate::bridge::handle_call_state(message.account, message.who.clone(), name, state, call_id);
+                // For an OUTGOING call (e.g. the peer's Answer -> ACTIVE), report the address the user
+                // DIALED, not the peer's UUID - so the dialer keeps the single card it opened instead of
+                // spawning a UUID-addressed second one (same reason as place_call). Incoming keeps who.
+                let card_addr = crate::call_bridge::dialed_address(call_id).or_else(|| message.who.clone());
+                crate::bridge::handle_call_state(message.account, card_addr, name, state, call_id);
             }
 
             // Media bridge (gated on /media/internal/signal_call_media). Drives the signal_media
