@@ -231,6 +231,21 @@ async fn run<C: presage::store::Store + 'static>(
             send_call_message(&mut manager, account, uuid, cm, "IceUpdate").await;
             Ok(true)
         }
+        crate::structs::Cmd::HangupCall { uuid, call_id } => {
+            // Tell the peer the call is over (so their phone stops ringing / hangs up) ...
+            let cm = presage::proto::CallMessage {
+                hangup: Some(presage::proto::call_message::Hangup {
+                    id: Some(call_id),
+                    r#type: Some(0), // HANGUP_NORMAL
+                    device_id: Some(1),
+                }),
+                ..Default::default()
+            };
+            send_call_message(&mut manager, account, uuid, cm, "Hangup").await;
+            // ... and tear down our local media engine.
+            crate::call_bridge::stop(call_id);
+            Ok(true)
+        }
         crate::structs::Cmd::PlaceCall { callee } => {
             // Resolve the callee to an ACI. The dialer usually passes the Signal UUID, but for a
             // cross-service-linked contact (Alan's Signal thread keyed by his phone number) it passes an
@@ -563,6 +578,15 @@ async fn receive<S: presage::store::Store + Clone + 'static>(
     // login failure (account stuck "signing in" then offline). Loop and re-open the stream on end;
     // only give up after several *consecutive* hard errors (which usually means the main device
     // unlinked us). Once catching-up finishes, handle_received() marks the account connected.
+    // Prefetch Signal's ICE/TURN relays now (right after login) and cache them, so an INCOMING call's
+    // start_incoming does NOT block this single receive loop on a network fetch. That per-call fetch
+    // delayed the answerer's engine spawn ~2s, so our Answer + our responses to the caller's early ICE
+    // connectivity checks were late and the answerer's ICE failed (the caller path fetches before it
+    // dials, so it was unaffected). Best-effort: empty on failure -> host/srflx still connect on LAN.
+    {
+        let ice = crate::ice::fetch_ice_servers(&manager).await;
+        crate::call_bridge::set_ice_servers(ice);
+    }
     let mut consecutive_errors: u32 = 0;
     loop {
         match manager.receive_messages().await {

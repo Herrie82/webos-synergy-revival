@@ -73,6 +73,28 @@ pub unsafe extern "C" fn presage_rust_place_call(
     send_cmd(account, rt, tx, cmd);
 }
 
+/// The user hung up: send the peer a Hangup for `call_id` and tear down our media engine. `c_callee`
+/// is the peer's Signal UUID (the dialer's call address).
+#[no_mangle]
+pub unsafe extern "C" fn presage_rust_hangup_call(
+    account: *mut crate::bridge_structs::PurpleAccount,
+    rt: *mut tokio::runtime::Runtime,
+    tx: *mut tokio::sync::mpsc::Sender<crate::structs::Cmd>,
+    c_callee: *const std::os::raw::c_char,
+    call_id: u64,
+) {
+    let callee = match std::ffi::CStr::from_ptr(c_callee).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return,
+    };
+    let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(callee.trim()) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let cmd = crate::structs::Cmd::HangupCall { uuid, call_id };
+    send_cmd(account, rt, tx, cmd);
+}
+
 // TODO: wire this up completely
 #[no_mangle]
 pub unsafe extern "C" fn presage_rust_list_groups(

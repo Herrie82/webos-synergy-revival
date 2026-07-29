@@ -36,6 +36,7 @@ void presage_rust_get_group_members(PurpleAccount *, RustRuntimePtr, RustChannel
 void presage_rust_get_profile(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *);
 void presage_rust_list_groups(PurpleAccount *, RustRuntimePtr, RustChannelPtr);
 void presage_rust_place_call(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *); /* outgoing call: callee address */
+void presage_rust_hangup_call(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *, uint64_t); /* hang up: callee address + call_id */
 // webOS reactions (SEND): transmit a reaction the user placed from the app. (peer, target sent timestamp, emoji, remove flag)
 void presage_rust_send_reaction(PurpleAccount *, RustRuntimePtr, RustChannelPtr, const char *peer, uint64_t target_ts, const char *emoji, int remove);
 

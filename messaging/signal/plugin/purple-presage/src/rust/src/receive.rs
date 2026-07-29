@@ -522,10 +522,10 @@ async fn process_received_message<C: presage::store::Store>(
                             }
                             _ => Vec::new(),
                         };
-                        // Fetch Signal's STUN/TURN relays before the answerer engine spawns, so ICE
-                        // can traverse NAT (host-only candidates never connect to a remote peer).
-                        let ice = crate::ice::fetch_ice_servers(&*manager).await;
-                        crate::call_bridge::set_ice_servers(ice);
+                        // Use the ICE/TURN relays prefetched at login (call_bridge's cache) - do NOT
+                        // fetch here: a blocking network fetch on this single receive loop delayed the
+                        // answerer's engine spawn ~2s, making our Answer/ICE responses late so the
+                        // answerer's ICE failed. Spawn immediately so we answer the caller's checks fast.
                         crate::call_bridge::start_incoming(uuid, call_id, op, &caller_id, &callee_id);
                     }
                 }

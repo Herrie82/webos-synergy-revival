@@ -52,6 +52,12 @@ pub enum Cmd {
     PlaceCall {
         callee: String,
     },
+    // End the current call locally (the user pressed hang up): send the peer a Hangup CallMessage so
+    // their phone stops ringing / the call ends, and tear down our media engine.
+    HangupCall {
+        uuid: presage::libsignal_service::prelude::Uuid,
+        call_id: u64,
+    },
 }
 
 // Cmd already crosses threads today: it is pushed onto a tokio mpsc from the C-invoked send_cmd

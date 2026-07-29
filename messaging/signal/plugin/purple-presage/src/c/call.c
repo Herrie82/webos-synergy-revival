@@ -211,6 +211,15 @@ static bool cb_answer(LSHandle *sh, LSMessage *msg, void *ctx)
  * to the caller so their phone stops ringing - needs the Rust send path.) */
 static bool cb_disconnect(LSHandle *sh, LSMessage *msg, void *ctx)
 {
+    /* Actually end the call: send the peer a Signal Hangup and tear down our media engine, so audio
+     * stops and their phone stops ringing. Without this the call kept running after the user hung up.
+     * g_addr = peer Signal UUID, g_call_id = the active call. */
+    if (g_account && g_addr && *g_addr && g_call_id) {
+        PurpleConnection *pc = purple_account_get_connection(g_account);
+        Presage *presage = pc ? (Presage *)purple_connection_get_protocol_data(pc) : NULL;
+        if (presage && presage->tx_ptr)
+            presage_rust_hangup_call(g_account, rust_runtime, presage->tx_ptr, g_addr, g_call_id);
+    }
     presage_handle_call_state(g_account, g_addr, g_name, SIG_CALL_DECLINED, g_call_id);
     LSError err; LSErrorInit(&err);
     LSMessageReply(sh, msg, "{\"returnValue\":true}", &err);
