@@ -13,13 +13,22 @@ export PKG_CONFIG_LIBDIR=$PKG_CONFIG_PATH
 
 cd "$REPO/messaging/teams/plugin/purple-teams"
 
+# luna-service2 for the com.palm.teams.call bridge (teams_call_luna.c). Same headers + link
+# stub the Telegram calling build uses (messaging/telegram/build-prpl.sh).
+LUNAINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/include/public
+PMLOGINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
+LSSTUB=$REPO/build-output/imtransport/lib/liblunaservice.so
+
 FILES="teams_connection.c teams_contacts.c teams_login.c teams_messages.c teams_util.c \
 purple-websocket.c teams_trouter.c teams_cards.c markdown.c libteams.c \
+teams_calling.c teams_call_luna.c \
 purple2compat/http.c purple2compat/purple-socket.c"
 
 rm -f libteams-personal.so libteams-personal.stripped.so
-$CC -fPIC -O2 -g -DENABLE_TEAMS_PERSONAL -shared -o libteams-personal.so $FILES \
-  `pkg-config purple glib-2.0 json-glib-1.0 zlib --libs --cflags` -Ipurple2compat -g -ggdb
+$CC -fPIC -O2 -g -DENABLE_TEAMS_PERSONAL -DTEAMS_WEBOS_CALL -shared -o libteams-personal.so $FILES \
+  `pkg-config purple glib-2.0 json-glib-1.0 zlib --libs --cflags` \
+  -I"$LUNAINC" -I"$LUNAINC/luna-service2" -I"$PMLOGINC" -Ipurple2compat \
+  "$LSSTUB" -g -ggdb
 
 arm-unknown-linux-gnueabi-strip -o libteams-personal.stripped.so libteams-personal.so
 

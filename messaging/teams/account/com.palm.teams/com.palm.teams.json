@@ -69,6 +69,13 @@
                 "db_kinds": {
                     "contact": "com.palm.contact.libpurple:1"
                 }
+            },
+            {
+                "capability": "PHONE",
+                "id": "com.palm.teams.call",
+                "loc_shortName": "Teams",
+                "implementation": "palm://com.palm.teams.call/",
+                "serviceName": "type_teams"
             }
         ]
     }

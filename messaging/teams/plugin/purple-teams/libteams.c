@@ -22,6 +22,9 @@
 #include "teams_messages.h"
 #include "teams_util.h"
 #include "teams_trouter.h"
+#ifdef TEAMS_WEBOS_CALL
+#include "teams_call_luna.h"
+#endif
 
 #ifdef ENABLE_TEAMS_PERSONAL
 /* Personal/TFL: real-time message delivery via Trouter push does not work for
@@ -87,7 +90,13 @@ teams_do_all_the_things(TeamsAccount *sa)
 
 		teams_get_friend_list(sa);
 		teams_trouter_begin(sa);
-		
+
+#ifdef TEAMS_WEBOS_CALL
+		/* Register the com.palm.teams.call LS2 bridge so the stock Phone app can
+		 * ring/drive NGC voice calls (webOS build only; needs luna-service2). */
+		teams_call_luna_init(sa);
+#endif
+
 		teams_get_offline_history(sa);
 
 #ifdef ENABLE_TEAMS_PERSONAL

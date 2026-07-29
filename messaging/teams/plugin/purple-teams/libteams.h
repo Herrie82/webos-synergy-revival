@@ -282,6 +282,10 @@ struct _TeamsAccount {
 	guint trouter_reconnect_backoff;   /* webOS: current backoff seconds, doubles on repeat failure */
 	JsonObject *trouter_socket_obj;
 
+	/* NGC voice calling (teams_calling.c): the account's current call, or NULL. Typed
+	 * gpointer to avoid pulling teams_calling.h into every TU that includes libteams.h. */
+	gpointer active_call;
+
 	//devicecode login
 	gchar *login_device_code;
 	guint login_device_code_timeout;
