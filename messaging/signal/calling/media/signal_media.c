@@ -548,7 +548,17 @@ static gboolean build_pipeline(SignalMedia *sm)
                                        "rate",     G_TYPE_INT,    SIGNAL_OPUS_CLOCKRATE,
                                        "channels", G_TYPE_INT,    SIGNAL_OPUS_CHANNELS, NULL);
       g_object_set(txcaps, "caps", c, NULL); gst_caps_unref(c); }
-    g_object_set(asrc, "device", "voipsource", NULL);
+    /* alsasrc: bigger ring + provide-clock off so a momentary scheduling hiccup doesn't overrun the
+     * mic ("Can't record audio fast enough"). buffer-time 200ms, latency-time 40ms. */
+    g_object_set(asrc, "device", "voipsource",
+                 "buffer-time", (gint64)200000, "latency-time", (gint64)40000,
+                 "provide-clock", FALSE, NULL);
+    /* opusenc: the mic overran because the TX chain (Opus encode at default complexity 10 + GCM SRTP)
+     * couldn't keep up in realtime on the TouchPad's ARMv7. Drop to voice-grade, low CPU: complexity 0,
+     * 24 kbps. complexity/bitrate are plain ints; audio-type is a GEnum so set it via its string nick
+     * (g_object_set reads a GEnum as an int - see the srtpenc note above). */
+    g_object_set(oenc, "complexity", 0, "bitrate", 24000, NULL);
+    gst_util_set_object_arg(G_OBJECT(oenc), "audio-type", "voice");
     g_object_set(pay,  "pt", SIGNAL_OPUS_PT, NULL);
     /* TX (encrypt our stream): answerer uses answer_key, caller uses offer_key. The rtp-data Accepted
      * packet is SRTP-encrypted separately (sm_data_srtp_init) with this same key + a disjoint SSRC. */
