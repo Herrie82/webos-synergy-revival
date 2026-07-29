@@ -501,7 +501,13 @@ static gboolean build_pipeline(SignalMedia *sm)
 
     /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
-    g_object_set(nsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
+    /* sync=FALSE async=FALSE: this is a live-call RTP egress - send as captured, and NEVER wait for
+     * preroll. CRITICAL after adding the funnel + non-live data appsrc: with the default async=TRUE the
+     * sink stalled in PAUSED for ~55s waiting to preroll the mixed live(audio)/non-live(data) funnel
+     * input, so nothing (audio OR the Accepted) went out until far too late and the caller timed out at
+     * 60s. async=FALSE makes the pipeline reach PLAYING immediately and send from the first buffer. */
+    g_object_set(nsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component,
+                 "sync", FALSE, "async", FALSE, NULL);
     /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, matching srtpenc's output).
      * is-live=FALSE is CRITICAL: a live appsrc that produces nothing until the user accepts blocks the
      * pipeline's preroll -> PLAYING never happens -> NO audio (the earlier funnel attempt's bug). With
