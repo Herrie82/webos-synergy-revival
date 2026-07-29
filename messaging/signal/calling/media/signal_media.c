@@ -492,9 +492,16 @@ static gboolean build_pipeline(SignalMedia *sm)
      * stream so a single nicesink sends everything. */
     GstElement *dsrc   = mk("appsrc",        "tx-datasrc");
     GstElement *funnel = mk("funnel",        "tx-funnel");
+    /* CRITICAL: a queue between funnel and nicesink. A funnel merges pads but does NOT serialize
+     * threads - each upstream branch (audio srtpenc thread, data appsrc task thread) pushes through to
+     * the sink ON ITS OWN THREAD, so nicesink.render (-> nice_agent_send) runs from TWO threads and
+     * deadlocks libnice's agent (proven: audio+data+STUN all froze ~1s in). The queue's src pad has a
+     * single task thread that drives everything downstream of it, so the nicesink - and thus the one
+     * nice_agent_send caller - always runs on that ONE thread. Single sender = no deadlock. */
+    GstElement *txq    = mk("queue",         "tx-queue");
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
-        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel) {
+        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel || !txq) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
@@ -545,7 +552,7 @@ static gboolean build_pipeline(SignalMedia *sm)
 
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
-                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, NULL);
+                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, txq, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -560,8 +567,9 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    /* audio: ...srtpenc -> funnel; data: appsrc -> funnel; funnel -> the single nicesink. */
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, nsink, NULL)) {
+    /* audio: ...srtpenc -> funnel; data: appsrc -> funnel; funnel -> queue -> the single nicesink.
+     * The queue collapses both upstream threads onto its single src-side task thread before the sink. */
+    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, txq, nsink, NULL)) {
         g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
     }
     if (!gst_element_link(dsrc, funnel)) {
