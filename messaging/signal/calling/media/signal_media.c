@@ -384,6 +384,13 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
      * it so the answerer honours RingRTC's nomination. Harmless for the caller (we drive nomination). */
     g_object_set(sm->agent, "support-renomination", TRUE, NULL);
 
+    /* Keepalive as STUN binding REQUESTS, not indications. After ICE reaches READY, libnice's default
+     * keepalive is a STUN binding *indication* (no reply expected). RingRTC/libwebrtc runs RFC7675
+     * consent freshness and drops the call within seconds if the selected pair looks idle - our
+     * indications don't satisfy it. keepalive-conncheck=TRUE makes libnice send binding *requests*
+     * (which draw responses), keeping the peer's consent fresh so it doesn't tear the call down. */
+    g_object_set(sm->agent, "keepalive-conncheck", TRUE, NULL);
+
     sm_trace("build_ice: role set");
 
     /* STUN (agent-global): gathers server-reflexive (srflx) candidates so we learn our public
