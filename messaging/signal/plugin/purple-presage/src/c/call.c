@@ -42,6 +42,9 @@ static void sigcLog(const char *fmt, ...)
 #define SIG_CALL_BUSY     3u
 #define SIG_CALL_ACTIVE   4u   /* peer answered OUR outgoing call -> connected */
 #define SIG_CALL_DIALING  5u   /* we placed an outgoing call (Offer sent) -> ringing peer */
+#define SIG_CALL_ANSWERED 6u   /* LOCAL-only: user tapped Answer on an INCOMING call (cb_answer);
+                                * flip the line to active + route audio, keep origin=incoming. Not
+                                * sent from Rust, so it need not match a bridge.rs constant. */
 
 static LSPalmService *g_service = NULL;   /* pub+priv registration                     */
 static LSHandle      *g_pub     = NULL;   /* public connection (untrusted apps)        */
@@ -198,11 +201,15 @@ static bool cb_dial(LSHandle *sh, LSMessage *msg, void *ctx)
     return true;
 }
 
-/* Answering needs media we don't have yet; decline instead of faking a connected call with no audio. */
+/* User tapped Answer on an incoming Signal call. The signal_media engine already auto-answered the
+ * RingRTC offer (ICE connects via renomination, SRTP is flowing both ways), so accepting just means:
+ * flip the line to active and turn on the audiod phone scenario so mic/speaker actually carry the
+ * audio. Mirrors Telegram's cbAnswer -> callBridgeAnswer + callLunaSetCallAudio(true). */
 static bool cb_answer(LSHandle *sh, LSMessage *msg, void *ctx)
 {
+    presage_handle_call_state(g_account, g_addr, g_name, SIG_CALL_ANSWERED, g_call_id);
     LSError err; LSErrorInit(&err);
-    LSMessageReply(sh, msg, "{\"returnValue\":false,\"errorText\":\"Signal call audio not yet supported\"}", &err);
+    LSMessageReply(sh, msg, "{\"returnValue\":true}", &err);
     if (LSErrorIsSet(&err)) LSErrorFree(&err);
     return true;
 }
@@ -339,6 +346,13 @@ static gboolean call_state_apply(gpointer data)
             g_outgoing = true;
             set_str(&g_state, "active"); set_str(&g_cause, NULL);
             if (e->call_id) g_call_id = e->call_id;
+            break;
+        case SIG_CALL_ANSWERED:
+            /* User tapped Answer on an INCOMING call. The media engine already auto-answered on the
+             * offer (SRTP is flowing), so all we do here is flip the line to active - which both shows
+             * a connected card AND (below) fires the audiod phone scenario that routes mic/speaker to
+             * the voip path. Keep g_outgoing=false and the caller's addr/name from SIG_CALL_INCOMING. */
+            set_str(&g_state, "active"); set_str(&g_cause, NULL);
             break;
         case SIG_CALL_DECLINED:
             set_str(&g_state, "disconnected"); set_str(&g_cause, "rejected");

@@ -49,6 +49,18 @@ static gboolean libpurple2_plugin_load(PurplePlugin *plugin) {
     // orphaned on-disk Signal store is removed. Handle is the plugin, so it is disconnected in unload.
     purple_signal_connect(purple_accounts_get_handle(), "account-removed", plugin,
                           PURPLE_CALLBACK(presage_account_removed_cb), NULL);
+
+    // Register com.palm.signal.call NOW, at plugin load - NOT at presage_login. The stock Phone app's
+    // CallSynergizer subscribes to every PHONE transport's callStateQuery ONCE at its own launch (device
+    // boot) and does NOT reliably re-subscribe if a transport was absent then. presage login is slow and
+    // flaky (the adopt-vs-reconnect bug: Signal shows online but only really connects on a manual toggle),
+    // so binding registration to login meant com.palm.signal.call was still absent at boot -> CallSynergizer
+    // got "com.palm.signal.call is not running", never retried, and incoming Signal calls never rang the
+    // Phone app (Telegram/WhatsApp won only because they log in fast). Registering here - decoupled from
+    // login - puts the service on the bus before the Phone app subscribes. callLunaInit(NULL) leaves
+    // g_account NULL (callStateQuery just returns empty lines until an account connects); presage_login
+    // later calls callLunaInit(account) which is idempotent for the service and only binds g_account.
+    callLunaInit(NULL);
     return TRUE;
 }
 
