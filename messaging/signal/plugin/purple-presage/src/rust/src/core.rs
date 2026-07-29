@@ -267,6 +267,7 @@ async fn run<C: presage::store::Store + 'static>(
             // cross-service-linked contact (Alan's Signal thread keyed by his phone number) it passes an
             // E.164 number. If it isn't a UUID, look it up like the phone-addressed send path does.
             let callee_str = callee.trim().to_string();
+            eprintln!("call_bridge: place_call dialed='{callee_str}' (resolving to Signal UUID...)");
             let uuid = match presage::libsignal_service::prelude::Uuid::parse_str(&callee_str) {
                 Ok(u) => u,
                 Err(_) => {
@@ -328,6 +329,7 @@ async fn run<C: presage::store::Store + 'static>(
             // traversal -> the call hangs on "Connecting".
             let ice = crate::ice::fetch_ice_servers(&manager).await;
             crate::call_bridge::set_ice_servers(ice);
+            eprintln!("call_bridge: place_call resolved dialed='{callee_str}' -> UUID {uuid} ; sending Offer");
             if let Some((call_id, opaque)) = crate::call_bridge::place_call(uuid, caller_id, callee_id) {
                 let cm = presage::proto::CallMessage {
                     offer: Some(presage::proto::call_message::Offer {
