@@ -333,6 +333,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *odec   = mk("opusdec",       "rx-opusdec");
     GstElement *aconv  = mk("audioconvert",  "rx-aconv");
     GstElement *asink  = mk("alsasink",      "rx-alsasink");
+    GstElement *rxrtcp = mk("fakesink",      "rx-rtcp-drain");  /* drain srtpdec rtcp_src (rtcp-mux) */
 
     /* -------- TX: alsasrc device=voipsource -> opusenc -> rtpopuspay -> srtpenc -> nicesink ----- */
     GstElement *asrc   = mk("alsasrc",       "tx-alsasrc");
@@ -344,7 +345,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
     GstElement *nsink  = mk("nicesink",      "tx-nicesink");
 
-    if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink ||
+    if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
         !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
@@ -360,6 +361,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     g_signal_connect(sdec, "request-key", G_CALLBACK(on_srtpdec_request_key), sm);
     { GstCaps *c = opus_rtp_caps(); g_object_set(rxrtp, "caps", c, NULL); gst_caps_unref(c); }
     g_object_set(asink, "device", "voip", "sync", FALSE, NULL);
+    g_object_set(rxrtcp, "sync", FALSE, "async", FALSE, NULL);  /* never stall the pipeline */
 
     /* TX caps + keys */
     { GstCaps *c = gst_caps_new_simple("audio/x-raw",
@@ -377,11 +379,21 @@ static gboolean build_pipeline(SignalMedia *sm)
       gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
 
     gst_bin_add_many(GST_BIN(sm->pipeline),
-                     nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink,
+                     nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
                      asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL);
 
+    /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
+     * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
+     * sends RTP AND RTCP on the single socket, so nicesrc feeds both into srtpdec.rtp_sink; srtpdec
+     * routes the RTCP packets to rtcp_src (gst_srtp_dec_chain: is_rtcp -> rtcp_srcpad). If rtcp_src is
+     * unlinked that push returns GST_FLOW_NOT_LINKED, which stops the whole RX stream ("not-linked")
+     * the instant real media arrives -> call dropped. Loopback never hit this (it sends no RTCP).
+     * Drain rtcp_src into a fakesink so RTCP is discarded and RTP keeps flowing. */
     if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, NULL)) {
         g_printerr("signal_media: RX link failed\n"); return FALSE;
+    }
+    if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
+        g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
     if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL)) {
         g_printerr("signal_media: TX link failed\n"); return FALSE;
