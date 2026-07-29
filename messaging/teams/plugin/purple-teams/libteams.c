@@ -1054,7 +1054,20 @@ plugin_load(PurplePlugin *plugin
 						NULL);
 	
 	purple_signal_connect(purple_get_core(), "uri-handler", plugin, PURPLE_CALLBACK(teams_uri_handler), NULL);
-	
+
+#ifdef TEAMS_WEBOS_CALL
+	/* Register com.palm.teams.call at plugin LOAD - NOT at login. The stock Phone app's CallSynergizer
+	 * subscribes to every PHONE transport's callStateQuery ONCE at its own launch (device boot) and does
+	 * not reliably re-subscribe if a transport was absent then. Binding registration to teams login
+	 * (teams_login.c -> teams_call_luna_init) means a slow Teams login (trouter/websocket) can leave
+	 * com.palm.teams.call off the bus at boot -> CallSynergizer gets "not running", never retries, and
+	 * incoming Teams calls never ring the Phone app. Registering here puts the service on the bus first.
+	 * teams_call_luna_init(NULL) leaves g_sa NULL (callStateQuery returns empty lines until an account
+	 * connects); the login path calls it again to bind the TeamsAccount (idempotent). Mirrors the Signal
+	 * fix in purple-presage init.c. */
+	teams_call_luna_init(NULL);
+#endif
+
 	return TRUE;
 }
 
