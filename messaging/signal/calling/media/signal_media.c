@@ -93,7 +93,7 @@ static srtp_t      g_data_srtp    = NULL;  /* TX SRTP session for the data SSRC 
 static gboolean    g_srtp_inited  = FALSE;
 static guint64     g_accept_id    = 0;     /* RingRTC call_id -> Accepted.id */
 static gboolean    g_accepted     = FALSE; /* user accepted -> keep resending */
-static guint       g_accept_timer = 0;     /* resend source id on g_sm.ctx */
+static GThread    *g_accept_thread= NULL;  /* dedicated resend thread (NOT g_sm.ctx - see below) */
 static guint16     g_data_seq     = 0;     /* RTP seq for the data stream */
 static guint32     g_data_ts      = 0;     /* RTP timestamp for the data stream */
 
@@ -167,26 +167,30 @@ static void sm_push_accepted(void)
     if (logged < 3) { g_message("signal_media: sent rtp-data Accepted (%d enc bytes) -> nice_agent_send=%d", len, sent); logged++; }
 }
 
-static gboolean sm_accept_tick(gpointer u)
+/* Dedicated resend thread. CRITICAL: nice_agent_send() must NOT be called from the agent's own
+ * GMainContext (g_sm.ctx) - doing so self-deadlocks on the agent mutex in libnice 0.1.21, which froze
+ * BOTH the media thread (no more STUN consent responses) AND nicesink's audio (also nice_agent_send),
+ * so the peer saw us go silent and hung up ~2-5s in. Sending from a separate thread is exactly what
+ * gstnicesink does from its streaming thread, and is safe. This thread also owns g_data_srtp, so
+ * srtp_protect is never hit concurrently. */
+static gpointer accept_thread_fn(gpointer u)
 {
     (void)u;
-    if (!g_accepted) { g_accept_timer = 0; return G_SOURCE_REMOVE; }
-    sm_push_accepted();
-    return G_SOURCE_CONTINUE;
+    while (g_accepted) {
+        sm_push_accepted();
+        g_usleep(500 * 1000);   /* ~1-2 Hz resend, like RingRTC */
+    }
+    return NULL;
 }
 
 /* The user tapped Answer (ACCEPT stdin cmd): start emitting the RingRTC Accepted so the caller's phone
- * stops ringing and both sides ungate audio. Idempotent. All sends run on the media thread. */
+ * stops ringing and both sides ungate audio. Idempotent. */
 void signal_media_accept(guint64 call_id)
 {
     g_accept_id = call_id;
-    g_accepted  = TRUE;
-    if (!g_accept_timer && g_sm.ctx) {
-        GSource *s = g_timeout_source_new(500);          /* first send ~500ms, then every 500ms */
-        g_source_set_callback(s, sm_accept_tick, NULL, NULL);
-        g_accept_timer = g_source_attach(s, g_sm.ctx);   /* fire on the media thread */
-        g_source_unref(s);
-    }
+    if (g_accepted) return;         /* already emitting */
+    g_accepted = TRUE;
+    g_accept_thread = g_thread_new("sig-accept", accept_thread_fn, NULL);
     g_message("signal_media: ACCEPT call_id=%" G_GUINT64_FORMAT " -> emitting rtp-data Accepted", call_id);
 }
 
@@ -626,8 +630,9 @@ void signal_media_stop(void)
     if (!g_sm.running) return;
     g_sm.running = FALSE;
 
-    /* stop the rtp-data Accepted resend (its GSource lives on g_sm.ctx, torn down below) + free session */
-    g_accepted = FALSE; g_accept_timer = 0;
+    /* stop + join the rtp-data resend thread BEFORE freeing the agent/srtp it uses (no use-after-free) */
+    g_accepted = FALSE;
+    if (g_accept_thread) { g_thread_join(g_accept_thread); g_accept_thread = NULL; }
     if (g_data_srtp) { srtp_dealloc(g_data_srtp); g_data_srtp = NULL; }
 
     if (g_sm.pipeline) gst_element_set_state(g_sm.pipeline, GST_STATE_NULL);
