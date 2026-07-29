@@ -36,6 +36,8 @@
 #include <unistd.h>     /* write, _exit */
 #include <sys/resource.h>  /* setpriority - realtime nice for the call */
 #include <sched.h>         /* SCHED_FIFO for the capture/send threads */
+#include <speex/speex_echo.h>        /* SpeexDSP acoustic echo canceller */
+#include <speex/speex_preprocess.h>  /* residual-echo suppression + denoise */
 
 #include "srtp_kdf.h"
 #include "signal_media.h"
@@ -83,6 +85,94 @@ typedef struct {
 } SignalMedia;
 
 static SignalMedia g_sm;         /* single active call (the device rings one at a time) */
+
+/* --- Acoustic echo cancellation (SpeexDSP) --------------------------------------------------------
+ * The tablet is on speakerphone: the mic captures the far-end audio coming out of the speaker and
+ * would send it back = echo. WhatsApp/Telegram cancel this inside their own engines; our GStreamer
+ * engine uses SpeexDSP's echo canceller. Its split playback/capture API is built for exactly our case
+ * (playback and capture on different threads): speex_echo_playback() buffers each frame we PLAY (the
+ * reference); speex_echo_capture() cancels that echo out of each mic frame we CAPTURE. Both sides are
+ * reframed to a fixed 10 ms (480-sample @ 48 kHz mono) buffer by an audiobuffersplit so the fixed-size
+ * frames Speex requires arrive cleanly. A mutex guards the shared state (the two calls run on the RX
+ * and TX streaming threads). Unlike webrtc-audio-processing (which alignment-traps this old kernel),
+ * libspeexdsp is pure C, tiny, and loads fine. */
+#define AEC_FRAME 480    /* 10 ms @ 48 kHz mono = the Speex frame size */
+#define AEC_TAIL  4800   /* 100 ms echo tail (filter length) - covers the speakerphone loop delay */
+static SpeexEchoState        *g_echo    = NULL;
+static SpeexPreprocessState  *g_preproc = NULL;
+static GMutex                 g_echo_lock;
+static gboolean               g_echo_ready = FALSE;
+
+static void sm_echo_init(void)
+{
+    if (g_echo_ready) return;
+    g_mutex_init(&g_echo_lock);
+    g_echo = speex_echo_state_init(AEC_FRAME, AEC_TAIL);
+    if (!g_echo) { g_message("signal_media: speex_echo_state_init failed -> AEC OFF"); return; }
+    int rate = SIGNAL_OPUS_CLOCKRATE;
+    speex_echo_ctl(g_echo, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
+    g_preproc = speex_preprocess_state_init(AEC_FRAME, rate);
+    if (g_preproc) {
+        speex_preprocess_ctl(g_preproc, SPEEX_PREPROCESS_SET_ECHO_STATE, g_echo);
+        int on = 1;
+        speex_preprocess_ctl(g_preproc, SPEEX_PREPROCESS_SET_DENOISE, &on);
+    }
+    g_echo_ready = TRUE;
+    g_message("signal_media: SpeexDSP AEC ON (frame=%d tail=%d @ %d Hz)", AEC_FRAME, AEC_TAIL, rate);
+}
+
+static void sm_echo_free(void)
+{
+    if (!g_echo_ready) return;
+    g_echo_ready = FALSE;
+    g_mutex_lock(&g_echo_lock);
+    if (g_preproc) { speex_preprocess_state_destroy(g_preproc); g_preproc = NULL; }
+    if (g_echo)    { speex_echo_state_destroy(g_echo);          g_echo = NULL; }
+    g_mutex_unlock(&g_echo_lock);
+}
+
+/* RX (playback) probe: register the far-end frame we're about to play as the AEC reference. Passes the
+ * buffer through unchanged. Fixed 480-sample buffers from the RX audiobuffersplit. */
+static GstPadProbeReturn sm_rx_ref_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u)
+{
+    (void)pad; (void)u;
+    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    GstMapInfo m;
+    if (g_echo_ready && buf && gst_buffer_map(buf, &m, GST_MAP_READ)) {
+        if (m.size >= (gsize)(AEC_FRAME * 2)) {
+            g_mutex_lock(&g_echo_lock);
+            if (g_echo_ready) speex_echo_playback(g_echo, (const spx_int16_t *)m.data);
+            g_mutex_unlock(&g_echo_lock);
+        }
+        gst_buffer_unmap(buf, &m);
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+/* TX (capture) probe: cancel the echo out of the mic frame IN PLACE before it is encoded. Fixed
+ * 480-sample buffers from the TX audiobuffersplit. */
+static GstPadProbeReturn sm_tx_aec_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u)
+{
+    (void)pad; (void)u;
+    if (!g_echo_ready) return GST_PAD_PROBE_OK;
+    GstBuffer *buf = gst_buffer_make_writable(GST_PAD_PROBE_INFO_BUFFER(info));
+    GST_PAD_PROBE_INFO_DATA(info) = buf;   /* make_writable may have returned a new buffer */
+    GstMapInfo m;
+    if (buf && gst_buffer_map(buf, &m, GST_MAP_READWRITE)) {
+        if (m.size >= (gsize)(AEC_FRAME * 2)) {
+            spx_int16_t out[AEC_FRAME];
+            g_mutex_lock(&g_echo_lock);
+            if (g_echo_ready) {
+                speex_echo_capture(g_echo, (spx_int16_t *)m.data, out);
+                if (g_preproc) speex_preprocess_run(g_preproc, out);
+                memcpy(m.data, out, AEC_FRAME * 2);
+            }
+            g_mutex_unlock(&g_echo_lock);
+        }
+        gst_buffer_unmap(buf, &m);
+    }
+    return GST_PAD_PROBE_OK;
+}
 
 /* --- RingRTC rtp-data channel (the "Accepted" signal) ----------------------------------------------
  * A 1:1 RingRTC call stays "ringing" on the caller and gates ALL media until the callee sends an
@@ -479,11 +569,10 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *depay  = mk("rtpopusdepay",  "rx-depay");
     GstElement *odec   = mk("opusdec",       "rx-opusdec");
     GstElement *aconv  = mk("audioconvert",  "rx-aconv");
-    /* AEC: webrtcechoprobe taps the far-end audio about to hit the speaker as the REFERENCE signal.
-     * pcaps forces S16LE/48k/mono (what the WebRTC APM + the paired webrtcdsp expect). Place it as
-     * close to the sink as possible so the reference matches what's actually played. */
-    GstElement *pcaps  = mk("capsfilter",    "rx-probecaps");
-    GstElement *wprobe = mk("webrtcechoprobe","rx-echoprobe");
+    /* AEC reference tap: rxcaps2 forces S16LE/48k/mono, rxsplit reframes to fixed 10ms buffers, and a
+     * probe on rxsplit feeds each played frame to speex_echo_playback. Audio still flows to the sink. */
+    GstElement *rxcaps2= mk("capsfilter",     "rx-aeccaps");
+    GstElement *rxsplit= mk("audiobuffersplit","rx-aecsplit");
     GstElement *asink  = mk("alsasink",      "rx-alsasink");
     GstElement *rxrtcp = mk("fakesink",      "rx-rtcp-drain");  /* drain srtpdec rtcp_src (rtcp-mux) */
 
@@ -492,10 +581,9 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *txconv = mk("audioconvert",  "tx-aconv");
     GstElement *txre   = mk("audioresample", "tx-ares");
     GstElement *txcaps = mk("capsfilter",    "tx-rawcaps");    /* force 48k/mono for opusenc */
-    /* AEC: webrtcdsp runs on the MIC capture and subtracts the echo of the far-end audio (referenced
-     * from the webrtcechoprobe in the RX path) before we encode -> the speakerphone loop stops echoing
-     * the caller back to themselves. Also does noise suppression + high-pass. */
-    GstElement *wdsp   = mk("webrtcdsp",     "tx-webrtcdsp");
+    /* AEC on the mic: txsplit reframes to fixed 10ms buffers, a probe runs speex_echo_capture in-place
+     * to subtract the speaker echo (referenced from the RX probe) before we encode. */
+    GstElement *txsplit= mk("audiobuffersplit","tx-aecsplit");
     GstElement *oenc   = mk("opusenc",       "tx-opusenc");
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
@@ -525,11 +613,15 @@ static gboolean build_pipeline(SignalMedia *sm)
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
-    /* AEC elements are optional: if libgstwebrtcdsp isn't present, run without echo cancellation rather
-     * than fail the whole call. g_have_aec gates the wiring below. */
-    gboolean g_have_aec = (wdsp != NULL && wprobe != NULL && pcaps != NULL);
+    /* AEC is optional: it needs audiobuffersplit (for the fixed 10ms frames Speex wants) on both RX and
+     * TX. If that element is missing, run without echo cancellation rather than fail the call. */
+    gboolean g_have_aec = (rxcaps2 != NULL && rxsplit != NULL && txsplit != NULL);
+    if (g_have_aec) {
+        sm_echo_init();
+        g_have_aec = g_echo_ready;   /* speex init could still fail */
+    }
     if (!g_have_aec)
-        g_message("signal_media: webrtcdsp/echoprobe unavailable -> AEC OFF (call still works, may echo)");
+        g_message("signal_media: AEC unavailable (no audiobuffersplit / speex init failed) -> AEC OFF (may echo)");
 
     /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
@@ -564,24 +656,22 @@ static gboolean build_pipeline(SignalMedia *sm)
     g_object_set(rxrtcp, "sync", FALSE, "async", FALSE, NULL);  /* never stall the pipeline */
 
     if (g_have_aec) {
-        /* probe reference caps: S16LE/48k/mono, the format the WebRTC APM works in. */
+        /* AEC reference (RX) caps: S16LE/48k/mono, and reframe to exactly AEC_FRAME (10ms) buffers so
+         * speex_echo_playback gets fixed-size frames. A read probe on rxsplit feeds them to the AEC. */
         GstCaps *c = gst_caps_new_simple("audio/x-raw",
                                          "format",   G_TYPE_STRING, "S16LE",
                                          "rate",     G_TYPE_INT,    SIGNAL_OPUS_CLOCKRATE,
                                          "channels", G_TYPE_INT,    SIGNAL_OPUS_CHANNELS, NULL);
-        g_object_set(pcaps, "caps", c, NULL); gst_caps_unref(c);
-        /* webrtcdsp <-> webrtcechoprobe are paired by the probe element's name. delay-agnostic +
-         * extended-filter are ESSENTIAL here: we don't report a precise speaker->mic delay and the
-         * tablet's speakerphone echo path is long/variable, which those two modes are built to handle.
-         * Keep NS + high-pass on; leave AGC default. */
-        g_object_set(wdsp,
-                     "probe", "rx-echoprobe",
-                     "echo-cancel", TRUE,
-                     "delay-agnostic", TRUE,
-                     "extended-filter", TRUE,
-                     "high-pass-filter", TRUE,
-                     "noise-suppression", TRUE,
-                     NULL);
+        g_object_set(rxcaps2, "caps", c, NULL); gst_caps_unref(c);
+        /* 10 ms buffers = 1/100 s (GstFraction) on both split elements. */
+        g_object_set(rxsplit, "output-buffer-duration", 1, 100, NULL);
+        g_object_set(txsplit, "output-buffer-duration", 1, 100, NULL);
+        { GstPad *p = gst_element_get_static_pad(rxsplit, "src");
+          gst_pad_add_probe(p, GST_PAD_PROBE_TYPE_BUFFER, sm_rx_ref_probe, NULL, NULL);
+          gst_object_unref(p); }
+        { GstPad *p = gst_element_get_static_pad(txsplit, "src");
+          gst_pad_add_probe(p, GST_PAD_PROBE_TYPE_BUFFER, sm_tx_aec_probe, NULL, NULL);
+          gst_object_unref(p); }
     }
 
     /* TX caps + keys */
@@ -615,7 +705,7 @@ static gboolean build_pipeline(SignalMedia *sm)
                      nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, rxrtcp,
                      asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, txq, NULL);
     if (g_have_aec)
-        gst_bin_add_many(GST_BIN(sm->pipeline), pcaps, wprobe, wdsp, NULL);
+        gst_bin_add_many(GST_BIN(sm->pipeline), rxcaps2, rxsplit, txsplit, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -624,11 +714,11 @@ static gboolean build_pipeline(SignalMedia *sm)
      * unlinked that push returns GST_FLOW_NOT_LINKED, which stops the whole RX stream ("not-linked")
      * the instant real media arrives -> call dropped. Loopback never hit this (it sends no RTCP).
      * Drain rtcp_src into a fakesink so RTCP is discarded and RTP keeps flowing. */
-    /* RX: ...odec -> aconv -> [pcaps -> webrtcechoprobe ->] alsasink. The echoprobe sits right before
-     * the sink so it references exactly what is played (the AEC reference). */
+    /* RX: ...odec -> aconv -> [rxcaps2(S16LE) -> rxsplit(10ms, probe=speex_echo_playback) ->] alsasink.
+     * The split's probe feeds each played 10ms frame to the AEC reference; audio still plays normally. */
     if (g_have_aec) {
-        if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, pcaps, wprobe, asink, NULL)) {
-            g_printerr("signal_media: RX link (with echoprobe) failed\n"); return FALSE;
+        if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, rxcaps2, rxsplit, asink, NULL)) {
+            g_printerr("signal_media: RX link (with AEC reference) failed\n"); return FALSE;
         }
     } else if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, NULL)) {
         g_printerr("signal_media: RX link failed\n"); return FALSE;
@@ -636,13 +726,12 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    /* audio: alsasrc -> aconv -> ares -> txcaps -> [webrtcdsp ->] opusenc -> pay -> srtpenc -> funnel;
-     * data: appsrc -> funnel; funnel -> queue -> the single nicesink. The queue collapses both upstream
-     * threads onto its single src-side task thread before the sink. webrtcdsp cancels the speakerphone
-     * echo on the mic before encoding. */
+    /* audio: alsasrc -> aconv -> ares -> txcaps -> [txsplit(10ms, probe=speex_echo_capture in-place) ->]
+     * opusenc -> pay -> srtpenc -> funnel; data: appsrc -> funnel; funnel -> queue -> the single
+     * nicesink. The txsplit's probe subtracts the speaker echo from each mic frame before encoding. */
     if (g_have_aec) {
-        if (!gst_element_link_many(asrc, txconv, txre, txcaps, wdsp, oenc, pay, senc, funnel, txq, nsink, NULL)) {
-            g_printerr("signal_media: TX (audio, with webrtcdsp) link failed\n"); return FALSE;
+        if (!gst_element_link_many(asrc, txconv, txre, txcaps, txsplit, oenc, pay, senc, funnel, txq, nsink, NULL)) {
+            g_printerr("signal_media: TX (audio, with AEC) link failed\n"); return FALSE;
         }
     } else if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, txq, nsink, NULL)) {
         g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
@@ -792,6 +881,7 @@ void signal_media_stop(void)
 
     if (g_sm.loop) g_main_loop_quit(g_sm.loop);
     if (g_sm.thread) { g_thread_join(g_sm.thread); g_sm.thread = NULL; }
+    sm_echo_free();     /* now that the streaming threads (probe callers) are stopped, free the AEC */
 
     if (g_sm.pipeline) { gst_object_unref(g_sm.pipeline); g_sm.pipeline = NULL; }
     if (g_sm.agent)    { g_object_unref(g_sm.agent);      g_sm.agent = NULL; }

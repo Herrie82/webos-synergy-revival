@@ -45,7 +45,7 @@ export PKG_CONFIG_LIBDIR=$SYSROOT/lib/pkgconfig
 
 if [ ! -x "$CC" ]; then echo "ERROR: cross gcc not found at $CC" >&2; exit 1; fi
 
-PKGS="gstreamer-1.0 gstreamer-app-1.0 gstreamer-base-1.0 nice libsrtp2 opus"
+PKGS="gstreamer-1.0 gstreamer-app-1.0 gstreamer-base-1.0 nice libsrtp2 opus speexdsp"
 GST_CFLAGS=$(pkg-config --cflags $PKGS)
 GST_LIBS=$(pkg-config --libs $PKGS)
 
