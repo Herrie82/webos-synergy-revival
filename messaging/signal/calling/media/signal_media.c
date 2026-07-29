@@ -479,6 +479,11 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *depay  = mk("rtpopusdepay",  "rx-depay");
     GstElement *odec   = mk("opusdec",       "rx-opusdec");
     GstElement *aconv  = mk("audioconvert",  "rx-aconv");
+    /* AEC: webrtcechoprobe taps the far-end audio about to hit the speaker as the REFERENCE signal.
+     * pcaps forces S16LE/48k/mono (what the WebRTC APM + the paired webrtcdsp expect). Place it as
+     * close to the sink as possible so the reference matches what's actually played. */
+    GstElement *pcaps  = mk("capsfilter",    "rx-probecaps");
+    GstElement *wprobe = mk("webrtcechoprobe","rx-echoprobe");
     GstElement *asink  = mk("alsasink",      "rx-alsasink");
     GstElement *rxrtcp = mk("fakesink",      "rx-rtcp-drain");  /* drain srtpdec rtcp_src (rtcp-mux) */
 
@@ -487,6 +492,10 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *txconv = mk("audioconvert",  "tx-aconv");
     GstElement *txre   = mk("audioresample", "tx-ares");
     GstElement *txcaps = mk("capsfilter",    "tx-rawcaps");    /* force 48k/mono for opusenc */
+    /* AEC: webrtcdsp runs on the MIC capture and subtracts the echo of the far-end audio (referenced
+     * from the webrtcechoprobe in the RX path) before we encode -> the speakerphone loop stops echoing
+     * the caller back to themselves. Also does noise suppression + high-pass. */
+    GstElement *wdsp   = mk("webrtcdsp",     "tx-webrtcdsp");
     GstElement *oenc   = mk("opusenc",       "tx-opusenc");
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
@@ -516,6 +525,11 @@ static gboolean build_pipeline(SignalMedia *sm)
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
+    /* AEC elements are optional: if libgstwebrtcdsp isn't present, run without echo cancellation rather
+     * than fail the whole call. g_have_aec gates the wiring below. */
+    gboolean g_have_aec = (wdsp != NULL && wprobe != NULL && pcaps != NULL);
+    if (!g_have_aec)
+        g_message("signal_media: webrtcdsp/echoprobe unavailable -> AEC OFF (call still works, may echo)");
 
     /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
@@ -549,6 +563,27 @@ static gboolean build_pipeline(SignalMedia *sm)
     g_object_set(asink, "device", "voip", "sync", FALSE, NULL);
     g_object_set(rxrtcp, "sync", FALSE, "async", FALSE, NULL);  /* never stall the pipeline */
 
+    if (g_have_aec) {
+        /* probe reference caps: S16LE/48k/mono, the format the WebRTC APM works in. */
+        GstCaps *c = gst_caps_new_simple("audio/x-raw",
+                                         "format",   G_TYPE_STRING, "S16LE",
+                                         "rate",     G_TYPE_INT,    SIGNAL_OPUS_CLOCKRATE,
+                                         "channels", G_TYPE_INT,    SIGNAL_OPUS_CHANNELS, NULL);
+        g_object_set(pcaps, "caps", c, NULL); gst_caps_unref(c);
+        /* webrtcdsp <-> webrtcechoprobe are paired by the probe element's name. delay-agnostic +
+         * extended-filter are ESSENTIAL here: we don't report a precise speaker->mic delay and the
+         * tablet's speakerphone echo path is long/variable, which those two modes are built to handle.
+         * Keep NS + high-pass on; leave AGC default. */
+        g_object_set(wdsp,
+                     "probe", "rx-echoprobe",
+                     "echo-cancel", TRUE,
+                     "delay-agnostic", TRUE,
+                     "extended-filter", TRUE,
+                     "high-pass-filter", TRUE,
+                     "noise-suppression", TRUE,
+                     NULL);
+    }
+
     /* TX caps + keys */
     { GstCaps *c = gst_caps_new_simple("audio/x-raw",
                                        "format",   G_TYPE_STRING, "S16LE",
@@ -579,6 +614,8 @@ static gboolean build_pipeline(SignalMedia *sm)
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, rxrtcp,
                      asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, txq, NULL);
+    if (g_have_aec)
+        gst_bin_add_many(GST_BIN(sm->pipeline), pcaps, wprobe, wdsp, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -587,15 +624,27 @@ static gboolean build_pipeline(SignalMedia *sm)
      * unlinked that push returns GST_FLOW_NOT_LINKED, which stops the whole RX stream ("not-linked")
      * the instant real media arrives -> call dropped. Loopback never hit this (it sends no RTCP).
      * Drain rtcp_src into a fakesink so RTCP is discarded and RTP keeps flowing. */
-    if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, NULL)) {
+    /* RX: ...odec -> aconv -> [pcaps -> webrtcechoprobe ->] alsasink. The echoprobe sits right before
+     * the sink so it references exactly what is played (the AEC reference). */
+    if (g_have_aec) {
+        if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, pcaps, wprobe, asink, NULL)) {
+            g_printerr("signal_media: RX link (with echoprobe) failed\n"); return FALSE;
+        }
+    } else if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, NULL)) {
         g_printerr("signal_media: RX link failed\n"); return FALSE;
     }
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    /* audio: ...srtpenc -> funnel; data: appsrc -> funnel; funnel -> queue -> the single nicesink.
-     * The queue collapses both upstream threads onto its single src-side task thread before the sink. */
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, txq, nsink, NULL)) {
+    /* audio: alsasrc -> aconv -> ares -> txcaps -> [webrtcdsp ->] opusenc -> pay -> srtpenc -> funnel;
+     * data: appsrc -> funnel; funnel -> queue -> the single nicesink. The queue collapses both upstream
+     * threads onto its single src-side task thread before the sink. webrtcdsp cancels the speakerphone
+     * echo on the mic before encoding. */
+    if (g_have_aec) {
+        if (!gst_element_link_many(asrc, txconv, txre, txcaps, wdsp, oenc, pay, senc, funnel, txq, nsink, NULL)) {
+            g_printerr("signal_media: TX (audio, with webrtcdsp) link failed\n"); return FALSE;
+        }
+    } else if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, txq, nsink, NULL)) {
         g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
     }
     if (!gst_element_link(dsrc, funnel)) {
