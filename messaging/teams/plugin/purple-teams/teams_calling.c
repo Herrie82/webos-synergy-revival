@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
+#include <unistd.h>
 
 #define TEAMS_CALL_LOG      "/media/internal/teams-call.log"
 #define TEAMS_CALL_CAPTURE  "/media/internal/teams-call-capture.log"
@@ -94,26 +95,239 @@ teams_calling_set_state_cb(TeamsCallStateCb cb)
 	g_state_cb = cb;
 }
 
-/* Media engine plug point. The real engine (teams_media - a fork of Signal's on-device
- * gst-1.20 nice+srtp+alsa engine) runs out-of-process and is driven over an IPC line
- * protocol. Until it is wired (pending a live capture to confirm codec + MS-TURN auth),
- * these are traced stubs so the signaling + bridge can be exercised end-to-end. */
+/* ---- media engine integration (teams_media, out-of-process) -----------------------------
+ * On answer we: parse the offer SDP (peer ice-ufrag/pwd, a=crypto GCM key, opus PT, candidates),
+ * spawn `teams_media --answer`, feed it START + the peer candidates, read back OUR ice creds +
+ * TX SRTP key + local candidates, build an SDP answer and POST it to links.attach. teams_media
+ * does the ICE + SRTP + Opus <-> ALSA voip. FIRST-ATTEMPT wiring - the exact answer-SDP shape and
+ * the POST body/auth need on-device iteration (heavily logged). */
+#define TEAMS_MEDIA_BIN "/media/internal/teams_media"
+
+typedef struct {
+	TeamsCall  *call;
+	GPid        pid;
+	int         in_fd;         /* -> child stdin */
+	GIOChannel *out_ch;        /* <- child stdout */
+	guint       out_watch;
+	gchar      *our_ufrag, *our_pwd, *our_txkey;
+	GString    *our_cands;     /* accumulated "candidate:..." lines, one per line */
+	gboolean    ready, answered;
+	guint       answer_timer;
+} TeamsMediaProc;
+
+static TeamsMediaProc *g_mproc;
+
+/* return the value after "a=<prefix>:" on the first matching line (newly-allocated), or NULL */
+static gchar *
+sdp_line_val(const char *sdp, const char *prefix)
+{
+	gchar **lines, *ret = NULL;
+	int i;
+	if (!sdp) return NULL;
+	lines = g_strsplit(sdp, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		gchar *l = g_strstrip(lines[i]);
+		if (g_str_has_prefix(l, prefix)) { ret = g_strdup(l + strlen(prefix)); break; }
+	}
+	g_strfreev(lines);
+	return ret;
+}
+
+/* the AEAD_AES_256_GCM inline key (base64, up to the '|') from the offer's a=crypto lines */
+static gchar *
+sdp_gcm_key(const char *sdp)
+{
+	gchar **lines; int i; gchar *ret = NULL;
+	if (!sdp) return NULL;
+	lines = g_strsplit(sdp, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		gchar *l = g_strstrip(lines[i]);
+		if (strstr(l, "AEAD_AES_256_GCM") && strstr(l, "inline:")) {
+			gchar *k = strstr(l, "inline:") + 7;
+			gchar *bar = strchr(k, '|');
+			ret = bar ? g_strndup(k, bar - k) : g_strdup(k);
+			break;
+		}
+	}
+	g_strfreev(lines);
+	return ret;
+}
+
+static void teams_calling_post_answer(TeamsCall *call, const char *answer_sdp);
+static void call_http_post(TeamsAccount *sa, const gchar *full_url, const gchar *body);
+
+/* build the SDP answer from our media params + the offer, and POST it to links.attach.
+ * NOTE: answer shape is a best-effort mirror of the offer - iterate on device. */
+static void
+media_send_answer(TeamsMediaProc *mp)
+{
+	TeamsCall *call = mp->call;
+	GString *a;
+	gchar *offer_ip;
+	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
+	mp->answered = TRUE;
+
+	/* reuse the offer's connection IP for c=/o= (our real address is in the candidates anyway) */
+	offer_ip = sdp_line_val(call->sdp_offer, "c=IN IP4 ");
+	a = g_string_new("");
+	g_string_append(a, "v=0\r\n");
+	g_string_append_printf(a, "o=- 0 0 IN IP4 %s\r\n", offer_ip ? offer_ip : "127.0.0.1");
+	g_string_append(a, "s=session\r\n");
+	g_string_append_printf(a, "c=IN IP4 %s\r\n", offer_ip ? offer_ip : "127.0.0.1");
+	g_string_append(a, "b=CT:4000\r\nt=0 0\r\n");
+	g_string_append(a, "m=audio 3480 RTP/SAVP 102\r\n");
+	g_string_append(a, "a=rtcp-mux\r\n");
+	g_string_append(a, "a=label:main-audio\r\n");
+	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
+	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
+	g_string_append(a, "a=rtpmap:102 opus/48000/2\r\n");
+	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	if (mp->our_cands) {
+		gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1); int i;
+		for (i = 0; cl[i]; i++) if (cl[i][0]) g_string_append_printf(a, "a=%s\r\n", cl[i]);
+		g_strfreev(cl);
+	}
+	g_string_append(a, "a=sendrecv\r\n");
+
+	teams_call_log("ANSWER SDP built (%d bytes), posting to attach", (int) a->len);
+	teams_calling_post_answer(call, a->str);
+	g_string_free(a, TRUE);
+	g_free(offer_ip);
+}
+
+static gboolean
+media_answer_timeout(gpointer user)
+{
+	TeamsMediaProc *mp = user;
+	mp->answer_timer = 0;
+	media_send_answer(mp);   /* build+POST the answer with whatever candidates we gathered */
+	return G_SOURCE_REMOVE;
+}
+
+/* read UFRAG/PWD/TXKEY/CAND/READY/AUDIOD from teams_media's stdout */
+static gboolean
+media_on_output(GIOChannel *ch, GIOCondition cond, gpointer user)
+{
+	TeamsMediaProc *mp = user;
+	gchar *line = NULL; gsize len = 0;
+	if (cond & (G_IO_HUP | G_IO_ERR)) return FALSE;
+	while (g_io_channel_read_line(ch, &line, &len, NULL, NULL) == G_IO_STATUS_NORMAL && line) {
+		g_strchomp(line);
+		if (g_str_has_prefix(line, "UFRAG ")) { g_free(mp->our_ufrag); mp->our_ufrag = g_strdup(line + 6); }
+		else if (g_str_has_prefix(line, "PWD ")) { g_free(mp->our_pwd); mp->our_pwd = g_strdup(line + 4); }
+		else if (g_str_has_prefix(line, "TXKEY ")) { g_free(mp->our_txkey); mp->our_txkey = g_strdup(line + 6); }
+		else if (g_str_has_prefix(line, "CAND ")) { if (mp->our_cands) g_string_append_printf(mp->our_cands, "%s\n", line + 5); }
+		else if (g_str_has_prefix(line, "READY")) {
+			mp->ready = TRUE;
+			teams_call_log("media engine READY; gathering candidates before answer");
+			/* give ICE ~1.5s to gather candidates, then build + POST the answer */
+			if (!mp->answer_timer) mp->answer_timer = g_timeout_add(1500, media_answer_timeout, mp);
+		}
+		else if (g_str_has_prefix(line, "ERR ")) teams_call_log("media engine ERR: %s", line + 4);
+		else if (g_str_has_prefix(line, "AUDIOD ")) teams_call_log("media audiod %s", line + 7);
+		g_free(line); line = NULL;
+	}
+	return TRUE;
+}
+
 static void
 teams_media_start(TeamsCall *call)
 {
-	teams_call_log("MEDIA start (STUB - engine wiring pending capture): relay=%s legId=%s "
-	               "sessionKey=%d b64-chars ticket=%s sdp=%d bytes",
-	               call->udp_transport ? call->udp_transport : "(none)",
-	               call->media_leg_id ? call->media_leg_id : "(none)",
-	               call->session_key_b64 ? (int) strlen(call->session_key_b64) : 0,
-	               call->ticket ? "present" : "(none)",
-	               call->sdp_offer ? (int) strlen(call->sdp_offer) : 0);
+	TeamsMediaProc *mp;
+	gchar *ruf, *rpw, *rxkey, *pt_s = NULL;
+	int pt = 102;
+	gchar **lines; int i;
+	const gchar *argv[] = { TEAMS_MEDIA_BIN, "--answer", NULL };
+	/* teams_media needs the WPE gst runtime env (it runs patchelf'd to the wpe-glibc loader). The
+	 * transport already has LD_LIBRARY_PATH from imwrap.sh; add the gst plugin path + registry. */
+	const gchar *W = "/media/cryptofs/apps/usr/palm/applications/org.webosports.app.atlas/deviceroot/wpe-252/lib";
+	gchar *gstenv = g_strdup_printf("GST_PLUGIN_SYSTEM_PATH_1_0=%s/gstreamer-1.0", W);
+	gchar *regenv = g_strdup("GST_REGISTRY=/media/internal/teams-gst-registry.bin");
+	gchar **envp = g_get_environ();
+	GError *err = NULL;
+	GPid pid; int in_fd = -1, out_fd = -1;
+
+	ruf   = sdp_line_val(call->sdp_offer, "a=ice-ufrag:");
+	rpw   = sdp_line_val(call->sdp_offer, "a=ice-pwd:");
+	rxkey = sdp_gcm_key(call->sdp_offer);
+	pt_s  = sdp_line_val(call->sdp_offer, "a=rtpmap:"); /* not exact; opus is 102 in practice */
+	g_free(pt_s);
+	if (!ruf || !rpw || !rxkey) {
+		teams_call_log("media_start: offer missing ice/crypto (uf=%d pw=%d key=%d) - cannot answer",
+		               ruf != NULL, rpw != NULL, rxkey != NULL);
+		g_free(ruf); g_free(rpw); g_free(rxkey); g_strfreev(envp); g_free(gstenv); g_free(regenv);
+		return;
+	}
+
+	envp = g_environ_setenv(envp, "GST_PLUGIN_SYSTEM_PATH_1_0", strchr(gstenv, '=') + 1, TRUE);
+	envp = g_environ_setenv(envp, "GST_REGISTRY", strchr(regenv, '=') + 1, TRUE);
+
+	if (!g_spawn_async_with_pipes(NULL, (gchar **) argv, envp,
+	                              G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
+	                              &pid, &in_fd, &out_fd, NULL, &err)) {
+		teams_call_log("media_start: spawn %s failed: %s", TEAMS_MEDIA_BIN, err ? err->message : "?");
+		if (err) g_error_free(err);
+		g_free(ruf); g_free(rpw); g_free(rxkey); g_strfreev(envp); g_free(gstenv); g_free(regenv);
+		return;
+	}
+	g_strfreev(envp); g_free(gstenv); g_free(regenv);
+
+	mp = g_new0(TeamsMediaProc, 1);
+	mp->call = call; mp->pid = pid; mp->in_fd = in_fd;
+	mp->our_cands = g_string_new("");
+	mp->out_ch = g_io_channel_unix_new(out_fd);
+	g_io_channel_set_flags(mp->out_ch, G_IO_FLAG_NONBLOCK, NULL);
+	mp->out_watch = g_io_add_watch(mp->out_ch, G_IO_IN | G_IO_HUP | G_IO_ERR, media_on_output, mp);
+	g_mproc = mp;
+
+	/* START <rx_master_b64> <remote_ufrag> <remote_pwd> <pt> */
+	{ gchar *s = g_strdup_printf("START %s %s %s %d\n", rxkey, ruf, rpw, pt);
+	  if (write(in_fd, s, strlen(s)) < 0) teams_call_log("media_start: write START failed"); g_free(s); }
+	/* feed the peer's ICE candidates from the offer */
+	lines = g_strsplit(call->sdp_offer, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		gchar *l = g_strstrip(lines[i]);
+		if (g_str_has_prefix(l, "a=candidate:")) {
+			gchar *r = g_strdup_printf("RCAND %s\n", l + 2); /* strip "a=" -> "candidate:..." */
+			if (write(in_fd, r, strlen(r)) < 0) {} g_free(r);
+		}
+	}
+	g_strfreev(lines);
+	teams_call_log("media_start: spawned teams_media pid=%d, START sent (pt=%d relay=%s)", (int) pid, pt,
+	               call->udp_transport ? call->udp_transport : "(none)");
+	g_free(ruf); g_free(rpw); g_free(rxkey);
 }
 
 static void
 teams_media_stop(void)
 {
-	teams_call_log("MEDIA stop (STUB)");
+	TeamsMediaProc *mp = g_mproc;
+	if (!mp) return;
+	g_mproc = NULL;
+	if (mp->answer_timer) g_source_remove(mp->answer_timer);
+	if (mp->in_fd >= 0) { const char *s = "STOP\n"; if (write(mp->in_fd, s, 5) < 0) {} close(mp->in_fd); }
+	if (mp->out_watch) g_source_remove(mp->out_watch);
+	if (mp->out_ch) g_io_channel_unref(mp->out_ch);
+	if (mp->pid) { g_spawn_close_pid(mp->pid); }
+	g_string_free(mp->our_cands, TRUE);
+	g_free(mp->our_ufrag); g_free(mp->our_pwd); g_free(mp->our_txkey);
+	g_free(mp);
+	teams_call_log("media stopped");
+}
+
+/* POST the SDP answer to the call's attach link (resolves the mediaAnswer "cc://ma"). Body shape is
+ * a best-effort mirror of the offer's mediaContent - CONFIRM/iterate against a web-client answer. */
+static void
+teams_calling_post_answer(TeamsCall *call, const char *answer_sdp)
+{
+	gchar *esc, *body;
+	if (!call->link_attach) { teams_call_log("post_answer: no attach link"); return; }
+	esc = g_strescape(answer_sdp, "");   /* JSON-escape (also escapes \r\n) */
+	body = g_strdup_printf("{\"mediaContent\":{\"contentType\":\"application/sdp\",\"blob\":\"%s\","
+	                       "\"mediaLegId\":\"%s\"}}", esc, call->media_leg_id ? call->media_leg_id : "");
+	teams_call_log("post_answer -> %.80s (%d bytes)", call->link_attach, (int) strlen(body));
+	call_http_post(call->sa, call->link_attach, body);
+	g_free(esc); g_free(body);
 }
 
 /* ------------------------------------------------------------------ TeamsCall */
