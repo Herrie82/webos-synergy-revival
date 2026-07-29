@@ -23,8 +23,9 @@
  */
 
 #include <gst/gst.h>
+#include <gst/app/gstappsrc.h>
 #include <nice/agent.h>
-#include <srtp2/srtp.h>   /* manual SRTP for the rtp-data (Accepted) packet -> nice_agent_send */
+#include <srtp2/srtp.h>   /* manual SRTP for the rtp-data (Accepted) packet -> pushed through nicesink */
 #include <glib.h>
 #include <string.h>
 #include <stdio.h>
@@ -89,6 +90,7 @@ static SignalMedia g_sm;         /* single active call (the device rings one at 
  * run on the media thread (g_sm.ctx) so the srtp_t + agent are never hit concurrently. */
 #define RTP_DATA_PT       101
 #define RTP_DATA_SSRC     0x0000000DU
+static GstElement *g_datasrc      = NULL;  /* appsrc -> funnel -> nicesink: nicesink does the send */
 static srtp_t      g_data_srtp    = NULL;  /* TX SRTP session for the data SSRC (our TX key) */
 static gboolean    g_srtp_inited  = FALSE;
 static guint64     g_accept_id    = 0;     /* RingRTC call_id -> Accepted.id */
@@ -142,7 +144,7 @@ static gboolean sm_data_srtp_init(void)
  * component. Runs only on the media thread. */
 static void sm_push_accepted(void)
 {
-    if (!g_accepted || !sm_data_srtp_init() || !g_sm.agent) return;
+    if (!g_accepted || !g_datasrc || !sm_data_srtp_init()) return;
     /* proto: Accepted{ id(1,varint) } */
     guint8 acc[16]; int an = 0;
     acc[an++] = 0x08; an += sm_varint(acc + an, g_accept_id);
@@ -162,9 +164,14 @@ static void sm_push_accepted(void)
     int len = 12 + bn;
     srtp_err_status_t st = srtp_protect(g_data_srtp, pkt, &len);
     if (st != srtp_err_status_ok) { g_message("signal_media: srtp_protect(data) failed %d", (int)st); return; }
-    gint sent = nice_agent_send(g_sm.agent, g_sm.stream_id, g_sm.component, len, (const gchar *)pkt);
+    /* Hand the encrypted packet to nicesink via the appsrc/funnel branch - do NOT call nice_agent_send
+     * ourselves (that deadlocks libnice's agent mutex, freezing the media thread + audio). nicesink is
+     * the single sanctioned sender. */
+    GstBuffer *buf = gst_buffer_new_allocate(NULL, len, NULL);
+    gst_buffer_fill(buf, 0, pkt, (gsize)len);
+    GstFlowReturn fr = gst_app_src_push_buffer(GST_APP_SRC(g_datasrc), buf); /* takes ownership */
     static int logged = 0;
-    if (logged < 3) { g_message("signal_media: sent rtp-data Accepted (%d enc bytes) -> nice_agent_send=%d", len, sent); logged++; }
+    if (logged < 3) { g_message("signal_media: pushed rtp-data Accepted (%d enc bytes) -> appsrc flow=%d", len, (int)fr); logged++; }
 }
 
 /* Dedicated resend thread. CRITICAL: nice_agent_send() must NOT be called from the agent's own
@@ -476,9 +483,13 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
     GstElement *nsink  = mk("nicesink",      "tx-nicesink");
+    /* rtp-data branch: appsrc (pre-SRTP-encrypted Accepted bytes) -> funnel(merge w/ audio) -> nicesink.
+     * nicesink is the single nice_agent_send path (calling it ourselves deadlocks libnice). */
+    GstElement *dsrc   = mk("appsrc",        "tx-datasrc");
+    GstElement *funnel = mk("funnel",        "tx-funnel");
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
-        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink) {
+        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
@@ -511,9 +522,17 @@ static gboolean build_pipeline(SignalMedia *sm)
       configure_srtpenc(senc, tx_master);
       gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
 
+    /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, same as srtpenc's output),
+     * live, produces nothing until the user accepts. */
+    { GstCaps *dc = gst_caps_new_empty_simple("application/x-srtp");
+      g_object_set(dsrc, "caps", dc, "is-live", TRUE, "format", GST_FORMAT_TIME,
+                   "do-timestamp", TRUE, "stream-type", 0, NULL);
+      gst_caps_unref(dc); }
+    g_datasrc = dsrc;
+
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
-                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL);
+                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -528,8 +547,12 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL)) {
-        g_printerr("signal_media: TX link failed\n"); return FALSE;
+    /* audio: ... -> srtpenc -> funnel.sink_0 -> nicesink;  data: appsrc -> funnel.sink_1 (both x-srtp) */
+    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, nsink, NULL)) {
+        g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
+    }
+    if (!gst_element_link(dsrc, funnel)) {
+        g_printerr("signal_media: TX (data) link failed\n"); return FALSE;
     }
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(sm->pipeline));
@@ -630,9 +653,10 @@ void signal_media_stop(void)
     if (!g_sm.running) return;
     g_sm.running = FALSE;
 
-    /* stop + join the rtp-data resend thread BEFORE freeing the agent/srtp it uses (no use-after-free) */
+    /* stop + join the rtp-data resend thread BEFORE freeing the pipeline/srtp it uses (no use-after-free) */
     g_accepted = FALSE;
     if (g_accept_thread) { g_thread_join(g_accept_thread); g_accept_thread = NULL; }
+    g_datasrc = NULL;   /* appsrc is owned by the pipeline, freed just below; thread is joined so it's safe */
     if (g_data_srtp) { srtp_dealloc(g_data_srtp); g_data_srtp = NULL; }
 
     if (g_sm.pipeline) gst_element_set_state(g_sm.pipeline, GST_STATE_NULL);
