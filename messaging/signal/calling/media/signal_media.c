@@ -87,6 +87,22 @@ typedef struct {
 static SignalMedia g_sm;         /* single active call (the device rings one at a time) */
 static void sm_enable_nice_debug(void);  /* fwd decl - defined near signal_media_init, called from build_ice */
 
+/* TX gate: don't let ANY TX buffer (audio or the rtp-data Accepted) reach nicesink until ICE has a
+ * validated pair (CONNECTED). Before that, nice_agent_send() can only ever fail - but the pipeline
+ * doesn't know that and keeps trying at full audio-frame rate, plus the rtp-data resend thread pushing
+ * too, generating THOUSANDS of failed nice_agent_send calls per call (measured: 2670 in 8s = ~330/s -
+ * a spin pattern, not periodic traffic). Every one of those takes the nice agent's lock, contending
+ * with the STUN conncheck processing that's trying to use that SAME lock on the SAME thread to actually
+ * get the call connected. Dropping TX buffers pre-CONNECTED costs nothing (they'd never have been
+ * delivered anyway) and removes that self-inflicted contention during the critical connectivity window. */
+static gboolean g_ice_tx_ready = FALSE;
+
+static GstPadProbeReturn sm_tx_gate_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u)
+{
+    (void)pad; (void)info; (void)u;
+    return g_ice_tx_ready ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+}
+
 /* --- Acoustic echo cancellation (SpeexDSP) --------------------------------------------------------
  * The tablet is on speakerphone: the mic captures the far-end audio coming out of the speaker and
  * would send it back = echo. WhatsApp/Telegram cancel this inside their own engines; our GStreamer
@@ -469,6 +485,13 @@ static void on_nice_state(NiceAgent *agent, guint stream_id, guint component_id,
 {
     (void)user;
     g_message("signal_media: ICE component state -> %s", nice_component_state_to_string(state));
+    /* Open the TX gate the instant we have a validated pair - don't wait for full READY (which can take
+     * longer to settle); CONNECTED already means media can flow. Close it again on FAILED/DISCONNECTED
+     * so a later reconnect doesn't resume sending against a dead pair. */
+    if (state == NICE_COMPONENT_STATE_CONNECTED || state == NICE_COMPONENT_STATE_READY)
+        g_ice_tx_ready = TRUE;
+    else if (state == NICE_COMPONENT_STATE_FAILED || state == NICE_COMPONENT_STATE_DISCONNECTED)
+        g_ice_tx_ready = FALSE;
     /* On CONNECTED/READY, log the nominated pair so we can confirm which candidates actually paired
      * (host/srflx/relay) - the difference between "gathered candidates" and "media can flow". */
     if (state == NICE_COMPONENT_STATE_CONNECTED || state == NICE_COMPONENT_STATE_READY) {
@@ -793,6 +816,13 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link(dsrc, funnel)) {
         g_printerr("signal_media: TX (data) link failed\n"); return FALSE;
     }
+
+    /* TX gate: drop every buffer (audio AND the rtp-data Accepted, both flow through txq before
+     * nicesink) until ICE is CONNECTED - see sm_tx_gate_probe's comment. */
+    g_ice_tx_ready = FALSE;
+    { GstPad *p = gst_element_get_static_pad(txq, "src");
+      gst_pad_add_probe(p, GST_PAD_PROBE_TYPE_BUFFER, sm_tx_gate_probe, NULL, NULL);
+      gst_object_unref(p); }
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(sm->pipeline));
     GSource *src = gst_bus_create_watch(bus);
