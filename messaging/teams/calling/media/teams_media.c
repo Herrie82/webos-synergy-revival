@@ -276,12 +276,18 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *depay = mk("rtpopusdepay", "rx-depay");
     GstElement *odec  = mk("opusdec",      "rx-opusdec");
     GstElement *aconv = mk("audioconvert", "rx-aconv");
-    GstElement *ares  = mk("audioresample","rx-ares");   /* opus decodes to 48k; the voip PCM wants a
-                                                          * phone rate (8k/16k) - audioconvert alone
-                                                          * can't resample -> alsasink "wrong format" */
-    GstElement *asink = mk("alsasink",     "rx-alsasink");
+    GstElement *ares  = mk("audioresample","rx-ares");
+    /* Output/capture via the Atlas qspkd/qmicd daemons (unix sockets), NOT ALSA voip: teams_media is a
+     * new-glibc wpe-gst process and cannot reach PulseAudio's pvoip (no wpe pulse/alsa-pulse plugin).
+     * atlasqspksink pipes S16LE PCM to qspkd (-> system PulseAudio -> speaker); qmicsrc reads 16k mono
+     * S16LE from qmicd. This is the same glibc-bridge the browser uses. */
+    GstElement *asink = mk("atlasqspksink", "rx-qspksink");
 
-    GstElement *asrc  = mk("alsasrc",      "tx-alsasrc");
+    /* TX mic source. qmicsrc (real mic via qmicd) currently errors (-5) and tears down the pipeline;
+     * with /media/internal/teams-txtone present, substitute a silent audiotestsrc so TX keeps flowing
+     * (ICE stays up via nicesink, RX can play) while we sort the mic out. */
+    gboolean tx_tone = g_file_test("/media/internal/teams-txtone", G_FILE_TEST_EXISTS);
+    GstElement *asrc  = mk(tx_tone ? "audiotestsrc" : "qmicsrc", "tx-src");
     GstElement *tconv = mk("audioconvert", "tx-aconv");
     GstElement *tres  = mk("audioresample","tx-ares");
     GstElement *tcap  = mk("capsfilter",   "tx-rawcaps");
@@ -301,12 +307,14 @@ static gboolean build_pipeline(TeamsMedia *tm)
     { GstCaps *c = gst_caps_new_empty_simple("application/x-srtp"); g_object_set(rxcap, "caps", c, NULL); gst_caps_unref(c); }
     g_signal_connect(sdec, "request-key", G_CALLBACK(on_srtpdec_request_key), tm);
     { GstCaps *c = opus_rtp_caps(tm->pt); g_object_set(rxrtp, "caps", c, NULL); gst_caps_unref(c); }
-    g_object_set(asink, "device", "voip", "sync", FALSE, NULL);
+    g_object_set(asink, "sync", FALSE, NULL);   /* qspkd ring buffer paces playback; no clock sync */
 
     { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
         "rate", G_TYPE_INT, TM_OPUS_CLOCKRATE, "channels", G_TYPE_INT, TM_OPUS_CHANNELS, NULL);
       g_object_set(tcap, "caps", c, NULL); gst_caps_unref(c); }
-    g_object_set(asrc, "device", "voipsource", NULL);
+    /* qmicsrc needs no device property (reads the TouchPad mic via qmicd, 16k mono S16LE).
+     * audiotestsrc (tx-tone diagnostic) must be live + a quiet sine so Android hears we're sending. */
+    if (tx_tone) g_object_set(asrc, "is-live", TRUE, "wave", 0 /*sine*/, "freq", 440.0, "volume", 0.2, NULL);
     g_object_set(pay,  "pt", tm->pt, NULL);
     configure_srtpenc(senc, tm->tx_master);
 
@@ -581,10 +589,41 @@ static int loopback(void)
     return 0;
 }
 
+/* Isolation tests for the qspkd/qmicd audio bridge (no ICE/SRTP). */
+static int audiotest(int mic)
+{
+    tm_init();
+    GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+    GstElement *pipe = gst_pipeline_new("at");
+    /* mic=0: audiotestsrc tone -> speaker; mic=1: real mic (qmicsrc) -> speaker (loopback) */
+    GstElement *src  = mk(mic ? "qmicsrc" : "audiotestsrc", "src");
+    GstElement *conv = mk("audioconvert",  "conv");
+    GstElement *res  = mk("audioresample", "res");
+    GstElement *sink = mk("atlasqspksink", "sink");
+    if (!pipe||!src||!conv||!res||!sink) { g_printerr("[audiotest] missing element(s)\n"); return 3; }
+    if (!mic) g_object_set(src, "is-live", TRUE, "wave", 0 /*sine*/, "freq", 440.0, NULL);
+    g_object_set(sink, "sync", FALSE, NULL);
+    gst_bin_add_many(GST_BIN(pipe), src, conv, res, sink, NULL);
+    if (!gst_element_link_many(src, conv, res, sink, NULL)) { g_printerr("[audiotest] link failed\n"); return 4; }
+    { GstBus *b = gst_pipeline_get_bus(GST_PIPELINE(pipe)); gst_bus_add_watch(b, on_bus, &g_tm); gst_object_unref(b); }
+    g_timeout_add_seconds(8, (GSourceFunc)g_main_loop_quit, loop);
+    g_print("[audiotest] %s -> atlasqspksink for 8s (listen for %s)...\n",
+            mic ? "qmicsrc" : "audiotestsrc", mic ? "your voice echoed" : "a 440Hz tone");
+    tm_trace(mic ? "audiotest: qmicsrc->qspk" : "audiotest: tone->qspk");
+    gst_element_set_state(pipe, GST_STATE_PLAYING);
+    g_main_loop_run(loop);
+    gst_element_set_state(pipe, GST_STATE_NULL);
+    g_print("[audiotest] done\n");
+    gst_object_unref(pipe); g_main_loop_unref(loop);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     tm_init();
     if (argc >= 2 && (!strcmp(argv[1],"--loopback")||!strcmp(argv[1],"--selftest"))) return loopback();
+    if (argc >= 2 && !strcmp(argv[1],"--qspktest")) return audiotest(0);
+    if (argc >= 2 && !strcmp(argv[1],"--mictest"))  return audiotest(1);
     if (argc >= 2 && !strcmp(argv[1],"--answer")) return run_ipc(0);
     if (argc >= 2 && !strcmp(argv[1],"--caller")) return run_ipc(1);
     g_print("Teams call media engine (webOS).\n  %s --loopback\n  %s --answer\n  %s --caller\n", argv[0], argv[0], argv[0]);

@@ -258,13 +258,12 @@ void
 teams_call_luna_set_audio(gboolean active)
 {
 	teams_call_log("set_audio active=%d prv=%p", (int) active, (void*)g_prv);
-	if (active) {
-		/* id MUST be a string (PmBtEngine reads the call id as a string), transport stays
-		 * com.palm.teams (the 1-byte PmBtEngine patch accepts non-skype transports). */
-		audiod_send("palm://com.palm.audio/phone/CallStatusUpdate",
-		            "{\"lines\":[{\"state\":\"active\",\"calls\":[{\"id\":\"1\",\"address\":\"teams\",\"origin\":\"outgoing\",\"video\":false,\"transport\":\"com.palm.teams\"}]}]}");
-		audiod_send("palm://com.palm.audio/phone/setCurrentScenario", "{\"scenario\":\"phone_back_speaker\"}");
-	} else {
-		audiod_send("palm://com.palm.audio/phone/CallStatusUpdate", "{\"lines\":[]}");
-	}
+	/* NOTE: teams_media routes call audio through the Atlas qspkd/qmicd daemons (media speaker + mic),
+	 * NOT the pvoip phone path - because the new-glibc wpe-gst engine can't reach PulseAudio's pvoip.
+	 * The audiod "phone_back_speaker" scenario SUPPRESSES qspkd's media-speaker output (verified: a
+	 * qspk tone goes silent under that scenario), which broke RX playback (alsasink/qspksink couldn't
+	 * output -> pipeline "not-linked"). So we deliberately do NOT put audiod into phone-call mode; we
+	 * let call audio use the normal media-speaker path that qspkd feeds. The call UI/state is driven
+	 * separately via CallSynergizer (push_state), so the Phone app still shows the call. */
+	(void) active;
 }

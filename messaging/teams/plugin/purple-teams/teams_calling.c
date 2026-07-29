@@ -937,9 +937,24 @@ teams_calling_handle_trouter(TeamsAccount *sa, JsonObject *body_obj, const gchar
 		if (call) {
 			JsonObject *ce = oget(body_obj, "callEnd");
 			const gchar *phrase = ce ? sget(ce, "phrase") : NULL;
+			const gchar *reason = ce ? sget(ce, "reason") : NULL;
+			gint64 code = ce && json_object_has_member(ce, "code") ? json_object_get_int_member(ce, "code") : 0;
+			/* Map the Teams callEnd to a webOS Phone-app cause. The Phone app shows "Call dropped" for
+			 * any cause string it doesn't recognise (e.g. the raw "LocalUserInitiated"). Recognised
+			 * causes: "normal"/"rejected"/"missed"/"busy"/"error". A normal hang-up (either side) or a
+			 * successfully-connected call that ended = "normal"; declines/timeouts map accordingly. */
+			const gchar *cause = "normal";
+			if (phrase && (strstr(phrase, "Decline") || strstr(phrase, "Reject")))      cause = "rejected";
+			else if (phrase && (strstr(phrase, "Unanswer") || strstr(phrase, "Timeout") ||
+			                    strstr(phrase, "NoAnswer") || strstr(phrase, "Ring")))   cause = "missed";
+			else if (phrase && strstr(phrase, "Busy"))                                   cause = "busy";
+			else if (phrase && (strstr(phrase, "UserInitiated") || strstr(phrase, "Success"))) cause = "normal";
+			else if (g_strcmp0(reason, "clientError") == 0 && code && code != 0 && code != 200 &&
+			         call->state != TEAMS_CALL_ACTIVE)                                    cause = "error";
 			call->state = TEAMS_CALL_DISCONNECTED;
-			teams_call_log("call ended: %s", phrase ? phrase : "(no reason)");
-			push_state(call, phrase ? phrase : "normal");
+			teams_call_log("call ended: phrase=%s reason=%s code=%d -> cause=%s",
+			               phrase ? phrase : "(none)", reason ? reason : "(none)", (int) code, cause);
+			push_state(call, cause);
 			teams_media_stop();
 			set_current(sa, NULL);
 		}
