@@ -517,6 +517,21 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
      * (which draw responses), keeping the peer's consent fresh so it doesn't tear the call down. */
     g_object_set(sm->agent, "keepalive-conncheck", TRUE, NULL);
 
+    /* Cut candidate/conncheck load to match Teams' (reliable) approach on this same device/AP.
+     * Teams' NGC calling deliberately uses a SINGLE relay path, not full ICE (see
+     * TEAMS_MEDIA_ADAPTATION.md "single MS-TURN relay ... not full ICE") - and it connects reliably
+     * over the identical WiFi hardware where Signal's full trickle-ICE (host x2 + srflx x2 + relay x6+
+     * = 10-20 simultaneous candidate pairs, each independently retrying STUN checks every 500ms) was
+     * seeing its connectivity checks go completely unanswered. That strongly points to burst/volume
+     * (many simultaneous small UDP flows) rather than raw link quality - so shrink the candidate set:
+     *   - ice-tcp=FALSE: drop TCP host/srflx candidates. We've never seen a TCP pair succeed anyway
+     *     (this device doesn't do real ICE-TCP), so they're pure wasted conncheck traffic.
+     *   - force-relay=TRUE: skip host/srflx UDP entirely, gather ONLY relay candidates - i.e. do what
+     *     Teams does (one relay path) instead of racing many simultaneous pairs. */
+    g_object_set(sm->agent, "ice-tcp", FALSE, NULL);
+    g_object_set(sm->agent, "force-relay", TRUE, NULL);
+    g_message("signal_media: ice-tcp=off force-relay=on (matching Teams' single-relay-path approach)");
+
     sm_trace("build_ice: role set");
 
     /* STUN (agent-global): gathers server-reflexive (srflx) candidates so we learn our public
