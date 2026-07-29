@@ -435,6 +435,15 @@ async fn process_received_message<C: presage::store::Store>(
                         ice.id, ice.opaque.as_ref().map_or(0, |v| v.len()),
                         ice.opaque.as_ref().map_or(String::new(), |v| hexify(v)));
                 }
+                // DIAG (call-sustain): log Hangup/Busy so we can see WHO ends the call at ~1-2s and why
+                // (hangup.type: 0=NORMAL 1=ACCEPTED 2=DECLINED 3=BUSY 4=NEED_PERMISSION). If the peer
+                // (Android) sends this, the caller tore down; if not, our side did.
+                if let Some(h) = call_message.hangup.as_ref() {
+                    dump += &format!("HANGUP id={:?} type={:?} device_id={:?}\n", h.id, h.r#type, h.device_id);
+                }
+                if let Some(b) = call_message.busy.as_ref() {
+                    dump += &format!("BUSY id={:?}\n", b.id);
+                }
                 if !dump.is_empty() {
                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/media/internal/sigoffer.log") {
                         let _ = f.write_all(dump.as_bytes());
@@ -546,6 +555,8 @@ async fn process_received_message<C: presage::store::Store>(
                     }
                 }
                 if call_message.hangup.is_some() || call_message.busy.is_some() {
+                    eprintln!("call_bridge: PEER ended call {call_id} (hangup={} busy={}) -> stop engine",
+                              call_message.hangup.is_some(), call_message.busy.is_some());
                     crate::call_bridge::stop(call_id);
                 }
             }

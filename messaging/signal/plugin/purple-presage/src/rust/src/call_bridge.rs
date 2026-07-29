@@ -479,6 +479,11 @@ pub fn accept(call_id: u64) {
 /// Tear down the engine for a call (hangup/busy). Also drops any pending outgoing state (the peer
 /// declined/was-busy before answering, so the engine was never started).
 pub fn stop(call_id: u64) {
+    // DIAG (call-sustain): who tore down the call? Backtrace-free breadcrumb - the immediate caller is
+    // in the log line just before this (receive.rs PEER-ended, or the C hangup path). Logs whether an
+    // engine was actually running for this id (vs a stale/no-op stop).
+    let had_engine = calls().lock().unwrap().contains_key(&call_id);
+    eprintln!("call_bridge::stop(call_id={call_id}) had_running_engine={had_engine}");
     pending().lock().unwrap().remove(&call_id);
     outgoing().lock().unwrap().remove(&call_id);
     let cp = calls().lock().unwrap().remove(&call_id);
