@@ -257,8 +257,9 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     if (!sm->agent) { g_printerr("signal_media: nice_agent_new failed\n"); return FALSE; }
     sm_trace("build_ice: agent created");
 
-    /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. Getting this
-     * wrong (both controlled) causes an ICE role conflict so the pair never nominates -> no media. */
+    /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. (Tried both-
+     * controlling for the failing incoming/answerer path - did NOT help, so the answerer failure is
+     * not a role/nomination issue; kept standard convention.) */
     g_object_set(sm->agent, "controlling-mode", sm->is_caller ? TRUE : FALSE, NULL);
     g_message("signal_media: role=%s controlling-mode=%d",
               sm->is_caller ? "CALLER" : "ANSWERER", sm->is_caller ? 1 : 0);
