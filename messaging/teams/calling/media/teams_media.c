@@ -30,6 +30,7 @@
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
 #include <nice/agent.h>
 #include <glib.h>
 #include <string.h>
@@ -38,8 +39,10 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 
 /* Opus RTP: 48 kHz. PT is dictated by the peer's offer (Teams uses 102); parsed from START. */
 #define TM_OPUS_CLOCKRATE 48000
@@ -201,6 +204,135 @@ static GstFlowReturn on_rx_sample(GstElement *sink, gpointer user)
     return GST_FLOW_OK;
 }
 
+/* ---- direct qmicd mic capture (bypasses the qmicsrc element). The gst qmicsrc element connects fine,
+ * but by the time OUR pipeline finishes gst state-change negotiation and its GstPushSrc task first
+ * calls create(), qmicd's ring (8 slots x 20ms = 160ms deep) has already wrapped many times over -
+ * every backlogged {seq,slot} message in the socket refers to a long-overwritten slot, so every read
+ * hits the seqlock retry and exhausts GST_FLOW_ERROR. Reading the socket ourselves, on a dedicated
+ * thread started the moment we begin building the pipeline (not gated on GStreamer reaching PLAYING),
+ * avoids that backlog and feeds an appsrc instead. Same wire protocol as gstqmicsrc.c. ---- */
+#define QMICD_SHM    "/tmp/qmicd.shm"
+#define QMICD_SOCK   "/tmp/qmicd.sock"
+#define QMICD_MAGIC  0x44494d51u
+#define QMIC_SLOT0_OFF 4096u
+#define QMIC_RATE    16000
+#define QMIC_CH      1
+#define QMIC_CHUNK_BYTES ((QMIC_RATE*QMIC_CH*2*20)/1000)   /* 20ms S16LE mono = 640B */
+#define QMIC_NUM_SLOTS   8
+#define QMIC_CHUNK_NS    (GST_SECOND/(1000/20))
+
+struct qmicd_hdr { guint32 magic, rate, channels, fmt, chunk_bytes, num_slots, seq, pad; };
+struct qmicd_chunk_msg { guint32 seq, slot; };
+
+static int       g_qmic_fd = -1;
+static guint8    *g_qmic_shm = NULL;
+static gsize      g_qmic_shm_sz = 0;
+static GThread   *g_qmic_thread = NULL;
+static volatile gboolean g_qmic_running = FALSE;
+static GstElement *g_qmic_appsrc = NULL;
+
+static gboolean qmic_read_full(int fd, void *buf, gsize n)
+{
+    guint8 *p = buf; gsize got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, p + got, n - got);
+        if (r <= 0) { if (r < 0 && errno == EINTR) continue; return FALSE; }
+        got += (gsize) r;
+    }
+    return TRUE;
+}
+
+static gpointer qmic_reader_thread(gpointer user)
+{
+    (void) user;
+    struct qmicd_hdr *hdr = (struct qmicd_hdr *) g_qmic_shm;
+    guint64 pts = 0;
+    guint chunks = 0; gint16 peak = 0;
+    tm_trace("qmic: reader thread started");
+    while (g_qmic_running) {
+        struct qmicd_chunk_msg msg;
+        guint32 csz, seq_after;
+        const guint8 *src;
+        if (!qmic_read_full(g_qmic_fd, &msg, sizeof msg)) {
+            tm_trace("qmic: qmicd closed connection"); break;
+        }
+        if (hdr->magic != QMICD_MAGIC) { tm_trace("qmic: bad shm magic"); break; }
+        csz = hdr->chunk_bytes;
+        if (!csz || csz > QMIC_CHUNK_BYTES || msg.slot >= hdr->num_slots) {
+            tm_trace("qmic: bad chunk meta"); break;
+        }
+        src = g_qmic_shm + QMIC_SLOT0_OFF + (gsize) msg.slot * QMIC_CHUNK_BYTES;
+        GstBuffer *buf = gst_buffer_new_allocate(NULL, csz, NULL);
+        if (!buf) continue;
+        gst_buffer_fill(buf, 0, src, csz);
+        seq_after = hdr->seq;
+        if (seq_after - msg.seq >= hdr->num_slots) {
+            /* torn read (daemon wrapped onto this slot mid-copy) - drop this one, keep going */
+            gst_buffer_unref(buf);
+            continue;
+        }
+        GST_BUFFER_PTS(buf) = pts;
+        GST_BUFFER_DURATION(buf) = QMIC_CHUNK_NS;
+        pts += QMIC_CHUNK_NS;
+        /* peak-amplitude sanity check: is qmicd handing us real audio or silence? logged 1x/sec. */
+        { GstMapInfo m; if (gst_buffer_map(buf, &m, GST_MAP_READ)) {
+            const gint16 *s = (const gint16 *) m.data; gsize n = m.size / 2;
+            for (gsize i = 0; i < n; i++) { gint16 v = s[i] < 0 ? -s[i] : s[i]; if (v > peak) peak = v; }
+            gst_buffer_unmap(buf, &m); } }
+        if (++chunks >= 50) {   /* 50 * 20ms = 1s */
+            char t[64]; g_snprintf(t, sizeof t, "qmic: 1s peak amplitude = %d/32767", peak);
+            tm_trace(t); chunks = 0; peak = 0;
+        }
+        if (g_qmic_appsrc) {
+            GstFlowReturn fr;
+            g_signal_emit_by_name(g_qmic_appsrc, "push-buffer", buf, &fr);
+        }
+        gst_buffer_unref(buf);
+    }
+    tm_trace("qmic: reader thread exiting");
+    return NULL;
+}
+
+/* Connect + mmap qmicd (starts the daemon's mic recording) and spawn the reader thread. Call as early
+ * as possible (before/while the gst pipeline negotiates) so we start draining the ring immediately. */
+static gboolean qmic_start(GstElement *appsrc)
+{
+    int fd, shm_fd;
+    struct sockaddr_un addr;
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { tm_trace("qmic: socket() failed"); return FALSE; }
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    g_strlcpy(addr.sun_path, QMICD_SOCK, sizeof addr.sun_path);
+    if (connect(fd, (struct sockaddr *) &addr, sizeof addr) < 0) {
+        tm_trace("qmic: connect FAILED (is qmicd running?)"); close(fd); return FALSE;
+    }
+    shm_fd = open(QMICD_SHM, O_RDONLY);
+    if (shm_fd < 0) { tm_trace("qmic: open shm FAILED"); close(fd); return FALSE; }
+    g_qmic_shm_sz = QMIC_SLOT0_OFF + (gsize) QMIC_NUM_SLOTS * QMIC_CHUNK_BYTES;
+    g_qmic_shm = mmap(NULL, g_qmic_shm_sz, PROT_READ, MAP_SHARED, shm_fd, 0);
+    close(shm_fd);
+    if (g_qmic_shm == MAP_FAILED) { tm_trace("qmic: mmap FAILED"); g_qmic_shm = NULL; close(fd); return FALSE; }
+    g_qmic_fd = fd;
+    g_qmic_appsrc = appsrc;
+    g_qmic_running = TRUE;
+    g_qmic_thread = g_thread_new("qmic-reader", qmic_reader_thread, NULL);
+    tm_trace("qmic: connected to qmicd; mic recording starting");
+    return TRUE;
+}
+
+static void qmic_stop(void)
+{
+    if (!g_qmic_running && g_qmic_fd < 0) return;
+    g_qmic_running = FALSE;
+    if (g_qmic_fd >= 0) { shutdown(g_qmic_fd, SHUT_RDWR); }   /* unblock the reader thread's read() */
+    if (g_qmic_thread) { g_thread_join(g_qmic_thread); g_qmic_thread = NULL; }
+    if (g_qmic_fd >= 0) { close(g_qmic_fd); g_qmic_fd = -1; }
+    if (g_qmic_shm) { munmap(g_qmic_shm, g_qmic_shm_sz); g_qmic_shm = NULL; }
+    g_qmic_appsrc = NULL;
+    tm_trace("qmic: stopped, mic released");
+}
+
 static GstCaps *opus_rtp_caps(int pt)
 {
     return gst_caps_new_simple("application/x-rtp",
@@ -358,11 +490,11 @@ static gboolean build_pipeline(TeamsMedia *tm)
      * we control the qspkd socket lifecycle ourselves. qspkd -> system PulseAudio -> speaker. */
     GstElement *asink = mk("appsink", "rx-appsink");
 
-    /* TX mic source. qmicsrc (real mic via qmicd) currently errors (-5) and tears down the pipeline;
-     * with /media/internal/teams-txtone present, substitute a silent audiotestsrc so TX keeps flowing
-     * (ICE stays up via nicesink, RX can play) while we sort the mic out. */
+    /* TX mic source: appsrc fed by our own qmicd reader thread (qmic_start), NOT the qmicsrc element -
+     * see the qmic_start/qmic_reader_thread comment for why. /media/internal/teams-txtone forces a
+     * diagnostic tone instead (kept for isolating ICE/RX from the mic path). */
     gboolean tx_tone = g_file_test("/media/internal/teams-txtone", G_FILE_TEST_EXISTS);
-    GstElement *asrc  = mk(tx_tone ? "audiotestsrc" : "qmicsrc", "tx-src");
+    GstElement *asrc  = mk(tx_tone ? "audiotestsrc" : "appsrc", "tx-src");
     GstElement *tconv = mk("audioconvert", "tx-aconv");
     GstElement *tres  = mk("audioresample","tx-ares");
     GstElement *tcap  = mk("capsfilter",   "tx-rawcaps");
@@ -393,9 +525,17 @@ static gboolean build_pipeline(TeamsMedia *tm)
     { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
         "rate", G_TYPE_INT, TM_OPUS_CLOCKRATE, "channels", G_TYPE_INT, TM_OPUS_CHANNELS, NULL);
       g_object_set(tcap, "caps", c, NULL); gst_caps_unref(c); }
-    /* qmicsrc needs no device property (reads the TouchPad mic via qmicd, 16k mono S16LE).
-     * audiotestsrc (tx-tone diagnostic) must be live + a quiet sine so Android hears we're sending. */
-    if (tx_tone) g_object_set(asrc, "is-live", TRUE, "wave", 0 /*sine*/, "freq", 440.0, "volume", 0.2, NULL);
+    /* audiotestsrc (tx-tone diagnostic) must be live + a quiet sine so Android hears we're sending.
+     * appsrc (real mic) declares the qmicd wire format (16k mono S16LE); qmic_start() feeds it after
+     * linking, from a thread that starts draining qmicd immediately (see qmic_start's comment). */
+    if (tx_tone) {
+        g_object_set(asrc, "is-live", TRUE, "wave", 0 /*sine*/, "freq", 440.0, "volume", 0.2, NULL);
+    } else {
+        GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
+            "rate", G_TYPE_INT, QMIC_RATE, "channels", G_TYPE_INT, QMIC_CH, "layout", G_TYPE_STRING, "interleaved", NULL);
+        g_object_set(asrc, "caps", c, "is-live", TRUE, "format", GST_FORMAT_TIME, "block", FALSE, NULL);
+        gst_caps_unref(c);
+    }
     g_object_set(pay,  "pt", tm->pt, NULL);
     configure_srtpenc(senc, tm->tx_master);
 
@@ -418,6 +558,7 @@ static gboolean build_pipeline(TeamsMedia *tm)
       if (fsink) gst_object_unref(fsink); }
     if (!gst_element_link_many(asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL)) {
         g_printerr("teams_media: TX link failed\n"); return FALSE; }
+    if (!tx_tone) qmic_start(asrc);   /* begin draining qmicd now, ahead of PLAYING, to avoid backlog */
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(tm->pipeline));
     GSource *src = gst_bus_create_watch(bus);
@@ -543,6 +684,7 @@ static void tm_stop(void)
 {
     if (!g_tm.running) return;
     g_tm.running = FALSE;
+    qmic_stop();    /* stop the mic reader BEFORE the pipeline (it pushes into the appsrc) */
     if (g_tm.pipeline) gst_element_set_state(g_tm.pipeline, GST_STATE_NULL);
     qspk_close();   /* release the qspkd socket (one client at a time) */
     if (g_tm.audiod_on && g_tm.audiod_cb) g_tm.audiod_cb(0);
