@@ -287,6 +287,19 @@ pub fn is_outgoing_call(call_id: u64) -> bool {
     outgoing().lock().unwrap().contains(&call_id)
 }
 
+/// call_ids the user has ACCEPTED on THIS (linked) device. webOS is a secondary Signal device; an
+/// incoming call rings this device AND the user's primary phone. When we accept, the caller broadcasts
+/// `Hangup{type=ACCEPTED, device_id=<us>}` to the account so the OTHER devices stop ringing - but Signal
+/// fans it out to us too. We must NOT tear down our own accepted call on that notification.
+static ACCEPTED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+fn accepted() -> &'static Mutex<HashSet<u64>> {
+    ACCEPTED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+/// True if the user accepted this call_id on this device (so a HANGUP_ACCEPTED for it is our own).
+pub fn was_accepted(call_id: u64) -> bool {
+    accepted().lock().unwrap().contains(&call_id)
+}
+
 /// The env every engine invocation needs (wpe LD_LIBRARY_PATH is inherited; we pin gst + libasound).
 fn engine_command(mode: &str) -> Command {
     let mut c = Command::new(SIGNAL_MEDIA_BIN);
@@ -469,6 +482,7 @@ pub fn feed_remote_ice(call_id: u64, candidate_opaques: &[Vec<u8>]) {
 /// message (repeated at 1 Hz by the engine). Until the caller receives it, RingRTC keeps the caller
 /// "ringing" and gates all media - so this is what actually connects an incoming call's audio.
 pub fn accept(call_id: u64) {
+    accepted().lock().unwrap().insert(call_id);
     let mut guard = calls().lock().unwrap();
     if let Some(cp) = guard.get_mut(&call_id) {
         let _ = writeln!(cp.stdin, "ACCEPT {call_id}");
@@ -486,6 +500,7 @@ pub fn stop(call_id: u64) {
     eprintln!("call_bridge::stop(call_id={call_id}) had_running_engine={had_engine}");
     pending().lock().unwrap().remove(&call_id);
     outgoing().lock().unwrap().remove(&call_id);
+    accepted().lock().unwrap().remove(&call_id);
     let cp = calls().lock().unwrap().remove(&call_id);
     if let Some(CallProc { mut child, mut stdin }) = cp {
         let _ = writeln!(stdin, "STOP");

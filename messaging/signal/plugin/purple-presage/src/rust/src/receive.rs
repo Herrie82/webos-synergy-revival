@@ -465,11 +465,22 @@ async fn process_received_message<C: presage::store::Store>(
                 // matched the engine and the peer's candidates were dropped -> ICE never connected.
                 .or_else(|| call_message.ice_update.iter().find_map(|i| i.id))
                 .unwrap_or(0);
+            // Multi-device: webOS is a LINKED (secondary) Signal device. An incoming call rings this
+            // device AND the user's primary phone. When the user accepts HERE, the caller broadcasts
+            // Hangup{type=ACCEPTED, device_id=<us>} to the account so the phone stops ringing - but
+            // Signal delivers it to THIS device too. Acting on it would tear down our own live call
+            // (that was the ~1-2s "disconnect"). RingRTC hangup types: 0=NORMAL 1=ACCEPTED 2=DECLINED
+            // 3=BUSY. A type=ACCEPTED for a call we've accepted is our own acceptance echo -> ignore it.
+            let hangup_type = call_message.hangup.as_ref().and_then(|h| h.r#type);
+            let self_accept_hangup = hangup_type == Some(1) && crate::call_bridge::was_accepted(call_id);
             let (state, chat) = if call_message.offer.is_some() {
                 (crate::bridge::CALL_STATE_INCOMING, None)
             } else if call_message.answer.is_some() {
                 // Peer answered OUR outgoing call -> tell the dialer the line is now active.
                 (crate::bridge::CALL_STATE_ACTIVE, None)
+            } else if self_accept_hangup {
+                // "Accepted on this (our) device" notification for OUR live call - not a call end.
+                (u32::MAX, None)
             } else if call_message.busy.is_some() {
                 (crate::bridge::CALL_STATE_BUSY, None)
             } else if call_message.hangup.is_some() {
@@ -554,10 +565,12 @@ async fn process_received_message<C: presage::store::Store>(
                         crate::call_bridge::feed_remote_ice(call_id, &opaques);
                     }
                 }
-                if call_message.hangup.is_some() || call_message.busy.is_some() {
-                    eprintln!("call_bridge: PEER ended call {call_id} (hangup={} busy={}) -> stop engine",
-                              call_message.hangup.is_some(), call_message.busy.is_some());
+                if (call_message.hangup.is_some() || call_message.busy.is_some()) && !self_accept_hangup {
+                    eprintln!("call_bridge: PEER ended call {call_id} (hangup={} busy={} type={:?}) -> stop engine",
+                              call_message.hangup.is_some(), call_message.busy.is_some(), hangup_type);
                     crate::call_bridge::stop(call_id);
+                } else if self_accept_hangup {
+                    eprintln!("call_bridge: IGNORING self HANGUP_ACCEPTED for our live call {call_id} (linked-device notification)");
                 }
             }
             chat
