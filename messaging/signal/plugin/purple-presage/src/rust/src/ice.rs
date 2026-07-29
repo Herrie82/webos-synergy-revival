@@ -67,8 +67,15 @@ fn parse_ice_url(url: &str, username: &str, password: &str) -> Option<IceServer>
     if hostport.starts_with('[') {
         return None;
     }
-    let (host, port_s) = hostport.rsplit_once(':')?;
-    let port: u16 = port_s.parse().ok()?;
+    // "host:port" -> both; bare "host" (e.g. Signal's `turn:141.101.90.1`) -> the standard STUN/TURN
+    // port 3478. Dropping the port-less URL was a bug: that entry is the UDP TURN relay (transport=udp),
+    // the ONLY path that reliably traverses NAT / WiFi AP client-isolation; without it we were left with
+    // TCP/TLS TURN only, and calls failed whenever the direct peer-to-peer path was blocked.
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok()?),
+        None => (hostport.to_string(), 3478u16),
+    };
+    let host = host.as_str();
     let transport = query
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("transport=")))
         .unwrap_or(if scheme.ends_with('s') { "tls" } else { "udp" })
@@ -135,9 +142,13 @@ pub async fn fetch_ice_servers<C: Store>(manager: &Manager<C, Registered>) -> Ve
         } else {
             &relay.urls
         };
+        // DIAG: dump the raw relay URLs so we can see whether Signal offers UDP TURN (needed for a
+        // reliable relay path through AP client-isolation) or only TCP/TLS, and what we drop (IPv6).
+        eprintln!("ice: relay urls_with_ips={:?} urls={:?}", relay.urls_with_ips, relay.urls);
         for u in urls {
-            if let Some(s) = parse_ice_url(u, &relay.username, &relay.password) {
-                servers.push(s);
+            match parse_ice_url(u, &relay.username, &relay.password) {
+                Some(s) => { eprintln!("ice:   USE {u} -> transport={}", s.transport); servers.push(s); }
+                None    => eprintln!("ice:   SKIP {u} (ipv6 or unparseable)"),
             }
         }
     }
