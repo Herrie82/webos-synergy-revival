@@ -502,6 +502,11 @@ static gboolean build_pipeline(SignalMedia *sm)
      * single task thread that drives everything downstream of it, so the nicesink - and thus the one
      * nice_agent_send caller - always runs on that ONE thread. Single sender = no deadlock. */
     GstElement *txq    = mk("queue",         "tx-queue");
+    /* Leaky downstream + shallow: a full blocking queue back-pressures the alsasrc mic ("Can't record
+     * audio fast enough / Dropped N samples / DISCONT"), which wrecks the call in ~3s. Drop old egress
+     * buffers instead of ever stalling capture; a live call would rather lose a few ms than wedge. */
+    if (txq) g_object_set(txq, "leaky", 2 /*downstream*/, "max-size-time", (guint64)100000000 /*100ms*/,
+                          "max-size-buffers", 0, "max-size-bytes", 0, NULL);
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
         !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel || !txq) {
