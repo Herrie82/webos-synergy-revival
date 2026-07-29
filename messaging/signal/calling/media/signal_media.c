@@ -630,13 +630,18 @@ static gboolean build_pipeline(SignalMedia *sm)
     }
     /* AEC is optional: it needs audiobuffersplit (for the fixed 10ms frames Speex wants) on both RX and
      * TX. If that element is missing, run without echo cancellation rather than fail the call. */
-    gboolean g_have_aec = (rxcaps2 != NULL && txsplit != NULL);
+    /* AEC is OPT-IN via /media/internal/signal_aec. It works (SpeexDSP loads + cancels) but 48 kHz
+     * echo cancellation is too CPU-heavy for the TouchPad - it starves the mic (drops ~320ms of samples)
+     * and the ICE thread, breaking the call. Off by default so calls work; enable the gate file only to
+     * test a future lighter (16 kHz) AEC. */
+    gboolean g_have_aec = (rxcaps2 != NULL && txsplit != NULL) &&
+                          (access("/media/internal/signal_aec", F_OK) == 0);
     if (g_have_aec) {
         sm_echo_init();
         g_have_aec = g_echo_ready;   /* speex init could still fail */
     }
     if (!g_have_aec)
-        g_message("signal_media: AEC unavailable (no audiobuffersplit / speex init failed) -> AEC OFF (may echo)");
+        g_message("signal_media: AEC OFF (gate /media/internal/signal_aec absent, or unavailable)");
 
     /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
