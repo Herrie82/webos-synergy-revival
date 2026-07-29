@@ -25,7 +25,7 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
 #include <nice/agent.h>
-#include <srtp2/srtp.h>   /* manual SRTP for the rtp-data (Accepted) packet -> pushed through nicesink */
+#include <srtp2/srtp.h>   /* manual SRTP for the rtp-data (Accepted) packet -> pushed via a 2nd nicesink */
 #include <glib.h>
 #include <string.h>
 #include <stdio.h>
@@ -83,16 +83,19 @@ static SignalMedia g_sm;         /* single active call (the device rings one at 
  * A 1:1 RingRTC call stays "ringing" on the caller and gates ALL media until the callee sends an
  * `Accepted` message over RingRTC's RTP data channel: a tiny proto2 `rtp_data.Message{accepted{id}}`
  * carried as an RTP packet on PT 101 / SSRC 0xD, SRTP-encrypted with the same key as audio, re-sent
- * at ~1 Hz (ref: ringrtc core/connection.rs). Rather than splice a second stream into the GStreamer
- * TX pipeline (which risks the audio path), we SRTP-encrypt the packet ourselves with libsrtp2 and
- * push it straight out the nice component with nice_agent_send - fully decoupled from the pipeline.
- * signal_media_accept() (from the ACCEPT stdin cmd = the user tapped Answer) turns it on; all sends
- * run on the media thread (g_sm.ctx) so the srtp_t + agent are never hit concurrently. */
+ * at ~1 Hz (ref: ringrtc core/connection.rs). We SRTP-encrypt the packet ourselves with libsrtp2,
+ * then push the encrypted bytes into an appsrc feeding a SECOND nicesink bound to the same agent/
+ * stream/component. THAT nicesink does the nice_agent_send from its own streaming thread - the only
+ * sanctioned, deadlock-free send path (calling nice_agent_send ourselves, even off the media thread,
+ * eventually deadlocks libnice 0.1.21's agent mutex, freezing audio + STUN; a funnel-merge into the
+ * audio nicesink broke caps negotiation and killed all TX). Two nicesinks on one component each send
+ * from their own thread and libnice serializes internally. signal_media_accept() (from the ACCEPT
+ * stdin cmd = the user tapped Answer) turns it on. */
 #define RTP_DATA_PT       101
 #define RTP_DATA_SSRC     0x0000000DU
-static GstElement *g_datasrc      = NULL;  /* appsrc -> funnel -> nicesink: nicesink does the send */
 static srtp_t      g_data_srtp    = NULL;  /* TX SRTP session for the data SSRC (our TX key) */
 static gboolean    g_srtp_inited  = FALSE;
+static GstElement *g_datasrc      = NULL;  /* appsrc -> 2nd nicesink (that nicesink does the actual send) */
 static guint64     g_accept_id    = 0;     /* RingRTC call_id -> Accepted.id */
 static gboolean    g_accepted     = FALSE; /* user accepted -> keep resending */
 static GThread    *g_accept_thread= NULL;  /* dedicated resend thread (NOT g_sm.ctx - see below) */
@@ -164,12 +167,11 @@ static void sm_push_accepted(void)
     int len = 12 + bn;
     srtp_err_status_t st = srtp_protect(g_data_srtp, pkt, &len);
     if (st != srtp_err_status_ok) { g_message("signal_media: srtp_protect(data) failed %d", (int)st); return; }
-    /* Hand the encrypted packet to nicesink via the appsrc/funnel branch - do NOT call nice_agent_send
-     * ourselves (that deadlocks libnice's agent mutex, freezing the media thread + audio). nicesink is
-     * the single sanctioned sender. */
+    /* Hand the SRTP-encrypted bytes to the 2nd nicesink via its appsrc. That nicesink calls
+     * nice_agent_send on its OWN streaming thread - never us - so no agent-mutex deadlock. */
     GstBuffer *buf = gst_buffer_new_allocate(NULL, len, NULL);
     gst_buffer_fill(buf, 0, pkt, (gsize)len);
-    GstFlowReturn fr = gst_app_src_push_buffer(GST_APP_SRC(g_datasrc), buf); /* takes ownership */
+    GstFlowReturn fr = gst_app_src_push_buffer(GST_APP_SRC(g_datasrc), buf);  /* takes ownership */
     static int logged = 0;
     if (logged < 3) { g_message("signal_media: pushed rtp-data Accepted (%d enc bytes) -> appsrc flow=%d", len, (int)fr); logged++; }
 }
@@ -483,20 +485,31 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
     GstElement *nsink  = mk("nicesink",      "tx-nicesink");
-    /* rtp-data branch: appsrc (pre-SRTP-encrypted Accepted bytes) -> funnel(merge w/ audio) -> nicesink.
-     * nicesink is the single nice_agent_send path (calling it ourselves deadlocks libnice). */
+    /* rtp-data (Accepted) TX: appsrc (pre-SRTP-encrypted x-srtp bytes) -> its OWN nicesink on the same
+     * component. Separate sink (not a funnel) so audio caps are untouched; separate streaming thread
+     * does nice_agent_send safely. */
     GstElement *dsrc   = mk("appsrc",        "tx-datasrc");
-    GstElement *funnel = mk("funnel",        "tx-funnel");
+    GstElement *dsink  = mk("nicesink",      "tx-datanicesink");
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
-        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel) {
+        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !dsink) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
 
-    /* nice binding: BOTH ends of the RTP flow share the one agent stream/component. */
+    /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
     g_object_set(nsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
+    g_object_set(dsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component,
+                 "sync", FALSE, "async", FALSE, NULL);  /* data sink must not gate pipeline preroll */
+
+    /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, matching srtpenc's output),
+     * live, produces nothing until the user accepts. */
+    { GstCaps *dc = gst_caps_new_empty_simple("application/x-srtp");
+      g_object_set(dsrc, "caps", dc, "is-live", TRUE, "format", GST_FORMAT_TIME,
+                   "do-timestamp", TRUE, "stream-type", 0, NULL);
+      gst_caps_unref(dc); }
+    g_datasrc = dsrc;
 
     /* RX caps + keys */
     { GstCaps *c = gst_caps_new_empty_simple("application/x-srtp");
@@ -522,17 +535,9 @@ static gboolean build_pipeline(SignalMedia *sm)
       configure_srtpenc(senc, tx_master);
       gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
 
-    /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, same as srtpenc's output),
-     * live, produces nothing until the user accepts. */
-    { GstCaps *dc = gst_caps_new_empty_simple("application/x-srtp");
-      g_object_set(dsrc, "caps", dc, "is-live", TRUE, "format", GST_FORMAT_TIME,
-                   "do-timestamp", TRUE, "stream-type", 0, NULL);
-      gst_caps_unref(dc); }
-    g_datasrc = dsrc;
-
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
-                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, NULL);
+                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, dsink, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -547,11 +552,10 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    /* audio: ... -> srtpenc -> funnel.sink_0 -> nicesink;  data: appsrc -> funnel.sink_1 (both x-srtp) */
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, nsink, NULL)) {
-        g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
+    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL)) {
+        g_printerr("signal_media: TX link failed\n"); return FALSE;
     }
-    if (!gst_element_link(dsrc, funnel)) {
+    if (!gst_element_link(dsrc, dsink)) {   /* data appsrc -> its own nicesink (same component) */
         g_printerr("signal_media: TX (data) link failed\n"); return FALSE;
     }
 
@@ -653,10 +657,10 @@ void signal_media_stop(void)
     if (!g_sm.running) return;
     g_sm.running = FALSE;
 
-    /* stop + join the rtp-data resend thread BEFORE freeing the pipeline/srtp it uses (no use-after-free) */
+    /* stop + join the rtp-data resend thread BEFORE freeing the agent/srtp it uses (no use-after-free) */
     g_accepted = FALSE;
     if (g_accept_thread) { g_thread_join(g_accept_thread); g_accept_thread = NULL; }
-    g_datasrc = NULL;   /* appsrc is owned by the pipeline, freed just below; thread is joined so it's safe */
+    g_datasrc = NULL;   /* owned by the pipeline (freed below); thread is joined so no more pushes */
     if (g_data_srtp) { srtp_dealloc(g_data_srtp); g_data_srtp = NULL; }
 
     if (g_sm.pipeline) gst_element_set_state(g_sm.pipeline, GST_STATE_NULL);
