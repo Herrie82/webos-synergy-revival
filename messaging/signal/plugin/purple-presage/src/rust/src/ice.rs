@@ -60,6 +60,13 @@ fn parse_ice_url(url: &str, username: &str, password: &str) -> Option<IceServer>
         Some((hp, q)) => (hp, Some(q)),
         None => (rest, None),
     };
+    // Skip IPv6 endpoints: the TouchPad has no IPv6, so an IPv6 TURN server ("[2a06:...]:80") never
+    // resolves -> its libnice allocation fails and lingers ("alive TURN refreshes"), which can drag
+    // the whole ICE component to FAILED even though the IPv4 relays work. Same workaround as the
+    // WhatsApp/meowcaller path (engine.go: "IPv6 endpoints skipped"). urlsWithIps brackets IPv6.
+    if hostport.starts_with('[') {
+        return None;
+    }
     let (host, port_s) = hostport.rsplit_once(':')?;
     let port: u16 = port_s.parse().ok()?;
     let transport = query
