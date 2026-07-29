@@ -451,6 +451,10 @@ async fn process_received_message<C: presage::store::Store>(
                 .or_else(|| call_message.answer.as_ref().and_then(|a| a.id))
                 .or_else(|| call_message.hangup.as_ref().and_then(|h| h.id))
                 .or_else(|| call_message.busy.as_ref().and_then(|b| b.id))
+                // A trickled IceUpdate carries ONLY ice_update entries (each with the call id) - no
+                // offer/answer. Without this it fell through to 0, so feed_remote_ice(0,...) never
+                // matched the engine and the peer's candidates were dropped -> ICE never connected.
+                .or_else(|| call_message.ice_update.iter().find_map(|i| i.id))
                 .unwrap_or(0);
             let (state, chat) = if call_message.offer.is_some() {
                 (crate::bridge::CALL_STATE_INCOMING, None)

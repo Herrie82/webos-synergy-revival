@@ -94,15 +94,15 @@ pub fn decode_offer_opaque(op: &[u8]) -> Option<ConnParamsV4> {
     None
 }
 
-/// Build OUR Answer opaque: message { ConnectionParametersV4 v4 = 4 { public_key, ice_ufrag, ice_pwd } }.
+/// Build OUR Answer opaque: message { ConnectionParametersV4 v4 = 4 { ... } }.
+///
+/// RingRTC uses the SAME ConnectionParametersV4 for the Offer AND the Answer, so the Answer must
+/// carry the SAME fields a real Offer does: field 4 (receive_video_codecs, the constant VideoCodec
+/// {1:8} we mirror from the captured reference) and field 5 (max_bitrate_bps). A stripped-down answer
+/// with only public_key/ufrag/pwd is rejected by a live Signal peer, which then hangs up within ~1s
+/// (the "disconnects right after accept" symptom) - the same reason encode_offer_opaque carries them.
 pub fn encode_answer_opaque(public_key: &[u8], ufrag: &str, pwd: &str) -> Vec<u8> {
-    let mut v4 = Vec::new();
-    put_len_field(&mut v4, 1, public_key);
-    put_len_field(&mut v4, 2, ufrag.as_bytes());
-    put_len_field(&mut v4, 3, pwd.as_bytes());
-    let mut op = Vec::new();
-    put_len_field(&mut op, 4, &v4);
-    op
+    encode_offer_opaque(public_key, ufrag, pwd, 2_000_000)
 }
 
 /// Build OUR Offer opaque (OUTGOING call): message { ConnectionParametersV4 v4 = 4 {
