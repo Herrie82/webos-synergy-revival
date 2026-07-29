@@ -37,6 +37,23 @@ const SIGNAL_MEDIA_BIN: &str = "/media/internal/signal_media_p";
 /// Presence of this file enables auto-answer + media for incoming calls (test gate).
 const MEDIA_GATE_FILE: &str = "/media/internal/signal_call_media";
 const WPE_DIR: &str = "/media/cryptofs/apps/usr/palm/applications/org.webosports.app.atlas/deviceroot/wpe-252";
+/// AEC (webrtcdsp) plugin + its libwebrtc_audio_processing live in ENGINE-ONLY dirs, NOT the shared
+/// wpe-252 gstreamer dir. The transport (imlibpurpletransport) also scans wpe-252/lib/gstreamer-1.0
+/// for its own gstreamer use, and loading the webrtc-audio-processing lib CRASHED it (an atomic/LDREX
+/// alignment trap in the lib's global ctors on the 2.6.35 kernel). Keeping the plugin in a private dir
+/// that only signal_media_p's GST_PLUGIN_PATH/LD_LIBRARY_PATH reference means only the call engine can
+/// ever load it - a bad lib can crash a call, never the whole transport.
+const SIG_PLUGIN_DIR: &str = "/media/internal/sig-gst-plugins";
+const SIG_LIB_DIR: &str = "/media/internal/sig-gst-libs";
+/// GST_PLUGIN_PATH for the engine: the shared wpe plugins + our private AEC plugin dir.
+fn sig_gst_plugin_path() -> String {
+    format!("{WPE_DIR}/lib/gstreamer-1.0:{SIG_PLUGIN_DIR}")
+}
+/// LD_LIBRARY_PATH for the engine: our private AEC lib dir PREPENDED to the inherited wpe path (so the
+/// webrtcdsp plugin resolves libwebrtc_audio_processing.so.1 without exposing it to the transport).
+fn sig_ld_library_path() -> String {
+    format!("{SIG_LIB_DIR}:{}", std::env::var("LD_LIBRARY_PATH").unwrap_or_default())
+}
 
 /// Command sender, stashed from presage_rust_main, so a per-call reader thread can enqueue the
 /// Answer/IceUpdate for the command loop (which owns the Manager) to send.
@@ -172,7 +189,8 @@ pub fn start_incoming(
         // The engine inherits imlibpurpletransport's env (the correct wpe LD_LIBRARY_PATH incl.
         // /media/internal/sslfix where the GCM libsrtp2 lives); we only pin the gst plugin path +
         // a writable registry so it never rescans into a read-only location.
-        .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
+        .env("GST_PLUGIN_PATH", sig_gst_plugin_path())
+        .env("LD_LIBRARY_PATH", sig_ld_library_path())
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
         .env("GST_DEBUG", "2")
         // TEMP diagnostic: libnice's ICE conncheck internals (why us->peer checks never validate ->
@@ -304,7 +322,8 @@ pub fn was_accepted(call_id: u64) -> bool {
 fn engine_command(mode: &str) -> Command {
     let mut c = Command::new(SIGNAL_MEDIA_BIN);
     c.arg(mode)
-        .env("GST_PLUGIN_PATH", format!("{WPE_DIR}/lib/gstreamer-1.0"))
+        .env("GST_PLUGIN_PATH", sig_gst_plugin_path())
+        .env("LD_LIBRARY_PATH", sig_ld_library_path())
         .env("GST_REGISTRY", "/media/internal/gstreg-sig.bin")
         .env("GST_DEBUG", "2")
         // TEMP diagnostic: libnice's ICE conncheck internals (why us->peer checks never validate ->

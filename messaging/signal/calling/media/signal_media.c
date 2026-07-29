@@ -706,6 +706,7 @@ int signal_media_init(int *argc, char ***argv)
         sa.sa_flags = SA_SIGINFO;
         sigaction(SIGBUS,  &sa, NULL);
         sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGILL,  &sa, NULL);   /* the webrtc lib's load-time LDREX alignment trap is SIGILL */
         gst_init(argc, argv);
         g_once_init_leave(&g_inited, 1);
     }
