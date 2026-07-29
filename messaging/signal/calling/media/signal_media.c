@@ -565,6 +565,25 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     g_signal_connect(sm->agent, "candidate-gathering-done", G_CALLBACK(on_nice_gathering_done), sm);
     g_signal_connect(sm->agent, "component-state-changed",  G_CALLBACK(on_nice_state),          sm);
 
+    /* NOTE: nice_agent_gather_candidates() (opens nice's UDP sockets) is intentionally NOT called here
+     * - see sm_start_gathering() and its call site in signal_media_start() for why. */
+    return TRUE;
+}
+
+/* Actually start ICE gathering: opens libnice's UDP sockets and kicks off STUN/TURN discovery. Split
+ * out of build_ice() and called AFTER build_pipeline()'s ALSA devices are opened (PLAYING state) - see
+ * signal_media_start(). Root-caused via NICE_DEBUG: "agent_recv_message_unlocked returned -1, errno
+ * (25): Inappropriate ioctl for device" on 2-3 of the ICE UDP sockets a few hundred ms into gathering,
+ * which made libnice silently DETACH those sockets (no more responses ever read on them) - explaining
+ * "we send checks, peer replies, but we never see anything". ENOTTY on a UDP socket is the classic
+ * signature of an fd NUMBER getting reused for a different resource while a GSource still references
+ * the old fd. The previous ordering created nice's sockets (build_ice, fds allocated) BEFORE the
+ * GMainLoop that services them existed (that only starts after build_pipeline + gst_element_set_state
+ * PLAYING, which is exactly when ALSA opens /dev/snd device nodes - heavy fd churn), leaving a window
+ * where nice's just-opened socket fds could collide with fds ALSA opens/closes moments later. Opening
+ * nice's sockets AFTER ALSA's device-open churn has already settled removes that overlap window. */
+static gboolean sm_start_gathering(SignalMedia *sm)
+{
     if (!nice_agent_gather_candidates(sm->agent, sm->stream_id)) {
         g_printerr("signal_media: gather_candidates failed\n");
         return FALSE;
@@ -882,6 +901,10 @@ int signal_media_start(const unsigned char local_priv[32],
         g_printerr("signal_media: failed to set PLAYING\n");
         return -1;
     }
+
+    /* Start ICE gathering (opens nice's UDP sockets) only NOW, after ALSA's device-open fd churn from
+     * the PLAYING transition above has settled - see sm_start_gathering()'s comment for why. */
+    if (!sm_start_gathering(&g_sm)) return -1;
 
     g_sm.running = TRUE;
     g_sm.thread = g_thread_new("signal-media", media_thread, &g_sm);
