@@ -79,7 +79,7 @@ check) on your sent messages. Each capability spans two columns, **Send / Receiv
 <tr><td><b>Discord</b> (<code>purple-discord</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>WhatsApp</b> (<code>purple-combined</code>)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 <tr><td><b>Google Chat</b> (<code>purple-googlechat</code>)</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❔</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>🟡</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Facebook (E2EE)</b> (<code>purple-combined</code>, gometa)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
 </tbody>
 </table>
 

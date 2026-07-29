@@ -58,6 +58,14 @@ typedef struct _TeamsCall {
 	gchar *link_reject;
 	gchar *udp_transport;      /* "udp://<ip>:3478/" MS-TURN relay */
 	gchar *conversation_controller; /* conversationInvitation.conversationController */
+
+	/* --- answer flow (incoming): the media controller answer is a two-step handshake -
+	 * POST attach (offer's link_attach) -> parse callInvitation.links.acceptance from the
+	 * response -> POST accept (callAcceptance.mediaContent.blob = our SDP answer). --- */
+	gchar *our_answer_sdp;     /* the SDP answer our media engine produced (held across attach->accept) */
+	gchar *our_endpoint_id;    /* our calling endpoint id (= sa->endpoint), used in acceptedBy */
+	gchar *our_participant_id; /* our participantId (generated), reused in attach join + acceptedBy */
+	gchar *callagent_id;       /* generated callAgent id for our control paths (end link, etc.) */
 } TeamsCall;
 
 /* Called from teams_trouter.c's /NGCallManagerWin handler with the decoded callNotification

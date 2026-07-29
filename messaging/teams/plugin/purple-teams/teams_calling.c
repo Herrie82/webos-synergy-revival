@@ -117,6 +117,52 @@ typedef struct {
 	gchar      *callagent_id;   /* our client-generated callAgent uuid (outgoing) */
 } TeamsMediaProc;
 
+/* POST JSON to a flightproxy/calling URL WITH the x-skypetoken auth header (teams_post_or_get does
+ * not add it for api.flightproxy.skype.com -> "Anonymous access is not allowed" 403). Logs the
+ * response. Used for both the cpconv create (offer) and the mediaAnswer/attach POST (answer). */
+static void
+flightproxy_resp_cb(PurpleHttpConnection *hc, PurpleHttpResponse *resp, gpointer u)
+{
+	int code; size_t len = 0; const gchar *data;
+	(void) hc; (void) u;
+	code = purple_http_response_get_code(resp);
+	data = purple_http_response_get_data(resp, &len);
+	teams_call_log("FLIGHTPROXY resp code=%d body=%.300s", code, data ? data : "(none)");
+}
+
+/* Teams calling client identity (matches teams.live.com's SkypeSpacesWeb TFL client string). */
+#define TEAMS_SKYPE_CLIENT "SkypeSpaces/1415/26070217343/os=linux; osVer=undefined; " \
+	"deviceType=computer; browser=chrome; browserVer=150.0.0.0/TsCallingVersion=2026.24.01.6/Ovb=0"
+
+/* Full form: POST with the calling headers + a caller-supplied response callback and user data.
+ * cb may be NULL (falls back to flightproxy_resp_cb which just logs). */
+static void
+flightproxy_post_cb(TeamsAccount *sa, const gchar *url, const gchar *body,
+                    PurpleHttpCallback cb, gpointer user)
+{
+	gchar *chain = purple_uuid_random(), *msgid = purple_uuid_random();
+	PurpleHttpRequest *req = purple_http_request_new(url);
+	purple_http_request_set_method(req, "POST");
+	purple_http_request_set_keepalive_pool(req, sa->keepalive_pool);
+	purple_http_request_header_set(req, "Content-Type", "application/json");
+	purple_http_request_header_set(req, "X-Skypetoken", sa->skype_token);
+	/* calling backend rejects requests without a client identity as 400 Bad Request */
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Client", TEAMS_SKYPE_CLIENT);
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Chain-Id", chain);
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Message-Id", msgid);
+	purple_http_request_header_set(req, "ms-teams-ring", "general");
+	purple_http_request_set_contents(req, body, strlen(body));
+	purple_http_request(sa->pc, req, cb ? cb : flightproxy_resp_cb, user);
+	purple_http_request_unref(req);
+	g_free(chain); g_free(msgid);
+}
+
+static void
+flightproxy_post(TeamsAccount *sa, const gchar *url, const gchar *body)
+{
+	flightproxy_post_cb(sa, url, body, NULL, NULL);
+}
+
 /* build a callAgent trouter control path: <surl>callAgent/<agent>/<hash8>/<kind>/<name>/ */
 static gchar *
 callagent_path(TeamsCall *call, const char *agent, const char *kind, const char *name)
@@ -168,46 +214,104 @@ sdp_gcm_key(const char *sdp)
 
 static void teams_calling_post_answer(TeamsCall *call, const char *answer_sdp);
 static void call_http_post(TeamsAccount *sa, const gchar *full_url, const gchar *body);
+
+/* dump the exact SDP answer we send, for offline diffing against the web client's accepted answer */
+static void
+teams_calling_log_sdp(const char *sdp)
+{
+	g_file_set_contents("/media/internal/teams-answer.sdp", sdp ? sdp : "", -1, NULL);
+}
+
 static void answer_ok_cb(TeamsAccount *sa, JsonNode *node, gpointer u);
 static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpointer u);
 
-/* build the SDP answer from our media params + the offer, and POST it to links.attach.
- * NOTE: answer shape is a best-effort mirror of the offer - iterate on device. */
+/* build the SDP answer from our media params + the offer (SDES-GCM path; the offer supports both
+ * SDES a=crypto and DTLS, and our engine keys via SDES). Shape mirrors the web client's accepted
+ * answer: BUNDLE + mid:audio_0 + rtcp-mux + label, a=crypto instead of DTLS fingerprint. Then kicks
+ * off the two-step media-controller handshake (attach -> parse acceptance link -> accept w/ SDP). */
 static void
 media_send_answer(TeamsMediaProc *mp)
 {
 	TeamsCall *call = mp->call;
 	GString *a;
-	gchar *offer_ip;
+	gchar *our_ip = NULL; int our_port = 3480;
+
 	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
 	mp->answered = TRUE;
 
-	/* reuse the offer's connection IP for c=/o= (our real address is in the candidates anyway) */
-	offer_ip = sdp_line_val(call->sdp_offer, "c=IN IP4 ");
-	a = g_string_new("");
-	g_string_append(a, "v=0\r\n");
-	g_string_append_printf(a, "o=- 0 0 IN IP4 %s\r\n", offer_ip ? offer_ip : "127.0.0.1");
-	g_string_append(a, "s=session\r\n");
-	g_string_append_printf(a, "c=IN IP4 %s\r\n", offer_ip ? offer_ip : "127.0.0.1");
-	g_string_append(a, "b=CT:4000\r\nt=0 0\r\n");
-	g_string_append(a, "m=audio 3480 RTP/SAVP 102\r\n");
-	g_string_append(a, "a=rtcp-mux\r\n");
-	g_string_append(a, "a=label:main-audio\r\n");
-	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
-	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
-	g_string_append(a, "a=rtpmap:102 opus/48000/2\r\n");
-	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	/* Derive our OWN connection address for c=/m= from the first UDP host candidate (NOT the offerer's
+	 * relay IP - advertising the peer's address as ours confuses the NGC validator). */
 	if (mp->our_cands) {
 		gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1); int i;
-		for (i = 0; cl[i]; i++) if (cl[i][0]) g_string_append_printf(a, "a=%s\r\n", cl[i]);
+		for (i = 0; cl[i]; i++) {
+			/* "candidate:<f> <comp> UDP <pri> <ip> <port> typ host ..." */
+			if (strstr(cl[i], " UDP ") && strstr(cl[i], "typ host")) {
+				gchar **t = g_strsplit(g_strstrip(cl[i]), " ", -1);
+				if (t[0] && t[1] && t[2] && t[3] && t[4] && t[5]) {
+					our_ip = g_strdup(t[4]); our_port = atoi(t[5]);
+				}
+				g_strfreev(t);
+				break;
+			}
+		}
 		g_strfreev(cl);
 	}
-	g_string_append(a, "a=sendrecv\r\n");
 
-	teams_call_log("ANSWER SDP built (%d bytes), posting to attach", (int) a->len);
-	teams_calling_post_answer(call, a->str);
+	a = g_string_new("");
+	g_string_append(a, "v=0\r\n");
+	g_string_append_printf(a, "o=- %u 2 IN IP4 %s\r\n", g_random_int(), our_ip ? our_ip : "127.0.0.1");
+	g_string_append(a, "s=-\r\n");
+	g_string_append(a, "b=CT:4000\r\nt=0 0\r\n");
+	g_string_append(a, "a=extmap-allow-mixed\r\n");
+	g_string_append(a, "a=msid-semantic: WMS *\r\n");
+	g_string_append(a, "a=group:BUNDLE audio_0 video_1\r\n");
+	g_string_append_printf(a, "m=audio %d RTP/SAVP 102 9 0 8 101\r\n", our_port);
+	g_string_append_printf(a, "c=IN IP4 %s\r\n", our_ip ? our_ip : "127.0.0.1");
+	g_string_append(a, "a=rtpmap:102 opus/48000/2\r\n");
+	g_string_append(a, "a=rtpmap:9 G722/8000\r\n");
+	g_string_append(a, "a=rtpmap:0 PCMU/8000\r\n");
+	g_string_append(a, "a=rtpmap:8 PCMA/8000\r\n");
+	g_string_append(a, "a=rtpmap:101 telephone-event/8000\r\n");
+	g_string_append(a, "a=fmtp:102 minptime=10;useinbandfec=1\r\n");
+	g_string_append(a, "a=mid:audio_0\r\n");
+	g_string_append(a, "a=sendrecv\r\n");
+	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
+	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
+	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	/* Emit UDP candidates only - Teams' NGC parser can reject the whole answer over ICE-TCP lines. */
+	if (mp->our_cands) {
+		gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1); int i;
+		for (i = 0; cl[i]; i++)
+			if (cl[i][0] && strstr(cl[i], " UDP ")) g_string_append_printf(a, "a=%s\r\n", cl[i]);
+		g_strfreev(cl);
+	}
+	g_string_append(a, "a=ice-options:trickle\r\n");
+	g_string_append(a, "a=rtcp-mux\r\n");
+	g_string_append(a, "a=label:main-audio\r\n");
+
+	/* The offer has a second m-line (m=video, BUNDLE audio_0 video_1). SDP offer/answer requires the
+	 * answer to mirror the offer's m-lines in count+order, so we MUST emit a corresponding video line
+	 * or the peer rejects the whole answer (FinalAnswerError 406/4122). We don't do video: mark it
+	 * inactive, bundled onto the audio transport (same ice-ufrag/pwd/crypto). */
+	g_string_append_printf(a, "m=video %d RTP/SAVP 107\r\n", our_port);
+	g_string_append_printf(a, "c=IN IP4 %s\r\n", our_ip ? our_ip : "127.0.0.1");
+	g_string_append(a, "a=rtpmap:107 H264/90000\r\n");
+	g_string_append(a, "a=fmtp:107 profile-level-id=42C02A;packetization-mode=1\r\n");
+	g_string_append(a, "a=mid:video_1\r\n");
+	g_string_append(a, "a=inactive\r\n");
+	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
+	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
+	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	g_string_append(a, "a=rtcp-mux\r\n");
+	g_string_append(a, "a=label:main-video\r\n");
+
+	g_free(call->our_answer_sdp);
+	call->our_answer_sdp = g_strdup(a->str);
+	teams_call_log("ANSWER SDP built (%d bytes) - starting attach->accept handshake", (int) a->len);
+	teams_calling_log_sdp(call->our_answer_sdp);   /* dump full answer for offline diffing */
+	teams_calling_post_answer(call, a->str);   /* now = attach then accept */
 	g_string_free(a, TRUE);
-	g_free(offer_ip);
+	g_free(our_ip);
 }
 
 /* CALLER: build the OFFER SDP from our media params + POST the cpconv create request to place the
@@ -218,8 +322,7 @@ media_send_offer(TeamsMediaProc *mp)
 	TeamsCall *call = mp->call;
 	const char *agent = mp->callagent_id;
 	GString *sdp, *body;
-	gchar *offer_esc, *legid, *epid, *pid;
-	gchar *l_prog, *l_ma, *l_acc, *l_end, *c_end, *c_upd, *roster;
+	gchar *offer_esc, *legid, *epid, *pid, *to_pid;
 	int i;
 	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
 	mp->answered = TRUE;
@@ -236,37 +339,68 @@ media_send_offer(TeamsMediaProc *mp)
 
 	offer_esc = g_strescape(sdp->str, "");
 	legid = g_strdup_printf("%08X%08X%08X%08X", g_random_int(), g_random_int(), g_random_int(), g_random_int());
-	epid = purple_uuid_random(); pid = purple_uuid_random();
-	l_prog = callagent_path(call, agent, "call", "progress");
-	l_ma   = callagent_path(call, agent, "call", "mediaAnswer");
-	l_acc  = callagent_path(call, agent, "call", "acceptance");
-	l_end  = callagent_path(call, agent, "call", "end");
-	c_end  = callagent_path(call, agent, "conversation", "conversationEnd");
-	c_upd  = callagent_path(call, agent, "conversation", "conversationUpdate");
-	roster = callagent_path(call, agent, "conversation", "rosterUpdate");
+	/* endpointId must be our REGISTERED calling endpoint so callAgent response frames route back. */
+	epid = g_strdup(call->sa->endpoint ? call->sa->endpoint : "");
+	pid = purple_uuid_random(); to_pid = purple_uuid_random();
 
-	body = g_string_new("{\"conversationRequest\":{\"conversationType\":null,\"applicationType\":\"TFL\",");
-	g_string_append_printf(body, "\"roster\":{\"type\":\"Delta\",\"rosterUpdate\":\"%s\"},", roster);
-	g_string_append_printf(body, "\"links\":{\"conversationEnd\":\"%s\",\"conversationUpdate\":\"%s\"},", c_end, c_upd);
-	g_string_append(body, "\"properties\":{\"allowConversationWithoutHost\":true},");
-	g_string_append_printf(body, "\"participants\":{\"from\":{\"id\":\"8:%s\",\"displayName\":\"webOS\",\"endpointId\":\"%s\",\"participantId\":\"%s\",\"languageId\":\"en-us\"},",
+/* append "name":"<callagent path>", to body for the given control kind (conversation|call) */
+#define AGL(kind, nm) do { gchar *_p = callagent_path(call, agent, kind, nm); \
+	g_string_append_printf(body, "\"%s\":\"%s\",", nm, _p); g_free(_p); } while (0)
+
+	/* conversationRequest holds ONLY {type,subject,suppressDialout,applicationType,roster,properties,links};
+	 * participants/callInvitation/endpoint* are TOP-LEVEL siblings of conversationRequest (not nested). */
+	body = g_string_new("{\"conversationRequest\":{\"conversationType\":null,\"subject\":null,"
+		"\"suppressDialout\":false,\"applicationType\":\"TFL\",");
+	{ gchar *r = callagent_path(call, agent, "conversation", "rosterUpdate");
+	  g_string_append_printf(body, "\"roster\":{\"type\":\"Delta\",\"rosterUpdate\":\"%s\"},", r); g_free(r); }
+	g_string_append(body, "\"properties\":{\"allowConversationWithoutHost\":true,"
+		"\"enableGroupCallEventMessages\":true,\"enableGroupCallUpgradeMessage\":false,"
+		"\"enableGroupCallMeetupGeneration\":false},");
+	g_string_append(body, "\"links\":{");
+	AGL("conversation", "conversationEnd"); AGL("conversation", "conversationUpdate");
+	AGL("conversation", "localParticipantUpdate"); AGL("conversation", "addParticipantSuccess");
+	AGL("conversation", "addParticipantFailure"); AGL("conversation", "addModalitySuccess");
+	AGL("conversation", "addModalityFailure"); AGL("conversation", "confirmUnmute");
+	AGL("conversation", "receiveMessage");
+	g_string_truncate(body, body->len - 1);   /* drop trailing comma */
+	g_string_append(body, "}},");              /* close links, close conversationRequest */
+
+	/* ---- top-level siblings ---- */
+	g_string_append(body, "\"contentSharing\":null,");
+	g_string_append_printf(body, "\"participants\":{\"from\":{\"id\":\"8:%s\",\"displayName\":\"webOS\","
+		"\"endpointId\":\"%s\",\"participantId\":\"%s\",\"languageId\":\"en-us\"},",
 		call->sa->username ? call->sa->username : "", epid, pid);
-	g_string_append_printf(body, "\"to\":[{\"id\":\"%s\"}]},", call->peer_mri ? call->peer_mri : "");
-	g_string_append(body, "\"callInvitation\":{\"callModalities\":[\"Audio\"],");
-	g_string_append_printf(body, "\"links\":{\"progress\":\"%s\",\"mediaAnswer\":\"%s\",\"acceptance\":\"%s\",\"end\":\"%s\"},",
-		l_prog, l_ma, l_acc, l_end);
-	g_string_append_printf(body, "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\",\"mediaLegId\":\"%s\"}}}}",
+	g_string_append_printf(body, "\"to\":[{\"id\":\"%s\",\"participantId\":\"%s\"}]},",
+		call->peer_mri ? call->peer_mri : "", to_pid);
+	g_string_append(body, "\"capabilities\":null,\"endpointCapabilities\":73463,"
+		"\"clientEndpointCapabilities\":42876960,\"endpointMetadata\":{\"holographicCapabilities\":3},"
+		"\"groupContext\":null,\"groupChat\":null,\"meetingInfo\":null,\"meetingData\":null,"
+		"\"endpointState\":{\"endpointStateSequenceNumber\":2,\"endpointProperties\":"
+		"{\"additionalEndpointProperties\":{\"infoShownInReportMode\":\"FullInformation\"}}},");
+	g_string_append(body, "\"callInvitation\":{\"callModalities\":[\"Audio\"],\"replaces\":null,"
+		"\"transferor\":null,\"clientTransferContext\":null,\"customContext\":null,\"links\":{");
+	AGL("call", "progress"); AGL("call", "mediaAnswer"); AGL("call", "acceptance");
+	AGL("call", "redirection"); AGL("call", "end");
+	g_string_truncate(body, body->len - 1);
+	g_string_append(body, "},\"clientContentForMediaController\":{");
+	AGL("call", "controlVideoStreaming"); AGL("call", "csrcInfo");
+	g_string_truncate(body, body->len - 1);
+	g_string_append(body, "},\"pstnContent\":{\"emergencyCallCountry\":\"\","
+		"\"platformName\":\"" TEAMS_SKYPE_CLIENT "\",\"publicApiCall\":false},\"emergencyContent\":null,");
+	g_string_append_printf(body, "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\","
+		"\"requiredFeatures\":\"nonByPass\",\"clientLocation\":\"NL\",\"mediaLegId\":\"%s\"},",
 		offer_esc, legid);
+	g_string_append(body, "\"voicemailSettings\":{},\"locationContent\":null,"
+		"\"networkContent\":null,\"areaContent\":null},");   /* close callInvitation */
+	g_string_append(body, "\"debugContent\":{},\"participantPropertyBag\":{}}");   /* close outer */
+#undef AGL
 
-	teams_call_log("dial: OFFER built (%d bytes), POSTing cpconv to place call to %s", (int) sdp->len,
-	               call->peer_mri ? call->peer_mri : "?");
-	teams_post_or_get_with_error(call->sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL,
-	                             "api.flightproxy.skype.com", "/api/v2/cpconv", body->str,
-	                             answer_ok_cb, answer_err_cb, NULL, FALSE);
+	teams_call_log("dial: OFFER built (%d bytes sdp, %d body), POSTing cpconv to place call to %s",
+	               (int) sdp->len, (int) body->len, call->peer_mri ? call->peer_mri : "?");
+	flightproxy_post(call->sa, "https://api.flightproxy.skype.com/api/v2/cpconv", body->str);
 
 	g_string_free(sdp, TRUE); g_string_free(body, TRUE);
-	g_free(offer_esc); g_free(legid); g_free(epid); g_free(pid);
-	g_free(l_prog); g_free(l_ma); g_free(l_acc); g_free(l_end); g_free(c_end); g_free(c_upd); g_free(roster);
+	g_free(offer_esc); g_free(legid); g_free(epid); g_free(pid); g_free(to_pid);
 }
 
 static gboolean
@@ -336,6 +470,19 @@ teams_media_start(TeamsCall *call)
 
 	envp = g_environ_setenv(envp, "GST_PLUGIN_SYSTEM_PATH_1_0", strchr(gstenv, '=') + 1, TRUE);
 	envp = g_environ_setenv(envp, "GST_REGISTRY", strchr(regenv, '=') + 1, TRUE);
+	/* capture detailed GStreamer errors (esp. srtp decrypt / rtp depay) to a file for diagnosis */
+	envp = g_environ_setenv(envp, "GST_DEBUG", "2,srtp*:5,rtpopusdepay:5,opusdec:4,alsasink:5,nicesrc:4", TRUE);
+	envp = g_environ_setenv(envp, "GST_DEBUG_FILE", "/media/internal/teams-gst.log", TRUE);
+	envp = g_environ_setenv(envp, "GST_DEBUG_NO_COLOR", "1", TRUE);
+	/* ALSA "voip"/"voipsource" are PulseAudio PCMs defined ONLY in the system /etc/asound.conf, which
+	 * only the SYSTEM libasound reads. The wpe-252 libasound (in our RUNPATH) uses its own config that
+	 * lacks them -> "Unknown PCM voip". Force the system libasound (via LD_PRELOAD, same as the
+	 * transport) + the system ALSA config so alsasink/alsasrc can open voip/voipsource -> PulseAudio. */
+	envp = g_environ_setenv(envp, "LD_PRELOAD",
+		"/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/libstdc++.so.6 "
+		"/media/cryptofs/wpe-glibc/lib/librt.so.1 /usr/lib/libasound.so.2", TRUE);
+	envp = g_environ_setenv(envp, "ALSA_CONFIG_PATH", "/usr/share/alsa/alsa.conf", TRUE);
+	envp = g_environ_setenv(envp, "ALSA_PLUGIN_DIR", "/usr/lib/alsa-lib", TRUE);
 
 	if (!g_spawn_async_with_pipes(NULL, (gchar **) argv, envp,
 	                              G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
@@ -415,25 +562,111 @@ static void answer_ok_cb(TeamsAccount *sa, JsonNode *node, gpointer u)
 static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpointer u)
 { (void)sa;(void)len;(void)u; teams_call_log("ANSWER POST: REJECTED/err resp=%.260s", data ? data : "(no body)"); }
 
+/* Step 2: POST the accept (with our SDP answer) to the acceptance link parsed from the attach
+ * response. Body = callAcceptance{acceptedBy, acceptedCallModalities, caps, mediaContent{blob,...}}. */
+static void
+teams_calling_post_accept(TeamsCall *call, const gchar *acceptance_url)
+{
+	TeamsAccount *sa = call->sa;
+	const char *agent = call->callagent_id;
+	gchar *esc, *legid, *body;
+	gchar *l_reneg, *l_xfer, *l_repl, *l_bal, *l_retgt, *l_ctlvid, *l_updmd, *cc_ctlvid, *cc_csrc;
+	if (!call->our_answer_sdp) { teams_call_log("accept: no answer SDP"); return; }
+	esc = g_strescape(call->our_answer_sdp, "");
+	legid = g_strdup_printf("%08X%08X%08X%08X", g_random_int(), g_random_int(), g_random_int(), g_random_int());
+	l_reneg  = callagent_path(call, agent, "call", "mediaRenegotiation");
+	l_xfer   = callagent_path(call, agent, "call", "transfer");
+	l_repl   = callagent_path(call, agent, "call", "replacement");
+	l_bal    = callagent_path(call, agent, "call", "balanceUpdate");
+	l_retgt  = callagent_path(call, agent, "call", "retargetCompletion");
+	l_ctlvid = callagent_path(call, agent, "call", "controlVideoStreaming");
+	l_updmd  = callagent_path(call, agent, "call", "updateMediaDescriptions");
+	cc_ctlvid = callagent_path(call, agent, "call", "controlVideoStreaming");
+	cc_csrc   = callagent_path(call, agent, "call", "csrcInfo");
+	body = g_strdup_printf(
+		"{\"callAcceptance\":{"
+		  "\"acceptedBy\":{\"id\":\"8:%s\",\"displayName\":\"webOS\",\"endpointId\":\"%s\","
+		    "\"participantId\":\"%s\",\"languageId\":\"en-us\"},"
+		  "\"acceptedCallModalities\":[\"Audio\"],"
+		  "\"capabilities\":null,\"endpointCapabilities\":73463,\"clientEndpointCapabilities\":42876960,"
+		  "\"links\":{\"mediaRenegotiation\":\"%s\",\"transfer\":\"%s\",\"replacement\":\"%s\","
+		    "\"balanceUpdate\":\"%s\",\"retargetCompletion\":\"%s\",\"controlVideoStreaming\":\"%s\","
+		    "\"updateMediaDescriptions\":\"%s\"},"
+		  "\"clientContentForMediaController\":{\"controlVideoStreaming\":\"%s\",\"csrcInfo\":\"%s\"},"
+		  "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\","
+		    "\"clientLocation\":\"NL\",\"mediaLegId\":\"%s\"},"
+		  "\"pstnContent\":{\"emergencyCallCountry\":\"\",\"platformName\":\"" TEAMS_SKYPE_CLIENT "\","
+		    "\"publicApiCall\":false},"
+		  "\"callKeepAliveInterval\":null,"
+		  "\"applicationType\":\"TFL\"}}",
+		sa->username ? sa->username : "",
+		call->our_endpoint_id ? call->our_endpoint_id : "",
+		call->our_participant_id ? call->our_participant_id : "",
+		l_reneg, l_xfer, l_repl, l_bal, l_retgt, l_ctlvid, l_updmd, cc_ctlvid, cc_csrc,
+		esc, legid);
+	teams_call_log("accept -> POST %d-byte body to acceptance link", (int) strlen(body));
+	flightproxy_post_cb(sa, acceptance_url, body, flightproxy_resp_cb, NULL);
+	g_free(esc); g_free(legid); g_free(body);
+	g_free(l_reneg); g_free(l_xfer); g_free(l_repl); g_free(l_bal); g_free(l_retgt);
+	g_free(l_ctlvid); g_free(l_updmd); g_free(cc_ctlvid); g_free(cc_csrc);
+}
+
+/* Step 1 response handler: parse callInvitation.links.acceptance from the attach response, then
+ * POST the accept (our SDP answer). */
+static void
+attach_resp_cb(PurpleHttpConnection *hc, PurpleHttpResponse *resp, gpointer u)
+{
+	TeamsCall *call = (TeamsCall *) u;
+	int code; const gchar *data; size_t len = 0;
+	JsonObject *root, *ci, *links; const gchar *acc = NULL;
+	(void) hc;
+	code = purple_http_response_get_code(resp);
+	data = purple_http_response_get_data(resp, &len);
+	teams_call_log("attach resp code=%d (%d bytes)", code, (int) len);
+	if (code < 200 || code >= 300 || !data) {
+		teams_call_log("attach FAILED: %.240s", data ? data : "(no body)");
+		return;
+	}
+	root = json_decode_object(data, len);
+	if (root && (ci = oget(root, "callInvitation")) && (links = oget(ci, "links")))
+		acc = sget(links, "acceptance");
+	if (acc) {
+		gchar *acc_dup = g_strdup(acc);
+		teams_call_log("attach OK -> acceptance link acquired, posting accept");
+		teams_calling_post_accept(call, acc_dup);
+		g_free(acc_dup);
+	} else {
+		teams_call_log("attach OK but no callInvitation.links.acceptance in response");
+	}
+	if (root) json_object_unref(root);
+}
+
+/* Incoming answer = two-step media-controller handshake (see media_send_answer). Step 1 here:
+ * POST attach to the offer's link_attach; the response yields the acceptance link (step 2). */
 static void
 teams_calling_post_answer(TeamsCall *call, const char *answer_sdp)
 {
-	gchar *esc, *body, *host, *path;
-	const gchar *p, *slash;
+	const char *agent;
+	gchar *end_link, *body;
+	(void) answer_sdp;   /* already stored on call->our_answer_sdp; posted in step 2 */
 	if (!call->link_attach) { teams_call_log("post_answer: no attach link"); return; }
-	esc = g_strescape(answer_sdp, "");   /* JSON-escape (also escapes \r\n) */
-	body = g_strdup_printf("{\"mediaContent\":{\"contentType\":\"application/sdp\",\"blob\":\"%s\","
-	                       "\"mediaLegId\":\"%s\"}}", esc, call->media_leg_id ? call->media_leg_id : "");
-	/* split the attach URL into host + path so we can POST with response logging */
-	p = call->link_attach;
-	if (g_str_has_prefix(p, "https://")) p += 8; else if (g_str_has_prefix(p, "http://")) p += 7;
-	slash = strchr(p, '/');
-	host = slash ? g_strndup(p, slash - p) : g_strdup(p);
-	path = slash ? g_strdup(slash) : g_strdup("/");
-	teams_call_log("post_answer -> host=%s (%d bytes body)", host, (int) strlen(body));
-	teams_post_or_get_with_error(call->sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL, host, path, body,
-	                             answer_ok_cb, answer_err_cb, NULL, FALSE);
-	g_free(esc); g_free(body); g_free(host); g_free(path);
+
+	/* generate our endpoint/participant/callAgent identity for this call (reused in accept) */
+	if (!call->our_endpoint_id)    call->our_endpoint_id = g_strdup(call->sa->endpoint ? call->sa->endpoint : "");
+	if (!call->our_participant_id) call->our_participant_id = purple_uuid_random();
+	if (!call->callagent_id)       call->callagent_id = purple_uuid_random();
+	agent = call->callagent_id;
+	end_link = callagent_path(call, agent, "call", "end");
+
+	body = g_strdup_printf(
+		"{\"attach\":{\"requireMediaContent\":false,\"links\":{\"end\":\"%s\"},"
+		  "\"locationContent\":null,\"networkContent\":null,\"areaContent\":null,"
+		  "\"applicationType\":\"TFL\"},"
+		"\"capabilities\":null,\"endpointCapabilities\":73463}",
+		end_link);
+	teams_call_log("post_answer: attach (step 1/2) -> %d-byte body", (int) strlen(body));
+	flightproxy_post_cb(call->sa, call->link_attach, body, attach_resp_cb, call);
+	g_free(end_link); g_free(body);
 }
 
 /* ------------------------------------------------------------------ TeamsCall */
@@ -476,6 +709,10 @@ teams_call_free(TeamsCall *call)
 	g_free(call->link_reject);
 	g_free(call->udp_transport);
 	g_free(call->conversation_controller);
+	g_free(call->our_answer_sdp);
+	g_free(call->our_endpoint_id);
+	g_free(call->our_participant_id);
+	g_free(call->callagent_id);
 	g_free(call);
 }
 
@@ -625,14 +862,77 @@ teams_calling_autoanswer_cb(gpointer user)
 	return G_SOURCE_REMOVE;
 }
 
+/* Outgoing call: the callee accepted and Teams delivered their SDP answer on our callAgent
+ * mediaAnswer link. Extract ice-ufrag/pwd + the a=crypto RX key + candidates, and feed them to the
+ * caller media engine (ANSWER + RCAND) so it applies the peer's key, sets remote creds and connects
+ * ICE. The exact frame shape isn't fully known yet, so probe a few likely blob locations. */
+static void
+teams_calling_handle_media_answer(TeamsAccount *sa, JsonObject *body_obj)
+{
+	TeamsCall *call = teams_calling_current(sa);
+	TeamsMediaProc *mp = g_mproc;
+	JsonObject *mc = NULL, *sub;
+	const gchar *blob = NULL;
+	gchar *ruf, *rpw, *rxkey, **lines; int i;
+
+	if (!call || !mp || !mp->is_caller || mp->in_fd < 0) {
+		teams_call_log("mediaAnswer: no outgoing caller engine to apply it to"); return;
+	}
+	if ((mc = oget(body_obj, "mediaContent")))            blob = sget(mc, "blob");
+	if (!blob && (sub = oget(body_obj, "mediaAnswer")) && (mc = oget(sub, "mediaContent"))) blob = sget(mc, "blob");
+	if (!blob && (sub = oget(body_obj, "callNotification")) && (mc = oget(sub, "mediaContent"))) blob = sget(mc, "blob");
+	if (!blob) { teams_call_log("mediaAnswer: no SDP blob found (see capture log for shape)"); return; }
+
+	ruf = sdp_line_val(blob, "a=ice-ufrag:");
+	rpw = sdp_line_val(blob, "a=ice-pwd:");
+	rxkey = sdp_gcm_key(blob);
+	if (!ruf || !rpw || !rxkey) {
+		teams_call_log("mediaAnswer: answer missing ice/crypto (uf=%d pw=%d key=%d)",
+		               ruf != NULL, rpw != NULL, rxkey != NULL);
+		g_free(ruf); g_free(rpw); g_free(rxkey); return;
+	}
+	teams_call_log("mediaAnswer: applying peer answer -> ANSWER + RCAND to caller engine");
+	{ gchar *s = g_strdup_printf("ANSWER %s %s %s\n", rxkey, ruf, rpw);
+	  if (write(mp->in_fd, s, strlen(s)) < 0) {} g_free(s); }
+	lines = g_strsplit(blob, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		gchar *l = g_strstrip(lines[i]);
+		if (g_str_has_prefix(l, "a=candidate:")) {
+			gchar *r = g_strdup_printf("RCAND %s\n", l + 2);
+			if (write(mp->in_fd, r, strlen(r)) < 0) {} g_free(r);
+		}
+	}
+	g_strfreev(lines);
+	call->state = TEAMS_CALL_ACTIVE;
+	push_state(call, NULL);
+	g_free(ruf); g_free(rpw); g_free(rxkey);
+}
+
 void
 teams_calling_handle_trouter(TeamsAccount *sa, JsonObject *body_obj, const gchar *request_url)
 {
 	/* Always capture first - even notifications we don't yet model are ground truth. */
 	capture_notification(sa, body_obj, request_url);
 
+	if (request_url && strstr(request_url, "callAgent/"))
+		teams_call_log("callAgent frame: %s", strstr(request_url, "callAgent/"));
+
+	/* Outgoing call: callee is ringing (progress) or has answered (mediaAnswer). */
+	if (request_url && (strstr(request_url, "/mediaAnswer") || strstr(request_url, "/mediaanswer"))) {
+		teams_call_log("outgoing: MEDIA ANSWER frame received");
+		teams_calling_handle_media_answer(sa, body_obj);
+		return;
+	}
+	if (request_url && strstr(request_url, "/progress")) {
+		TeamsCall *call = teams_calling_current(sa);
+		teams_call_log("outgoing: PROGRESS frame (callee ringing)");
+		if (call) push_state(call, "ringing");
+		return;
+	}
+
 	/* Call ended */
-	if (request_url && g_str_has_suffix(request_url, "/end")) {
+	if (request_url && (strstr(request_url, "/call/end") || g_str_has_suffix(request_url, "/end")
+	                    || g_str_has_suffix(request_url, "/end/"))) {
 		TeamsCall *call = teams_calling_current(sa);
 		if (call) {
 			JsonObject *ce = oget(body_obj, "callEnd");

@@ -149,7 +149,17 @@ static gboolean on_bus(GstBus *bus, GstMessage *msg, gpointer user)
             gst_message_parse_error(msg, &err, &dbg);
             g_printerr("teams_media: pipeline ERROR from %s: %s (%s)\n",
                        GST_OBJECT_NAME(msg->src), err ? err->message : "?", dbg ? dbg : "");
-            { char t[512]; g_snprintf(t, sizeof t, "PIPELINE ERROR %s: %s", GST_OBJECT_NAME(msg->src), err ? err->message : "?"); tm_trace(t); }
+            { char t[1024]; g_snprintf(t, sizeof t, "PIPELINE ERROR %s: %s | dbg=%s",
+                GST_OBJECT_NAME(msg->src), err ? err->message : "?", dbg ? dbg : "(none)"); tm_trace(t); }
+            if (err) g_error_free(err);
+            g_free(dbg);
+            break;
+        }
+        case GST_MESSAGE_WARNING: {
+            GError *err = NULL; gchar *dbg = NULL;
+            gst_message_parse_warning(msg, &err, &dbg);
+            { char t[1024]; g_snprintf(t, sizeof t, "PIPELINE WARN %s: %s | dbg=%s",
+                GST_OBJECT_NAME(msg->src), err ? err->message : "?", dbg ? dbg : "(none)"); tm_trace(t); }
             if (err) g_error_free(err);
             g_free(dbg);
             break;
@@ -266,6 +276,9 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *depay = mk("rtpopusdepay", "rx-depay");
     GstElement *odec  = mk("opusdec",      "rx-opusdec");
     GstElement *aconv = mk("audioconvert", "rx-aconv");
+    GstElement *ares  = mk("audioresample","rx-ares");   /* opus decodes to 48k; the voip PCM wants a
+                                                          * phone rate (8k/16k) - audioconvert alone
+                                                          * can't resample -> alsasink "wrong format" */
     GstElement *asink = mk("alsasink",     "rx-alsasink");
 
     GstElement *asrc  = mk("alsasrc",      "tx-alsasrc");
@@ -277,7 +290,7 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *senc  = mk("srtpenc",      "tx-srtpenc");
     GstElement *nsink = mk("nicesink",     "tx-nicesink");
 
-    if (!nsrc||!rxcap||!sdec||!rxrtp||!depay||!odec||!aconv||!asink||
+    if (!nsrc||!rxcap||!sdec||!rxrtp||!depay||!odec||!aconv||!ares||!asink||
         !asrc||!tconv||!tres||!tcap||!oenc||!pay||!senc||!nsink) {
         if (tm->pipeline) { gst_object_unref(tm->pipeline); tm->pipeline = NULL; } return FALSE;
     }
@@ -298,10 +311,10 @@ static gboolean build_pipeline(TeamsMedia *tm)
     configure_srtpenc(senc, tm->tx_master);
 
     gst_bin_add_many(GST_BIN(tm->pipeline),
-        nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, asink,
+        nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, asink,
         asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL);
 
-    if (!gst_element_link_many(nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, asink, NULL)) {
+    if (!gst_element_link_many(nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, asink, NULL)) {
         g_printerr("teams_media: RX link failed\n"); return FALSE; }
     if (!gst_element_link_many(asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL)) {
         g_printerr("teams_media: TX link failed\n"); return FALSE; }
