@@ -152,6 +152,22 @@ pub async fn fetch_ice_servers<C: Store>(manager: &Manager<C, Registered>) -> Ve
             }
         }
     }
+    // Prefer UDP TURN and drop the TCP/TLS duplicates for the same relay. All three transports point
+    // at the SAME server and we only need one; applying all of them makes the engine run 3 simultaneous
+    // TURN allocations (3 separate client sockets, one per transport), and that fd churn during
+    // gathering was found (via forced libnice conncheck logging) to trigger a libnice bug where a UDP
+    // socket recv spuriously fails with ENOTTY and gets PERMANENTLY detached from the event loop -
+    // silently discarding every reply on it for the rest of the call. Cutting to one TURN allocation
+    // removes most of that churn. Falls back to keeping TCP/TLS if no UDP TURN was offered at all
+    // (some networks block UDP TURN outright), so relay capability is never lost, just de-duplicated.
+    if servers.iter().any(|s| s.kind == IceKind::Turn && s.transport == "udp") {
+        let before = servers.len();
+        servers.retain(|s| s.kind != IceKind::Turn || s.transport == "udp");
+        if servers.len() != before {
+            eprintln!("ice: dropped {} non-UDP TURN duplicate(s) (UDP TURN already available)", before - servers.len());
+        }
+    }
+
     eprintln!(
         "ice: fetched {} STUN/TURN entries from {} relay(s)",
         servers.len(),
