@@ -102,11 +102,20 @@ static SpeexEchoState        *g_echo    = NULL;
 static SpeexPreprocessState  *g_preproc = NULL;
 static GMutex                 g_echo_lock;
 static gboolean               g_echo_ready = FALSE;
+/* Shared "latest played frame" = the AEC reference. The RX probe updates it; the TX probe reads it and
+ * calls speex_echo_cancellation() per mic frame. Using the single-call API (not the split
+ * playback/capture one) avoids the queue-underrun "No playback frame available" flood that our async
+ * RX/TX clocks caused. speex keeps the tail history internally, so passing the current play frame each
+ * capture is correct. */
+static spx_int16_t            g_ref_frame[AEC_FRAME];
+static gboolean               g_ref_valid = FALSE;
 
 static void sm_echo_init(void)
 {
     if (g_echo_ready) return;
     g_mutex_init(&g_echo_lock);
+    g_ref_valid = FALSE;
+    memset(g_ref_frame, 0, sizeof g_ref_frame);
     g_echo = speex_echo_state_init(AEC_FRAME, AEC_TAIL);
     if (!g_echo) { g_message("signal_media: speex_echo_state_init failed -> AEC OFF"); return; }
     int rate = SIGNAL_OPUS_CLOCKRATE;
@@ -131,17 +140,21 @@ static void sm_echo_free(void)
     g_mutex_unlock(&g_echo_lock);
 }
 
-/* RX (playback) probe: register the far-end frame we're about to play as the AEC reference. Passes the
- * buffer through unchanged. Fixed 480-sample buffers from the RX audiobuffersplit. */
+/* RX (playback) probe: stash the last 10ms of the far-end audio we're about to play as the AEC
+ * reference (g_ref_frame). Buffer passes through unchanged; S16LE from rxcaps2, any size. */
 static GstPadProbeReturn sm_rx_ref_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u)
 {
     (void)pad; (void)u;
     GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
     GstMapInfo m;
     if (g_echo_ready && buf && gst_buffer_map(buf, &m, GST_MAP_READ)) {
-        if (m.size >= (gsize)(AEC_FRAME * 2)) {
+        gsize samples = m.size / 2;
+        if (samples >= (gsize)AEC_FRAME) {
+            /* copy the MOST RECENT AEC_FRAME samples of this buffer as the current reference */
+            const spx_int16_t *tail = (const spx_int16_t *)m.data + (samples - AEC_FRAME);
             g_mutex_lock(&g_echo_lock);
-            if (g_echo_ready) speex_echo_playback(g_echo, (const spx_int16_t *)m.data);
+            memcpy(g_ref_frame, tail, AEC_FRAME * 2);
+            g_ref_valid = TRUE;
             g_mutex_unlock(&g_echo_lock);
         }
         gst_buffer_unmap(buf, &m);
@@ -149,8 +162,9 @@ static GstPadProbeReturn sm_rx_ref_probe(GstPad *pad, GstPadProbeInfo *info, gpo
     return GST_PAD_PROBE_OK;
 }
 
-/* TX (capture) probe: cancel the echo out of the mic frame IN PLACE before it is encoded. Fixed
- * 480-sample buffers from the TX audiobuffersplit. */
+/* TX (capture) probe: cancel the speaker echo out of the mic frame IN PLACE before encoding, using the
+ * latest RX reference frame (silence if none yet). Fixed 480-sample buffers from the TX
+ * audiobuffersplit; single-call speex_echo_cancellation (no play/capture queue -> no underrun flood). */
 static GstPadProbeReturn sm_tx_aec_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u)
 {
     (void)pad; (void)u;
@@ -160,10 +174,12 @@ static GstPadProbeReturn sm_tx_aec_probe(GstPad *pad, GstPadProbeInfo *info, gpo
     GstMapInfo m;
     if (buf && gst_buffer_map(buf, &m, GST_MAP_READWRITE)) {
         if (m.size >= (gsize)(AEC_FRAME * 2)) {
-            spx_int16_t out[AEC_FRAME];
+            spx_int16_t out[AEC_FRAME], ref[AEC_FRAME];
             g_mutex_lock(&g_echo_lock);
             if (g_echo_ready) {
-                speex_echo_capture(g_echo, (spx_int16_t *)m.data, out);
+                if (g_ref_valid) memcpy(ref, g_ref_frame, AEC_FRAME * 2);
+                else             memset(ref, 0, AEC_FRAME * 2);   /* no playback yet -> nothing to cancel */
+                speex_echo_cancellation(g_echo, (const spx_int16_t *)m.data, ref, out);
                 if (g_preproc) speex_preprocess_run(g_preproc, out);
                 memcpy(m.data, out, AEC_FRAME * 2);
             }
@@ -569,10 +585,9 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *depay  = mk("rtpopusdepay",  "rx-depay");
     GstElement *odec   = mk("opusdec",       "rx-opusdec");
     GstElement *aconv  = mk("audioconvert",  "rx-aconv");
-    /* AEC reference tap: rxcaps2 forces S16LE/48k/mono, rxsplit reframes to fixed 10ms buffers, and a
-     * probe on rxsplit feeds each played frame to speex_echo_playback. Audio still flows to the sink. */
+    /* AEC reference tap: rxcaps2 forces S16LE/48k/mono; a read probe on it stashes the latest played
+     * frame as the echo reference. Audio still flows straight to the sink (no reframing needed). */
     GstElement *rxcaps2= mk("capsfilter",     "rx-aeccaps");
-    GstElement *rxsplit= mk("audiobuffersplit","rx-aecsplit");
     GstElement *asink  = mk("alsasink",      "rx-alsasink");
     GstElement *rxrtcp = mk("fakesink",      "rx-rtcp-drain");  /* drain srtpdec rtcp_src (rtcp-mux) */
 
@@ -615,7 +630,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     }
     /* AEC is optional: it needs audiobuffersplit (for the fixed 10ms frames Speex wants) on both RX and
      * TX. If that element is missing, run without echo cancellation rather than fail the call. */
-    gboolean g_have_aec = (rxcaps2 != NULL && rxsplit != NULL && txsplit != NULL);
+    gboolean g_have_aec = (rxcaps2 != NULL && txsplit != NULL);
     if (g_have_aec) {
         sm_echo_init();
         g_have_aec = g_echo_ready;   /* speex init could still fail */
@@ -656,17 +671,15 @@ static gboolean build_pipeline(SignalMedia *sm)
     g_object_set(rxrtcp, "sync", FALSE, "async", FALSE, NULL);  /* never stall the pipeline */
 
     if (g_have_aec) {
-        /* AEC reference (RX) caps: S16LE/48k/mono, and reframe to exactly AEC_FRAME (10ms) buffers so
-         * speex_echo_playback gets fixed-size frames. A read probe on rxsplit feeds them to the AEC. */
+        /* AEC reference (RX) caps: S16LE/48k/mono; a read probe stashes the latest played frame. */
         GstCaps *c = gst_caps_new_simple("audio/x-raw",
                                          "format",   G_TYPE_STRING, "S16LE",
                                          "rate",     G_TYPE_INT,    SIGNAL_OPUS_CLOCKRATE,
                                          "channels", G_TYPE_INT,    SIGNAL_OPUS_CHANNELS, NULL);
         g_object_set(rxcaps2, "caps", c, NULL); gst_caps_unref(c);
-        /* 10 ms buffers = 1/100 s (GstFraction) on both split elements. */
-        g_object_set(rxsplit, "output-buffer-duration", 1, 100, NULL);
+        /* TX mic reframed to exactly AEC_FRAME (10ms = 1/100s) buffers so the probe can cancel in place. */
         g_object_set(txsplit, "output-buffer-duration", 1, 100, NULL);
-        { GstPad *p = gst_element_get_static_pad(rxsplit, "src");
+        { GstPad *p = gst_element_get_static_pad(rxcaps2, "src");
           gst_pad_add_probe(p, GST_PAD_PROBE_TYPE_BUFFER, sm_rx_ref_probe, NULL, NULL);
           gst_object_unref(p); }
         { GstPad *p = gst_element_get_static_pad(txsplit, "src");
@@ -705,7 +718,7 @@ static gboolean build_pipeline(SignalMedia *sm)
                      nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, rxrtcp,
                      asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, txq, NULL);
     if (g_have_aec)
-        gst_bin_add_many(GST_BIN(sm->pipeline), rxcaps2, rxsplit, txsplit, NULL);
+        gst_bin_add_many(GST_BIN(sm->pipeline), rxcaps2, txsplit, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -714,10 +727,10 @@ static gboolean build_pipeline(SignalMedia *sm)
      * unlinked that push returns GST_FLOW_NOT_LINKED, which stops the whole RX stream ("not-linked")
      * the instant real media arrives -> call dropped. Loopback never hit this (it sends no RTCP).
      * Drain rtcp_src into a fakesink so RTCP is discarded and RTP keeps flowing. */
-    /* RX: ...odec -> aconv -> [rxcaps2(S16LE) -> rxsplit(10ms, probe=speex_echo_playback) ->] alsasink.
-     * The split's probe feeds each played 10ms frame to the AEC reference; audio still plays normally. */
+    /* RX: ...odec -> aconv -> [rxcaps2(S16LE, probe stashes reference) ->] alsasink. Audio plays as
+     * normal; the probe just observes the played frames for the AEC reference. */
     if (g_have_aec) {
-        if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, rxcaps2, rxsplit, asink, NULL)) {
+        if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, rxcaps2, asink, NULL)) {
             g_printerr("signal_media: RX link (with AEC reference) failed\n"); return FALSE;
         }
     } else if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, NULL)) {
