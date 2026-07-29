@@ -65,7 +65,7 @@ SSL_LIBS="-L$SYSROOT/lib -lcrypto"
 # Same loader the (interp-patched) transport uses. See [[usb-drive-mode-media-internal-blockers]].
 WPE_LD="/media/cryptofs/wpe-glibc/lib/ld-linux.so.3"
 CFLAGS="-O2 -Wall -Wextra -Wno-unused-parameter $GST_CFLAGS $SSL_CFLAGS"
-LDFLAGS="$GST_LIBS $SSL_LIBS -lgobject-2.0 -lglib-2.0 -pthread -Wl,-rpath-link,$SYSROOT/lib -Wl,--dynamic-linker=$WPE_LD"
+LDFLAGS="$GST_LIBS $SSL_LIBS -lgobject-2.0 -lglib-2.0 -pthread -rdynamic -Wl,-rpath-link,$SYSROOT/lib -Wl,--dynamic-linker=$WPE_LD"
 
 echo "== cross-compiling for ARM (softfp glibc) =="
 echo "   CC = $CC"

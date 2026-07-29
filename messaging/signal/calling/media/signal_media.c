@@ -31,6 +31,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <signal.h>     /* SIGBUS/SIGSEGV crash handler (temp diagnostic) */
+#include <execinfo.h>   /* backtrace/backtrace_symbols_fd */
+#include <unistd.h>     /* write, _exit */
 
 #include "srtp_kdf.h"
 #include "signal_media.h"
@@ -598,9 +601,31 @@ static gpointer media_thread(gpointer data)
 
 /* ------------------------------------------------------------------ public API ----------------- */
 
+/* Crash handler: on SIGBUS/SIGSEGV, log the faulting address + a backtrace to stderr (-> the engine's
+ * sigmedia_call.log) so we can see the exact crashing frame instead of a truncated minicore. Temp
+ * diagnostic. Uses async-signal-unsafe backtrace_symbols_fd but we're already crashing. */
+static void sm_crash_handler(int sig, siginfo_t *si, void *uctx)
+{
+    (void)uctx;
+    void *bt[32];
+    int n = backtrace(bt, 32);
+    char hdr[128];
+    int len = snprintf(hdr, sizeof hdr, "\n*** signal_media CRASH sig=%d addr=%p bt=%d frames ***\n",
+                       sig, si ? si->si_addr : NULL, n);
+    if (write(2, hdr, len) < 0) { /* ignore */ }
+    backtrace_symbols_fd(bt, n, 2);   /* fd 2 = stderr = sigmedia_call.log */
+    _exit(128 + sig);
+}
+
 int signal_media_init(int *argc, char ***argv)
 {
     if (g_once_init_enter(&g_inited)) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_sigaction = sm_crash_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigaction(SIGBUS,  &sa, NULL);
+        sigaction(SIGSEGV, &sa, NULL);
         gst_init(argc, argv);
         g_once_init_leave(&g_inited, 1);
     }
