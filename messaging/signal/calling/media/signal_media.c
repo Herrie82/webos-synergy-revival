@@ -475,6 +475,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *rxcaps = mk("capsfilter",    "rx-srtpcaps");   /* label bytes as x-srtp for srtpdec */
     GstElement *sdec   = mk("srtpdec",       "rx-srtpdec");
     GstElement *rxrtp  = mk("capsfilter",    "rx-rtpcaps");    /* describe the inner Opus RTP stream */
+    GstElement *rxjb   = mk("rtpjitterbuffer","rx-jitterbuf"); /* reorder/dejitter + PLC -> smooth audio */
     GstElement *depay  = mk("rtpopusdepay",  "rx-depay");
     GstElement *odec   = mk("opusdec",       "rx-opusdec");
     GstElement *aconv  = mk("audioconvert",  "rx-aconv");
@@ -510,7 +511,7 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (txq) g_object_set(txq, "leaky", 2 /*downstream*/, "max-size-time", (guint64)100000000 /*100ms*/,
                           "max-size-buffers", 0, "max-size-bytes", 0, NULL);
 
-    if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
+    if (!nsrc || !rxcaps || !sdec || !rxrtp || !rxjb || !depay || !odec || !aconv || !asink || !rxrtcp ||
         !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel || !txq) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
@@ -541,6 +542,10 @@ static gboolean build_pipeline(SignalMedia *sm)
       g_object_set(rxcaps, "caps", c, NULL); gst_caps_unref(c); }
     g_signal_connect(sdec, "request-key", G_CALLBACK(on_srtpdec_request_key), sm);
     { GstCaps *c = opus_rtp_caps(); g_object_set(rxrtp, "caps", c, NULL); gst_caps_unref(c); }
+    /* jitter buffer: reorder out-of-order RTP, absorb network jitter, and conceal lost packets (do-lost
+     * -> the opus decoder gets PLC gaps instead of garbled/choppy audio). 120ms is a good voice latency.
+     * No RTCP is wired (rtcp-mux RTCP is drained), so it runs in buffer-only mode - fine for audio. */
+    g_object_set(rxjb, "latency", 120, "do-lost", TRUE, "mode", 1 /*slave/low-latency*/, NULL);
     g_object_set(asink, "device", "voip", "sync", FALSE, NULL);
     g_object_set(rxrtcp, "sync", FALSE, "async", FALSE, NULL);  /* never stall the pipeline */
 
@@ -555,11 +560,12 @@ static gboolean build_pipeline(SignalMedia *sm)
     g_object_set(asrc, "device", "voipsource",
                  "buffer-time", (gint64)200000, "latency-time", (gint64)40000,
                  "provide-clock", FALSE, NULL);
-    /* opusenc: the mic overran because the TX chain (Opus encode at default complexity 10 + GCM SRTP)
-     * couldn't keep up in realtime on the TouchPad's ARMv7. Drop to voice-grade, low CPU: complexity 0,
-     * 24 kbps. complexity/bitrate are plain ints; audio-type is a GEnum so set it via its string nick
-     * (g_object_set reads a GEnum as an int - see the srtpenc note above). */
-    g_object_set(oenc, "complexity", 0, "bitrate", 24000, NULL);
+    /* opusenc: complexity 0/24k was an emergency cut for the mic overrun, but the realtime-priority fix
+     * (setpriority in signal_media_init) removed that CPU pressure, so raise quality now that we have
+     * headroom: complexity 5 + 32 kbps + inband FEC (resilient to the packet loss that garbled audio).
+     * complexity/bitrate/percentage are ints; audio-type is a GEnum set via string nick. */
+    g_object_set(oenc, "complexity", 5, "bitrate", 32000,
+                 "inband-fec", TRUE, "packet-loss-percentage", 10, NULL);
     gst_util_set_object_arg(G_OBJECT(oenc), "audio-type", "voice");
     g_object_set(pay,  "pt", SIGNAL_OPUS_PT, NULL);
     /* TX (encrypt our stream): answerer uses answer_key, caller uses offer_key. The rtp-data Accepted
@@ -571,7 +577,7 @@ static gboolean build_pipeline(SignalMedia *sm)
       gst_buffer_unref(tx_master); /* srtpenc took its own ref via g_object_set */ }
 
     gst_bin_add_many(GST_BIN(sm->pipeline),
-                     nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
+                     nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, rxrtcp,
                      asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, txq, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
@@ -581,7 +587,7 @@ static gboolean build_pipeline(SignalMedia *sm)
      * unlinked that push returns GST_FLOW_NOT_LINKED, which stops the whole RX stream ("not-linked")
      * the instant real media arrives -> call dropped. Loopback never hit this (it sends no RTCP).
      * Drain rtcp_src into a fakesink so RTCP is discarded and RTP keeps flowing. */
-    if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, NULL)) {
+    if (!gst_element_link_many(nsrc, rxcaps, sdec, rxrtp, rxjb, depay, odec, aconv, asink, NULL)) {
         g_printerr("signal_media: RX link failed\n"); return FALSE;
     }
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
