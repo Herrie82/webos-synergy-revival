@@ -485,14 +485,16 @@ static gboolean build_pipeline(SignalMedia *sm)
     GstElement *pay    = mk("rtpopuspay",    "tx-pay");
     GstElement *senc   = mk("srtpenc",       "tx-srtpenc");
     GstElement *nsink  = mk("nicesink",      "tx-nicesink");
-    /* rtp-data (Accepted) TX: appsrc (pre-SRTP-encrypted x-srtp bytes) -> its OWN nicesink on the same
-     * component. Separate sink (not a funnel) so audio caps are untouched; separate streaming thread
-     * does nice_agent_send safely. */
+    /* rtp-data (Accepted) TX: appsrc (pre-SRTP-encrypted x-srtp bytes) -> funnel -> the SINGLE audio
+     * nicesink. There must be exactly ONE nicesink: two concurrent nice_agent_send callers on one
+     * libnice 0.1.21 agent deadlock the agent (proven via pcap - audio, data AND STUN all froze at
+     * once with two nicesinks). The funnel merges the occasional data buffer into the audio SRTP
+     * stream so a single nicesink sends everything. */
     GstElement *dsrc   = mk("appsrc",        "tx-datasrc");
-    GstElement *dsink  = mk("nicesink",      "tx-datanicesink");
+    GstElement *funnel = mk("funnel",        "tx-funnel");
 
     if (!nsrc || !rxcaps || !sdec || !rxrtp || !depay || !odec || !aconv || !asink || !rxrtcp ||
-        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !dsink) {
+        !asrc || !txconv || !txre || !txcaps || !oenc || !pay || !senc || !nsink || !dsrc || !funnel) {
         if (sm->pipeline) { gst_object_unref(sm->pipeline); sm->pipeline = NULL; }
         return FALSE;
     }
@@ -500,13 +502,13 @@ static gboolean build_pipeline(SignalMedia *sm)
     /* nice binding: RX nicesrc + TX audio nicesink + TX data nicesink all share the one component. */
     g_object_set(nsrc,  "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
     g_object_set(nsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component, NULL);
-    g_object_set(dsink, "agent", sm->agent, "stream", sm->stream_id, "component", sm->component,
-                 "sync", FALSE, "async", FALSE, NULL);  /* data sink must not gate pipeline preroll */
-
-    /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, matching srtpenc's output),
-     * live, produces nothing until the user accepts. */
+    /* data appsrc emits already-SRTP-encrypted packets (application/x-srtp, matching srtpenc's output).
+     * is-live=FALSE is CRITICAL: a live appsrc that produces nothing until the user accepts blocks the
+     * pipeline's preroll -> PLAYING never happens -> NO audio (the earlier funnel attempt's bug). With
+     * is-live=FALSE the audio branch drives preroll and the data appsrc just injects buffers when they
+     * come. do-timestamp stamps them with running time. */
     { GstCaps *dc = gst_caps_new_empty_simple("application/x-srtp");
-      g_object_set(dsrc, "caps", dc, "is-live", TRUE, "format", GST_FORMAT_TIME,
+      g_object_set(dsrc, "caps", dc, "is-live", FALSE, "format", GST_FORMAT_TIME,
                    "do-timestamp", TRUE, "stream-type", 0, NULL);
       gst_caps_unref(dc); }
     g_datasrc = dsrc;
@@ -537,7 +539,7 @@ static gboolean build_pipeline(SignalMedia *sm)
 
     gst_bin_add_many(GST_BIN(sm->pipeline),
                      nsrc, rxcaps, sdec, rxrtp, depay, odec, aconv, asink, rxrtcp,
-                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, dsink, NULL);
+                     asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, dsrc, funnel, NULL);
 
     /* srtpdec has STATIC/ALWAYS pads: rtp_src (decrypted RTP) and rtcp_src (decrypted RTCP). Link the
      * main RTP chain statically (rtp_src -> rxrtp -> depay -> ...). CRITICAL: with rtcp-mux the peer
@@ -552,10 +554,11 @@ static gboolean build_pipeline(SignalMedia *sm)
     if (!gst_element_link_pads(sdec, "rtcp_src", rxrtcp, "sink")) {
         g_printerr("signal_media: RX rtcp_src -> fakesink link failed\n"); return FALSE;
     }
-    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, nsink, NULL)) {
-        g_printerr("signal_media: TX link failed\n"); return FALSE;
+    /* audio: ...srtpenc -> funnel; data: appsrc -> funnel; funnel -> the single nicesink. */
+    if (!gst_element_link_many(asrc, txconv, txre, txcaps, oenc, pay, senc, funnel, nsink, NULL)) {
+        g_printerr("signal_media: TX (audio) link failed\n"); return FALSE;
     }
-    if (!gst_element_link(dsrc, dsink)) {   /* data appsrc -> its own nicesink (same component) */
+    if (!gst_element_link(dsrc, funnel)) {
         g_printerr("signal_media: TX (data) link failed\n"); return FALSE;
     }
 
