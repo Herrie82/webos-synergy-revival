@@ -76,6 +76,31 @@ typedef struct {
 } SignalMedia;
 
 static SignalMedia g_sm;         /* single active call (the device rings one at a time) */
+
+/* STUN/TURN relays for the nice agent, populated from RELAY lines (Signal's /v2/calling/relays,
+ * fetched by the presage bridge) BEFORE the START line. Kept out of SignalMedia because
+ * signal_media_start() memsets g_sm; build_ice() applies these to the agent before it gathers, so
+ * we get srflx/relay candidates instead of host-only (which never traverse NAT to a remote peer). */
+#define SM_MAX_TURN 8
+typedef struct {
+    char          host[64];
+    int           port;
+    char          user[128];
+    char          pass[256];
+    NiceRelayType type;
+} SmTurn;
+static char   g_stun_host[64];
+static int    g_stun_port;
+static SmTurn g_turn[SM_MAX_TURN];
+static int    g_n_turn;
+
+/* TEMP crash-trail: writes to a dedicated file (independent of the stderr redirect) so we can see
+ * exactly how far ICE setup gets when the engine segfaults on a live call. Remove once TURN is stable. */
+static void sm_trace(const char *msg)
+{
+    FILE *f = fopen("/media/internal/sm_trace.log", "a");
+    if (f) { fputs(msg, f); fputc('\n', f); fclose(f); }
+}
 static gsize       g_inited = 0; /* gst_init once */
 
 /* ------------------------------------------------------------------ small helpers -------------- */
@@ -227,8 +252,10 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
 {
     /* RFC5245 full ICE, controlled role is set implicitly (we are the answerer). Using the private
      * context so all agent signals fire on our media thread. */
+    sm_trace("build_ice: enter");
     sm->agent = nice_agent_new(sm->ctx, NICE_COMPATIBILITY_RFC5245);
     if (!sm->agent) { g_printerr("signal_media: nice_agent_new failed\n"); return FALSE; }
+    sm_trace("build_ice: agent created");
 
     /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. Getting this
      * wrong (both controlled) causes an ICE role conflict so the pair never nominates -> no media. */
@@ -236,13 +263,44 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     g_message("signal_media: role=%s controlling-mode=%d",
               sm->is_caller ? "CALLER" : "ANSWERER", sm->is_caller ? 1 : 0);
 
-    /* TODO(presage): Signal offers include TURN relay candidates; to actually reach a relay we may
-     * also need to feed Signal's TURN servers via nice_agent_set_relay_info() per component. The
-     * peer-reflexive/host/srflx candidates in the offer are added as remote candidates regardless. */
+    sm_trace("build_ice: role set");
+
+    /* STUN (agent-global): gathers server-reflexive (srflx) candidates so we learn our public
+     * ip:port behind NAT. Signal feeds this via a RELAY line before START. Set before gathering. */
+    if (g_stun_port) {
+        sm_trace("build_ice: setting STUN");
+        g_object_set(sm->agent, "stun-server", g_stun_host,
+                     "stun-server-port", (guint)g_stun_port, NULL);
+        g_message("signal_media: STUN server %s:%d", g_stun_host, g_stun_port);
+        sm_trace("build_ice: STUN set");
+    }
 
     sm->component = 1;
     sm->stream_id = nice_agent_add_stream(sm->agent, 1 /* rtcp-mux -> single component */);
     if (!sm->stream_id) { g_printerr("signal_media: add_stream failed\n"); return FALSE; }
+    sm_trace("build_ice: stream added");
+
+    /* TURN relays (per component): Signal RELAYS all calls for IP privacy, so relay candidates are
+     * how the two peers actually reach each other. Must be set after add_stream, before gather. */
+    {
+        char tb[128];
+        snprintf(tb, sizeof tb, "build_ice: applying %d TURN relay(s)", g_n_turn);
+        sm_trace(tb);
+    }
+    for (int i = 0; i < g_n_turn; i++) {
+        SmTurn *t = &g_turn[i];
+        char tb[256];
+        snprintf(tb, sizeof tb, "build_ice: set_relay_info[%d] %s:%d type=%d ulen=%zu plen=%zu",
+                 i, t->host, t->port, (int)t->type, strlen(t->user), strlen(t->pass));
+        sm_trace(tb);
+        if (nice_agent_set_relay_info(sm->agent, sm->stream_id, sm->component,
+                                      t->host, (guint)t->port,
+                                      t->user, t->pass, t->type))
+            g_message("signal_media: TURN relay %s:%d type=%d", t->host, t->port, (int)t->type);
+        else
+            g_printerr("signal_media: set_relay_info failed for %s:%d\n", t->host, t->port);
+        sm_trace("build_ice: set_relay_info done");
+    }
 
     if (our_ufrag && our_pwd)
         nice_agent_set_local_credentials(sm->agent, sm->stream_id, our_ufrag, our_pwd);
@@ -681,7 +739,36 @@ static int run_ipc(int is_caller)
             /* Caller phase 1: just report our public key so the bridge can send the Offer. No media
              * yet - the answerer's key + ICE creds arrive later in START. */
             emit_pubkey_from_priv_hex(line + 8);
+        } else if (strncmp(line, "RELAY ", 6) == 0) {
+            sm_trace("ipc: RELAY line");
+            /* STUN/TURN config, sent before START:  RELAY stun <host> <port>
+             *                                       RELAY turn <ip> <port> <user> <pass> <transport> */
+            char *sp = NULL;
+            char *kind = strtok_r(line + 6, " ", &sp);
+            char *host = strtok_r(NULL, " ", &sp);
+            char *ports = strtok_r(NULL, " ", &sp);
+            if (kind && host && ports) {
+                int port = atoi(ports);
+                if (strcmp(kind, "stun") == 0) {
+                    snprintf(g_stun_host, sizeof g_stun_host, "%s", host);
+                    g_stun_port = port;
+                } else if (strcmp(kind, "turn") == 0 && g_n_turn < SM_MAX_TURN) {
+                    char *user = strtok_r(NULL, " ", &sp);
+                    char *pass = strtok_r(NULL, " ", &sp);
+                    char *tr   = strtok_r(NULL, " ", &sp);
+                    SmTurn *t = &g_turn[g_n_turn++];
+                    snprintf(t->host, sizeof t->host, "%s", host);
+                    t->port = port;
+                    snprintf(t->user, sizeof t->user, "%s", user ? user : "");
+                    snprintf(t->pass, sizeof t->pass, "%s", pass ? pass : "");
+                    t->type = (tr && strcmp(tr, "tcp") == 0) ? NICE_RELAY_TYPE_TURN_TCP
+                            : (tr && strcmp(tr, "tls") == 0) ? NICE_RELAY_TYPE_TURN_TLS
+                            :                                  NICE_RELAY_TYPE_TURN_UDP;
+                    sm_trace("RELAY: stored turn entry");
+                }
+            }
         } else if (strncmp(line, "START ", 6) == 0) {
+            sm_trace("ipc: START line");
             if (started) { emit("ERR already-started\n"); continue; }
             /* Tokenise the 8 START fields. strtok is fine: no field contains whitespace. */
             char *sp = NULL;
@@ -733,7 +820,9 @@ static int run_ipc(int is_caller)
 
 int main(int argc, char **argv)
 {
+    sm_trace("main: enter");
     signal_media_init(&argc, &argv);
+    sm_trace("main: gst_init done");
     if (argc >= 2 && (strcmp(argv[1], "--loopback") == 0 || strcmp(argv[1], "--selftest") == 0)) {
         int rc = signal_media_loopback_selftest();
         return rc;

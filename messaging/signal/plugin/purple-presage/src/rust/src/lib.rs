@@ -4,6 +4,7 @@ mod attachment;
 mod bridge;
 mod call_bridge;
 mod call_media;
+mod ice;
 mod bridge_commands;
 mod contacts;
 mod core;

@@ -58,8 +58,14 @@ SSL_CFLAGS="-I$SYSROOT/include"
 SSL_LIBS="-L$SYSROOT/lib -lcrypto"
 
 # -Wl,-rpath-link lets the linker resolve the transitive .so deps (gio/gmodule/etc.) inside staging.
+# --dynamic-linker: the engine loads the MODERN wpe-glibc libc/libpthread (the transport spawns it with
+# LD_LIBRARY_PATH into /media/cryptofs/wpe-glibc/lib), so it MUST run under the wpe-glibc loader. The
+# cross-toolchain default interp is the device's stock /lib/ld-linux.so.3 -> ld-2.8.so (glibc 2.8),
+# which cannot set up the modern libpthread's TLS (_dl_get_tls_static_info) and segfaults before main.
+# Same loader the (interp-patched) transport uses. See [[usb-drive-mode-media-internal-blockers]].
+WPE_LD="/media/cryptofs/wpe-glibc/lib/ld-linux.so.3"
 CFLAGS="-O2 -Wall -Wextra -Wno-unused-parameter $GST_CFLAGS $SSL_CFLAGS"
-LDFLAGS="$GST_LIBS $SSL_LIBS -lgobject-2.0 -lglib-2.0 -pthread -Wl,-rpath-link,$SYSROOT/lib"
+LDFLAGS="$GST_LIBS $SSL_LIBS -lgobject-2.0 -lglib-2.0 -pthread -Wl,-rpath-link,$SYSROOT/lib -Wl,--dynamic-linker=$WPE_LD"
 
 echo "== cross-compiling for ARM (softfp glibc) =="
 echo "   CC = $CC"

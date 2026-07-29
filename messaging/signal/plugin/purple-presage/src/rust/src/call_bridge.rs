@@ -52,6 +52,36 @@ static CALLS: OnceLock<Mutex<HashMap<u64, CallProc>>> = OnceLock::new();
 fn calls() -> &'static Mutex<HashMap<u64, CallProc>> {
     CALLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+/// STUN/TURN servers for the current call, fetched from /v2/calling/relays (see ice.rs) by the async
+/// contexts (core.rs place_call, receive.rs incoming) and read here when the engine is spawned. The
+/// engine only gathers host candidates without these -> no NAT traversal -> permanent "Connecting".
+static ICE_SERVERS: OnceLock<Mutex<Vec<crate::ice::IceServer>>> = OnceLock::new();
+fn ice_servers() -> &'static Mutex<Vec<crate::ice::IceServer>> {
+    ICE_SERVERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Stash the ICE servers for the next engine spawn (call before place_call / start_incoming).
+pub fn set_ice_servers(servers: Vec<crate::ice::IceServer>) {
+    *ice_servers().lock().unwrap() = servers;
+}
+
+/// Write the stashed STUN/TURN servers as `RELAY` lines. MUST be sent before `START` so the engine
+/// wires them into the nice agent (set_stun_server / set_relay_info) before it gathers candidates.
+fn write_relay_lines<W: std::io::Write>(w: &mut W) {
+    let servers = ice_servers().lock().unwrap();
+    for s in servers.iter() {
+        let line = match s.kind {
+            crate::ice::IceKind::Stun => format!("RELAY stun {} {}\n", s.host, s.port),
+            crate::ice::IceKind::Turn => format!(
+                "RELAY turn {} {} {} {} {}\n",
+                s.host, s.port, s.username, s.password, s.transport
+            ),
+        };
+        let _ = w.write_all(line.as_bytes());
+    }
+    eprintln!("call_bridge: sent {} RELAY line(s) to engine", servers.len());
+}
 fn cmd_tx_slot() -> &'static Mutex<Option<tokio::sync::mpsc::Sender<Cmd>>> {
     CMD_TX.get_or_init(|| Mutex::new(None))
 }
@@ -183,6 +213,7 @@ pub fn start_incoming(
         params.ice_ufrag,
         params.ice_pwd,
     );
+    write_relay_lines(&mut stdin); // STUN/TURN config MUST precede START (engine wires it pre-gather)
     if let Err(e) = stdin.write_all(start.as_bytes()) {
         eprintln!("call_bridge: failed to write START: {e}");
         return;

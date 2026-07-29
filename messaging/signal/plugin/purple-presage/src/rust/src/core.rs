@@ -292,6 +292,11 @@ async fn run<C: presage::store::Store + 'static>(
                 }
                 Err(_) => Vec::new(),
             };
+            // Fetch Signal's STUN/TURN relays now so they're stashed before the engine spawns when
+            // the peer answers (on_answer). Without them ICE gathers host-only candidates -> no NAT
+            // traversal -> the call hangs on "Connecting".
+            let ice = crate::ice::fetch_ice_servers(&manager).await;
+            crate::call_bridge::set_ice_servers(ice);
             if let Some((call_id, opaque)) = crate::call_bridge::place_call(uuid, caller_id, callee_id) {
                 let cm = presage::proto::CallMessage {
                     offer: Some(presage::proto::call_message::Offer {
