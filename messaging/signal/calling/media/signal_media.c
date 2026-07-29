@@ -257,12 +257,19 @@ static gboolean build_ice(SignalMedia *sm, const char *our_ufrag, const char *ou
     if (!sm->agent) { g_printerr("signal_media: nice_agent_new failed\n"); return FALSE; }
     sm_trace("build_ice: agent created");
 
-    /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. (Tried both-
-     * controlling for the failing incoming/answerer path - did NOT help, so the answerer failure is
-     * not a role/nomination issue; kept standard convention.) */
+    /* ICE role: the CALLER (offerer) is CONTROLLING, the answerer is CONTROLLED. */
     g_object_set(sm->agent, "controlling-mode", sm->is_caller ? TRUE : FALSE, NULL);
     g_message("signal_media: role=%s controlling-mode=%d",
               sm->is_caller ? "CALLER" : "ANSWERER", sm->is_caller ? 1 : 0);
+
+    /* THE incoming-call fix (2026-07-29): Signal's peer is RingRTC (libwebrtc), which nominates the
+     * selected pair using Google's proprietary ICE RENOMINATION extension - a STUN NOMINATION attr
+     * (0xC001), NOT the standard USE-CANDIDATE. Proven via tcpdump: every inbound BindReq carried
+     * GOOG-NOMINATION=1/3 and never USE-CANDIDATE, so our controlled answerer formed a valid pair but
+     * libnice never nominated it -> ICE timed out to FAILED. libnice 0.1.21 already implements this
+     * (conn_check_handle_renomination), gated behind support-renomination which defaults FALSE. Enable
+     * it so the answerer honours RingRTC's nomination. Harmless for the caller (we drive nomination). */
+    g_object_set(sm->agent, "support-renomination", TRUE, NULL);
 
     sm_trace("build_ice: role set");
 
