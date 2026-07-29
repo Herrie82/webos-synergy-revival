@@ -25,19 +25,14 @@ The buddy record (`com.palm.imbuddystatus`, in TempDB) is keyed on the **exact r
 `personChanged.addPersonIdToBuddy`, an exact-match path that does **not** depend on the flaky
 normalized IM index. So it's the authoritative bridge.
 
-The SAME `+` mismatch bites in **two** association paths, so both are fixed:
+> **NOTE — the `+`-normalization root cause is now fixed properly in `../whatsapp-e164-normalization`**
+> (canonicalize WhatsApp to E.164 `+phone` in `messaging.library` + a one-time thread-key migration).
+> That supersedes the earlier `contacts.plugin.messaging/utils.js` "+"-strip band-aid, which has been
+> reverted to stock. This package now keeps only the defensive backstop + one-time repair below.
 
-## The fix (three parts)
+## The fix (this package)
 
-### 0. `contacts-plugin-messaging-utils.js` — the canonical linker path (fires on contact sync/re-link)
-`contacts.plugin.messaging/utils.js` `getUnassociatedChatThreads` links a person's pre-existing
-unassociated chatthreads when the person gains an im/phone (contact sync, re-link, or a person merge).
-Its IM branch matched the chatthread by the im's `normalizedValue` **verbatim** (`+31684449061`), but
-WhatsApp threads are keyed **without** the `+` (`31684449061`) → the lookup missed → the thread was
-never linked. Fix: strip a leading `+` for `type_whatsapp` so the key matches. This is the layer that
-links a thread that was created **before** its contact synced — no message needed.
-
-### 1. `newmessageassistant.js` — prevents it for ALL new/updated threads (the per-message fix)
+### 1. `newmessageassistant.js` — imbuddystatus fallback / backstop (per-message)
 `contactReverseLookup`: when `Person.findByIM` returns **empty**, fall back to a new
 `findPersonViaBuddy(address, serviceName)` that looks up `imbuddystatus` by exact
 `username` + `serviceName`; if it has a `personId`, fetch that person and return it so the thread

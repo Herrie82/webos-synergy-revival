@@ -50,27 +50,8 @@ echo "findPersonViaBuddy hooks in deployed file: $n (expect 2)"
 echo "chatthreader is forked per-activity -> new JS loads on the next message; no restart needed."
 ' | novacom -d "$DEV" run file://bin/sh
 
-echo "=== 4) deploy contacts linker plugin fix (contacts.plugin.messaging/utils.js) ==="
-# Canonical association layer: getUnassociatedChatThreads links pre-existing unassociated threads to a
-# person when it gains an im/phone (on contact sync / re-link / merge). Its IM branch matched the
-# chatthread by the im's normalizedValue verbatim ("+31612345678"), but WhatsApp chatthreads are keyed
-# without the "+" ("31612345678") -> miss -> never linked. Fix strips the "+" for type_whatsapp.
-PLG=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
-printf '%s\n' '
-PLG=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
-mount -o remount,rw / 2>/dev/null || true
-[ -f "$PLG/utils.js.b4whatsappnorm" ] || cp "$PLG/utils.js" "$PLG/utils.js.b4whatsappnorm"
-echo "backed up -> $PLG/utils.js.b4whatsappnorm"
-' | novacom -d "$DEV" run file://bin/sh
-novacom -d "$DEV" put file://$PLG/utils.js < "$HERE/contacts-plugin-messaging-utils.js"
-printf '%s\n' '
-PLG=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
-n=$(grep -c type_whatsapp "$PLG/utils.js")
-echo "type_whatsapp guard in deployed utils.js: $n (expect 2)"
-kill $(pidof com.palm.service.contacts.linker) 2>/dev/null
-echo "contacts linker killed -> reloads the plugin on the next autolink."
-' | novacom -d "$DEV" run file://bin/sh
-
 echo "=== done. Source of truth is git ($HERE/). ==="
-echo "Undo: restore newmessageassistant.js.b4personlink and utils.js.b4whatsappnorm; they reload on next message / autolink."
-echo "NOTE: run repair-existing-threads.sh once to fix threads that are ALREADY broken (show a bare number)."
+echo "Undo: restore newmessageassistant.js.b4personlink; it reloads on next message."
+echo "NOTE: run repair-existing-threads.sh once to (re)link threads that are missing a personId."
+echo "NOTE: the WhatsApp '+' normalization fix now lives in ../whatsapp-e164-normalization (the proper,"
+echo "      canonical-form fix). This package keeps only the imbuddystatus fallback + one-time repair."
