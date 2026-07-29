@@ -221,6 +221,7 @@ async fn run<C: presage::store::Store + 'static>(
             Ok(true)
         }
         crate::structs::Cmd::SendCallIce { uuid, call_id, opaque } => {
+            eprintln!("call_bridge: [DIAG] command_loop got SendCallIce call_id={call_id} to={uuid} opaque_len={}", opaque.len());
             let cm = presage::proto::CallMessage {
                 ice_update: vec![presage::proto::call_message::IceUpdate {
                     id: Some(call_id),
@@ -384,16 +385,22 @@ async fn send_call_message<C: presage::store::Store + 'static>(
         )
         .await
     {
-        Ok(_) => crate::bridge::purple_debug(
-            account,
-            crate::bridge_structs::PURPLE_DEBUG_INFO,
-            format!("call bridge: sent {kind} to {uuid}\n"),
-        ),
-        Err(err) => crate::bridge::purple_debug(
-            account,
-            crate::bridge_structs::PURPLE_DEBUG_ERROR,
-            format!("call bridge: failed to send {kind} to {uuid}: {err}\n"),
-        ),
+        Ok(_) => {
+            eprintln!("call_bridge: [DIAG] send_call_message OK kind={kind} to={uuid}");
+            crate::bridge::purple_debug(
+                account,
+                crate::bridge_structs::PURPLE_DEBUG_INFO,
+                format!("call bridge: sent {kind} to {uuid}\n"),
+            )
+        }
+        Err(err) => {
+            eprintln!("call_bridge: [DIAG] send_call_message FAILED kind={kind} to={uuid}: {err}");
+            crate::bridge::purple_debug(
+                account,
+                crate::bridge_structs::PURPLE_DEBUG_ERROR,
+                format!("call bridge: failed to send {kind} to {uuid}: {err}\n"),
+            )
+        }
     }
 }
 

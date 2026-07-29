@@ -260,10 +260,12 @@ pub fn start_incoming(
                 }
             } else if let Some(cand) = line.strip_prefix("CAND ") {
                 let opaque = crate::call_media::encode_ice_opaque(cand.trim());
+                eprintln!("call_bridge: [DIAG] incoming-side reader got CAND, enqueueing SendCallIce call_id={call_id} opaque_len={}", opaque.len());
                 enqueue(Cmd::SendCallIce { uuid: caller_uuid, call_id, opaque });
             }
             // READY / AUDIOD / ERR: audiod is driven by call.c; just ignore here.
         }
+        eprintln!("call_bridge: [DIAG] incoming-side reader thread EXITED for call_id={call_id}");
     });
 
     calls().lock().unwrap().insert(call_id, CallProc { child, stdin });
