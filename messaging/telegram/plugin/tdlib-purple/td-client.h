@@ -62,7 +62,7 @@ public:
                         int purpleChatId);
     void cancelUpload(PurpleXfer *xfer);
 
-    bool startVoiceCall(const char *buddyName);
+    bool startVoiceCall(const char *buddyName, bool video);
     // async result of searchUserByPhoneNumber when a bare phone number is dialed (see startVoiceCall)
     void       voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     bool terminateCall(PurpleConversation *conv);
@@ -172,6 +172,7 @@ private:
     // the +E.164 being resolved by searchUserByPhoneNumber for an outgoing call; used to push a
     // clean "disconnected" state (so the Phone app card doesn't hang) if the number isn't on Telegram
     std::string           m_pendingCallPhone;
+    bool                  m_pendingCallVideo = false; // video flag for m_pendingCallPhone's call
 
     PurpleAccount        *m_account;
     TdTransceiver         m_transceiver;

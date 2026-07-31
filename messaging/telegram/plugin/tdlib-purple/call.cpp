@@ -7,6 +7,7 @@
 #include "purple-info.h"
 #include "td-client.h"
 #include "call-luna.h"
+#include "skypekit-tgvoip.h"
 
 static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
 {
@@ -18,7 +19,7 @@ static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
     return protocol;
 }
 
-bool initiateCall(int64_t userId, TdAccountData &account, TdTransceiver &transceiver)
+bool initiateCall(int64_t userId, bool video, TdAccountData &account, TdTransceiver &transceiver)
 {
     // userId is tdlib's int53 (createCall.user_id_): Telegram user ids exceed INT32_MAX (e.g. Alan =
     // 8823012961), so this MUST be 64-bit - an int32_t param truncated large ids to a garbage user and
@@ -29,6 +30,10 @@ bool initiateCall(int64_t userId, TdAccountData &account, TdTransceiver &transce
         td::td_api::object_ptr<td::td_api::createCall> callRequest = td::td_api::make_object<td::td_api::createCall>();
         callRequest->user_id_  = userId;
         callRequest->protocol_ = getCallProtocol();
+        // acceptCall (the callee side) has no is_video_ field of its own -- video is decided here,
+        // by whoever places the call, and the callee just inherits it via the returned call.is_video_
+        // (see activateCall/updateCall, which read call.is_video_ directly).
+        callRequest->is_video_ = video;
         transceiver.sendQuery(std::move(callRequest), nullptr);
         return true;   // call request sent; report success so the dial isn't logged as FAILED TO DIAL
     } else {
@@ -127,11 +132,31 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     config.enableAEC = true;
     config.enableNS  = true;
     config.enableAGC = true;
+    // Native SkypeKit/clonk video bridge (WHATSAPP_VIDEO_STATUS.md) -- see the
+    // SkypeKitVideoSource/SkypeKitVideoRenderer wiring below, right after SetConfig.
+    config.enableVideoSend    = call.is_video_;
+    config.enableVideoReceive = call.is_video_;
     // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
     // "Connecting") is invisible. Point it at a file to see the reflector connection + audio init.
     config.logFilePath       = "/media/internal/tgvoip.log";
     config.statsDumpFilePath = "/media/internal/tgvoip-stats.log";
     voip->SetConfig(config);
+
+    // Video: open the clonk session BEFORE attaching source/renderer -- callLunaOpenClonk()
+    // drives videoCaptureStart -> skypekit_video_start() -> videoPlayerStart synchronously
+    // enough (fire-and-forget over LS2, but the ordering within it is what matters -- see
+    // skypekit.h) that by the time real frames need to flow, both sockets are ready.
+    // Static: only one call is ever active at a time (same assumption as the rest of this
+    // file); the objects are cheap and simply reused/reattached across calls.
+    static SkypeKitVideoSource *videoSource = nullptr;
+    static SkypeKitVideoRenderer *videoRenderer = nullptr;
+    if (call.is_video_) {
+        callLunaOpenClonk();
+        if (!videoSource) videoSource = new SkypeKitVideoSource(callLunaRequestKeyframe);
+        if (!videoRenderer) videoRenderer = new SkypeKitVideoRenderer();
+        voip->SetVideoSource(videoSource);
+        voip->SetVideoRenderer(videoRenderer);
+    }
 
     std::vector<tgvoip::Endpoint> endpoints;
     for (const auto &pServer: state.servers_)
@@ -178,6 +203,7 @@ static void deactivateCall(TdAccountData &account)
 {
 #ifndef NoVoip
     callLunaSetCallAudio(false);   // clear audiod phone scenario on hangup
+    callLunaCloseClonk();          // no-op if video was never active (checks internally)
     tgvoip::VoIPController *voip = account.getCallData();
     if (voip)
         voip->Stop();
@@ -314,10 +340,10 @@ void acceptCurrentCall(TdAccountData &account, TdTransceiver &transceiver)
 }
 
 // ---- LS2 <-> TDLib bridge: called by call-luna.cpp for the com.palm.telegram.call service ----
-bool callBridgeDial(PurpleAccount *account, const char *who)
+bool callBridgeDial(PurpleAccount *account, const char *who, bool video)
 {
     PurpleTdClient *client = getTdClient(account);
-    return (client && who) ? client->startVoiceCall(who) : false;
+    return (client && who) ? client->startVoiceCall(who, video) : false;
 }
 
 void callBridgeAnswer(PurpleAccount *account)

@@ -31,6 +31,14 @@ void tgcLog(const char *fmt, ...);
  * audio. Call with true when the call becomes active, false on hangup. Mirrors wacallm. */
 void callLunaSetCallAudio(bool active);
 
+/* Native SkypeKit video bridge (see skypekit.h and WHATSAPP_VIDEO_STATUS.md). Call
+ * callLunaOpenClonk() from activateCall() when call.is_video_, callLunaCloseClonk() from
+ * deactivateCall() if video was active. callLunaRequestKeyframe() is wired to
+ * SkypeKitVideoSource::RequestKeyFrame() (call.cpp). */
+void callLunaOpenClonk();
+void callLunaCloseClonk();
+void callLunaRequestKeyframe();
+
 /* Push the current call state to Phone-app callStateQuery subscribers. Called from call.cpp's
  * updateCall(). state is one of: "incoming", "dialing", "active", "disconnected", "" (idle).
  * NOTE: these strings must match the stock Phone app CallSynergizer STATES enum exactly

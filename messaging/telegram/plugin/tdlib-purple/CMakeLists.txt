@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.2 FATAL_ERROR)
 # versions before 3.2 don't pass CMAKE_EXE_LINKER_FLAGS when using try_compile
 
 set(VERSION 0.8.1)
-project(tdlib-purple VERSION ${VERSION} LANGUAGES CXX)
+project(tdlib-purple VERSION ${VERSION} LANGUAGES C CXX)
 
 find_package(Td REQUIRED)
 math(EXPR TDLIB_VERSION_NUMBER "10000*${Td_VERSION_MAJOR} + 100*${Td_VERSION_MINOR} + ${Td_VERSION_PATCH}")
@@ -68,6 +68,9 @@ add_library(telegram-tdlib SHARED
     call-luna.cpp
     identifiers.cpp
     secret-chat.cpp
+    skypekit.cpp
+    skypekit-tgvoip.cpp
+    h264_rtp.c
 )
 
 # libpurple uses the deprecated glib-type `GParameter` and the deprecated glib-macro `G_CONST_RETURN`, which
@@ -134,6 +137,23 @@ if (NOT NoVoip)
         # webrtc types we didn't build.
         target_compile_definitions(telegram-tdlib PRIVATE TGVOIP_NO_DSP)
     endif (tgvoip_NO_DSP)
+
+    # skypekit.cpp/skypekit-tgvoip.cpp (native SkypeKit video bridge) link directly against the
+    # real, headerless libpalmgstskype.so on the device firmware image -- see
+    # messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md and
+    # messaging/whatsapp/calling/build-skypekit-send-test.sh for the technique this mirrors.
+    # -Wl,-rpath (not just -rpath-link) bakes /usr/lib/gstreamer-0.10 into the built .so's own
+    # runtime search path so it finds libpalmgstskype.so on-device unconditionally, the same
+    # robustness fix used for the WhatsApp plugin's build-combined.sh.
+    set(SkypeKitFwRootfs "" CACHE STRING "webOS firmware rootfs path (for libpalmgstskype.so)")
+    if (NOT SkypeKitFwRootfs STREQUAL "")
+        target_link_libraries(telegram-tdlib PRIVATE palmgstskype)
+        target_link_options(telegram-tdlib PRIVATE
+            -L${SkypeKitFwRootfs}/usr/lib/gstreamer-0.10
+            -Wl,--allow-shlib-undefined
+            -Wl,-rpath-link,${SkypeKitFwRootfs}/usr/lib
+            -Wl,-rpath,/usr/lib/gstreamer-0.10)
+    endif (NOT SkypeKitFwRootfs STREQUAL "")
 endif (NOT NoVoip)
 
 if (DEFINED STANDARD_LIBRARIES_EXTRA)

@@ -2535,7 +2535,7 @@ void PurpleTdClient::cancelUpload(PurpleXfer *xfer)
     }
 }
 
-bool PurpleTdClient::startVoiceCall(const char *buddyName)
+bool PurpleTdClient::startVoiceCall(const char *buddyName, bool video)
 {
     // The stock dialer often dials an "id<n>" buddy whose tdlib user OBJECT isn't loaded yet (right
     // after a fresh login / transport restart) - getUsersByPurpleName then returns nothing and the
@@ -2550,7 +2550,7 @@ bool PurpleTdClient::startVoiceCall(const char *buddyName)
 
     UserId directId = purpleBuddyNameToUserId(buddyName);
     if (directId.valid())
-        return initiateCall(directId.value(), m_data, m_transceiver);
+        return initiateCall(directId.value(), video, m_data, m_transceiver);
 
     // The dialer hands us a bare phone number (e.g. "+31621489831") when a number is typed on the
     // dialpad, or dialed for a contact that isn't linked to a Telegram "id<n>" buddy. Telegram calls
@@ -2560,6 +2560,7 @@ bool PurpleTdClient::startVoiceCall(const char *buddyName)
     // once the resolved-id call is in flight (the double-dial collapses to one).
     if (buddyName && (buddyName[0] == '+')) {
         m_pendingCallPhone = buddyName;
+        m_pendingCallVideo = video;
         auto request = td::td_api::make_object<td::td_api::searchUserByPhoneNumber>();
         request->phone_number_ = buddyName;
         request->only_local_   = false;
@@ -2579,19 +2580,21 @@ bool PurpleTdClient::startVoiceCall(const char *buddyName)
         return false;
     }
 
-    return initiateCall(users.front()->id_, m_data, m_transceiver);
+    return initiateCall(users.front()->id_, video, m_data, m_transceiver);
 }
 
 void PurpleTdClient::voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
 {
     std::string phone = m_pendingCallPhone;
+    bool video = m_pendingCallVideo;
     m_pendingCallPhone.clear();
+    m_pendingCallVideo = false;
 
     if (object && (object->get_id() == td::td_api::user::ID)) {
         const td::td_api::user &user = static_cast<const td::td_api::user &>(*object);
         // initiateCall dedups against an in-flight "id<n>" dial for the same contact (double-dial),
         // and starts the call otherwise.
-        if (!initiateCall(user.id_, m_data, m_transceiver))
+        if (!initiateCall(user.id_, video, m_data, m_transceiver))
             // Deduped: the resolved-id dial for this same contact is already ringing. Clear this
             // raw-number card (keyed by its own +E.164 address) so the double-dial collapses to one.
             callLunaPushState("disconnected", phone.c_str(), NULL, true, "normal");

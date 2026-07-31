@@ -11,6 +11,7 @@
 
 #include "call-luna.h"
 #include "config.h"
+#include "skypekit.h"
 #include <lunaservice.h>
 #include <glib.h>
 #include <string>
@@ -19,7 +20,7 @@
 #include <cstdarg>
 
 /* Implemented in call.cpp - drive the active account's TDLib call via the existing prpl logic. */
-extern bool callBridgeDial(PurpleAccount *account, const char *who);
+extern bool callBridgeDial(PurpleAccount *account, const char *who, bool video);
 extern void callBridgeAnswer(PurpleAccount *account);
 extern void callBridgeHangup(PurpleAccount *account);
 
@@ -49,6 +50,8 @@ GMainLoop     *g_loopRef  = NULL;   // wraps the default context libpurple runs
 // Last state we pushed, so a late subscriber gets the current picture immediately.
 std::string    g_state, g_peerAddr, g_peerName, g_cause;
 bool           g_outgoing = false;
+bool           g_videoActive = false; // clonk session open + skypekit bridge running
+std::string    g_clonkUri;            // the open clonk session's palm:// LS2 URI, if any
 
 const char *SUBKEY = "callState";
 
@@ -72,7 +75,8 @@ std::string jsonEscape(const char *s)
 // (handleIncoming/handleActive/handleDisconnected); an empty state => idle (no lines).
 std::string buildPayload()
 {
-    std::string p = "{\"returnValue\":true,\"allowVideoCalls\":false,\"videoURI\":\"\",\"lines\":[";
+    std::string p = std::string("{\"returnValue\":true,\"allowVideoCalls\":true,\"videoURI\":\"") +
+                     jsonEscape(g_clonkUri.c_str()) + "\",\"lines\":[";
     if (!g_state.empty()) {
         p += "{\"state\":\"" + jsonEscape(g_state.c_str()) + "\",";
         if (g_state == "disconnected")
@@ -87,7 +91,7 @@ std::string buildPayload()
         // Phone app's (service-agnostic) _isImTransport()/callNetworkName treat it as the IM it is
         // and show the id/@handle verbatim under the network's name.
         p += "\"calls\":[{\"id\":\"tg\",\"origin\":\"" + std::string(g_outgoing ? "outgoing" : "incoming") + "\","
-             "\"video\":false,"
+             "\"video\":" + (g_videoActive ? "true" : "false") + ","
              "\"transport\":\"com.palm.telegram\","
              "\"address\":\"" + jsonEscape(g_peerAddr.c_str()) + "\","
              "\"displayName\":\"" + jsonEscape(g_peerName.empty() ? g_peerAddr.c_str() : g_peerName.c_str()) + "\"}]}";
@@ -124,12 +128,27 @@ std::string getField(const char *json, const char *key)
     return e ? std::string(c, e - c) : "";
 }
 
+// tiny extractor for a top-level boolean field (mirrors the WhatsApp plugin's json_true())
+bool getBoolField(const char *json, const char *key)
+{
+    if (!json) return false;
+    std::string needle = std::string("\"") + key + "\"";
+    const char *k = strstr(json, needle.c_str());
+    if (!k) return false;
+    const char *c = strchr(k + needle.size(), ':');
+    if (!c) return false;
+    while (*++c == ' ') ;
+    return strncmp(c, "true", 4) == 0;
+}
+
 bool cbDial(LSHandle *sh, LSMessage *msg, void *)
 {
     LSError err; LSErrorInit(&err);
-    std::string addr = getField(LSMessageGetPayload(msg), "address");
-    bool ok = g_account && !addr.empty() && callBridgeDial(g_account, addr.c_str());
-    tgcLog("cbDial addr=%s g_account=%p ok=%d", addr.c_str(), (void*)g_account, ok);
+    const char *payload = LSMessageGetPayload(msg);
+    std::string addr = getField(payload, "address");
+    bool video = getBoolField(payload, "video");
+    bool ok = g_account && !addr.empty() && callBridgeDial(g_account, addr.c_str(), video);
+    tgcLog("cbDial addr=%s video=%d g_account=%p ok=%d", addr.c_str(), (int)video, (void*)g_account, ok);
     LSMessageReply(sh, msg, ok ? "{\"returnValue\":true}" : "{\"returnValue\":false}", &err);
     if (LSErrorIsSet(&err)) LSErrorFree(&err);
     return true;
@@ -245,6 +264,127 @@ void callLunaPushState(const char *state, const char *peerAddress, const char *p
         LSSubscriptionReply(g_prv, SUBKEY, payload.c_str(), &err);
         if (LSErrorIsSet(&err)) { purple_debug_warning(config::pluginId, "pushState prv: %s\n", err.message); LSErrorFree(&err); }
     }
+}
+
+// --- clonk: the native SkypeKit video bridge --------------------------------------------------
+// See messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 1-21) for the full
+// reverse-engineering trail this is built against, and glue/call.c in the WhatsApp plugin
+// (messaging/facebook-e2ee/plugin/purple-combined) for the exact pattern this mirrors -- same
+// LS2 sequence, same Part 16 field-shift-compensated videoCaptureStart args, same Part 17
+// ordering constraint (skypekit_video_start() must run before videoPlayerStart's LS2 call).
+
+bool clonkOpenReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
+bool clonkCaptureStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
+bool clonkPlayerStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
+bool clonkStopReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
+
+void clonkUriCall(const char *method, const char *jsonPayload, LSFilterFunc cb, void *ctx)
+{
+    if (!g_prv || g_clonkUri.empty()) return;
+    std::string uri = g_clonkUri + method;
+    LSError err; LSErrorInit(&err);
+    LSMessageToken tok;
+    if (!LSCallOneReply(g_prv, uri.c_str(), jsonPayload, cb, ctx, &tok, &err)) {
+        tgcLog("clonk %s call failed: %s", method, err.message);
+        LSErrorFree(&err);
+    }
+}
+
+bool clonkCaptureStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh; (void)ctx;
+    tgcLog("clonk videoCaptureStart: %s", LSMessageGetPayload(msg));
+    // Thread A (capture->peer) must be bound+listening before videoPlayerStart triggers
+    // mediaserver's RunVideoHost() -- WHATSAPP_VIDEO_STATUS.md Part 17.
+    skypekit_video_start();
+    clonkUriCall("videoPlayerStart", "{\"args\":[320,240]}", clonkPlayerStartReplyCb, NULL);
+    return true;
+}
+bool clonkPlayerStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh; (void)ctx;
+    tgcLog("clonk videoPlayerStart: %s", LSMessageGetPayload(msg));
+    return true;
+}
+
+bool clonkOpenReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh; (void)ctx;
+    const char *p = LSMessageGetPayload(msg);
+    std::string uri = getField(p, "location");
+    if (!uri.empty()) {
+        g_clonkUri = uri;
+        tgcLog("clonk session open: %s", g_clonkUri.c_str());
+        // videoCaptureStart args are (w,h,fps,bitrate) on the wire, but ClonkPipeline::
+        // setCamCapsFilter() reads the wrong VideoSettings offsets (+4/+8 instead of +0/+4) --
+        // a real firmware bug (WHATSAPP_VIDEO_STATUS.md Part 16). Putting the intended width in
+        // the h slot and the intended height in the fps slot lands the correct width/height in
+        // the actual applied caps once that bug reads them one field over.
+        clonkUriCall("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonkCaptureStartReplyCb, NULL);
+    } else {
+        tgcLog("clonk session open failed: %s", p ? p : "(no payload)");
+    }
+    return true;
+}
+
+// Opens a clonk session and drives it through videoCaptureStart -> skypekit_video_start() ->
+// videoPlayerStart. Call once per video call, from activateCall() when call.is_video_.
+void callLunaOpenClonk()
+{
+    if (!g_clonkUri.empty() || !g_prv) return;
+    g_videoActive = true;
+    LSError err; LSErrorInit(&err);
+    LSMessageToken tok;
+    if (!LSCallOneReply(g_prv, "palm://com.palm.mediad/service/clonk", "{}", clonkOpenReplyCb, NULL, &tok, &err)) {
+        tgcLog("clonk open call failed: %s", err.message);
+        LSErrorFree(&err);
+    }
+}
+
+bool clonkStopReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh;
+    tgcLog("clonk %s: %s", (const char *)ctx, LSMessageGetPayload(msg));
+    return true;
+}
+
+// Tears down the skypekit bridge + clonk session. No confirmed explicit session-teardown method
+// (mediaserver tears a session down when its creating client's LS2 connection drops, shared with
+// the rest of this long-lived process) -- a fresh session is opened next time video starts.
+void callLunaCloseClonk()
+{
+    if (g_clonkUri.empty()) { g_videoActive = false; return; }
+    skypekit_video_stop(); // stop our own socket threads before telling mediaserver to stop
+    clonkUriCall("videoPlayerStop", "{\"args\":[]}", clonkStopReplyCb, (void*)"videoPlayerStop");
+    clonkUriCall("videoCaptureStop", "{\"args\":[]}", clonkStopReplyCb, (void*)"videoCaptureStop");
+    g_clonkUri.clear();
+    g_videoActive = false;
+}
+
+bool clonkKeyframeStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh; (void)ctx;
+    tgcLog("clonk keyframe-restart videoCaptureStart: %s", LSMessageGetPayload(msg));
+    return true;
+}
+bool clonkKeyframeStopReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
+{
+    (void)sh; (void)ctx;
+    tgcLog("clonk keyframe-restart videoCaptureStop: %s", LSMessageGetPayload(msg));
+    // Thread A/B and the clonk session itself stay up throughout -- only the capture pipeline
+    // restarts, so no skypekit_video_start()/videoPlayerStart() here.
+    clonkUriCall("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonkKeyframeStartReplyCb, NULL);
+    return true;
+}
+
+// Called from SkypeKitVideoSource::RequestKeyFrame() (VoIPController's real PLI-equivalent
+// signal). No LS2-exposed keyframe trigger exists on the clonk surface, so this restarts
+// capture instead -- every capture start emits a real SPS/PPS/IDR opening sequence.
+void callLunaRequestKeyframe()
+{
+    if (g_clonkUri.empty()) return;
+    tgcLog("keyframe requested, restarting capture");
+    clonkUriCall("videoCaptureStop", "{\"args\":[]}", clonkKeyframeStopReplyCb, NULL);
 }
 
 // --- webOS call-audio routing (mirrors the working wacallm path) --------------------------------

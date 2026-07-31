@@ -842,7 +842,7 @@ static PurpleCmdRet tgprpl_cmd_unarchive(PurpleConversation *conv, const gchar *
 static PurpleMediaCaps getMediaCaps(PurpleAccount *account, const char *who)
 {
 #ifndef NoVoip
-    return PURPLE_MEDIA_CAPS_AUDIO;
+    return (PurpleMediaCaps)(PURPLE_MEDIA_CAPS_AUDIO | PURPLE_MEDIA_CAPS_VIDEO | PURPLE_MEDIA_CAPS_AUDIO_VIDEO);
 #else
     return PURPLE_MEDIA_CAPS_NONE;
 #endif
@@ -856,7 +856,7 @@ gboolean initiateMedia(PurpleAccount *account, const char *who, PurpleMediaSessi
 
     PurpleTdClient *tdClient = getTdClient(account);
     if (tdClient)
-        return tdClient->startVoiceCall(who) ? TRUE : FALSE;
+        return tdClient->startVoiceCall(who, (type & PURPLE_MEDIA_VIDEO) != 0) ? TRUE : FALSE;
     else
         return FALSE;
 #else
