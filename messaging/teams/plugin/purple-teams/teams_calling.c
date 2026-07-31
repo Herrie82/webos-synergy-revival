@@ -115,7 +115,22 @@ typedef struct {
 	guint       answer_timer;
 	gboolean    is_caller;      /* TRUE = outgoing (we build+POST the offer via cpconv) */
 	gchar      *callagent_id;   /* our client-generated callAgent uuid (outgoing) */
+
+	/* want_video is the OUTGOING request (dial-with-video), read by media_send_offer() to decide
+	 * whether to add a video m-line - NOT the same as call->video_active, which only goes TRUE once
+	 * the callee's answer actually confirms it (teams_calling_handle_media_answer). The skypekit/
+	 * clonk video bridge itself lives in this same process (teams_call_luna.c calls it directly,
+	 * same as Telegram) - no cross-process ack needed here anymore. */
+	gboolean          want_video;
 } TeamsMediaProc;
+
+static TeamsCallVideoCb g_video_cb = NULL;
+
+void
+teams_calling_set_video_cb(TeamsCallVideoCb cb)
+{
+	g_video_cb = cb;
+}
 
 /* POST JSON to a flightproxy/calling URL WITH the x-skypetoken auth header (teams_post_or_get does
  * not add it for api.flightproxy.skype.com -> "Anonymous access is not allowed" 403). Logs the
@@ -212,6 +227,30 @@ sdp_gcm_key(const char *sdp)
 	return ret;
 }
 
+/* Direction attribute ("sendrecv"/"recvonly"/"sendonly"/"inactive") from the FIRST m=video
+ * section only - sdp_line_val() alone would find the audio section's a=sendrecv first, since
+ * it scans the whole SDP and audio comes before video in every SDP this codebase builds/parses.
+ * Returns NULL if the SDP has no m=video line at all (no video offered/negotiated). */
+static gchar *
+sdp_video_direction(const char *sdp)
+{
+	gchar **lines; int i; gboolean in_video = FALSE; gchar *ret = NULL;
+	if (!sdp) return NULL;
+	lines = g_strsplit(sdp, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		gchar *l = g_strstrip(lines[i]);
+		if (g_str_has_prefix(l, "m=video")) { in_video = TRUE; continue; }
+		if (l[0] == 'm' && l[1] == '=') { if (in_video) break; continue; }
+		if (!in_video) continue;
+		if (!strcmp(l, "a=sendrecv") || !strcmp(l, "a=recvonly") ||
+		    !strcmp(l, "a=sendonly") || !strcmp(l, "a=inactive")) {
+			ret = g_strdup(l + 2); break;
+		}
+	}
+	g_strfreev(lines);
+	return ret;
+}
+
 static void teams_calling_post_answer(TeamsCall *call, const char *answer_sdp);
 static void call_http_post(TeamsAccount *sa, const gchar *full_url, const gchar *body);
 
@@ -225,19 +264,23 @@ teams_calling_log_sdp(const char *sdp)
 static void answer_ok_cb(TeamsAccount *sa, JsonNode *node, gpointer u);
 static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpointer u);
 
-/* build the SDP answer from our media params + the offer (SDES-GCM path; the offer supports both
+/* Build the SDP answer from our media params + the offer (SDES-GCM path; the offer supports both
  * SDES a=crypto and DTLS, and our engine keys via SDES). Shape mirrors the web client's accepted
- * answer: BUNDLE + mid:audio_0 + rtcp-mux + label, a=crypto instead of DTLS fingerprint. Then kicks
- * off the two-step media-controller handshake (attach -> parse acceptance link -> accept w/ SDP). */
-static void
-media_send_answer(TeamsMediaProc *mp)
+ * answer: BUNDLE + mid:audio_0/video_1 + rtcp-mux + label, a=crypto instead of DTLS fingerprint.
+ * The video m-line's direction is driven by call->video_active - the offer/answer m-line-mirroring
+ * requirement means we ALWAYS emit it (or the peer rejects the whole answer, FinalAnswerError
+ * 406/4122), but only mark it a=sendrecv (not a=inactive) once video is actually negotiated.
+ * Codec/fmtp/rtcp-fb values are the real ones from a captured live Teams video call (H264/90000
+ * PT 107, rtx PT 99, packetization-mode=1, profile-level-id=42e01f). Shared by the initial answer
+ * (media_send_answer, below) and any later mid-call renegotiation
+ * (teams_calling_handle_renegotiation) - both reuse the SAME bundled ICE/crypto, only the
+ * direction/content changes. Caller owns the returned GString. */
+static GString *
+build_answer_sdp(TeamsMediaProc *mp)
 {
 	TeamsCall *call = mp->call;
 	GString *a;
 	gchar *our_ip = NULL; int our_port = 3480;
-
-	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
-	mp->answered = TRUE;
 
 	/* Derive our OWN connection address for c=/m= from the first UDP host candidate (NOT the offerer's
 	 * relay IP - advertising the peer's address as ours confuses the NGC validator). */
@@ -289,29 +332,59 @@ media_send_answer(TeamsMediaProc *mp)
 	g_string_append(a, "a=rtcp-mux\r\n");
 	g_string_append(a, "a=label:main-audio\r\n");
 
-	/* The offer has a second m-line (m=video, BUNDLE audio_0 video_1). SDP offer/answer requires the
-	 * answer to mirror the offer's m-lines in count+order, so we MUST emit a corresponding video line
-	 * or the peer rejects the whole answer (FinalAnswerError 406/4122). We don't do video: mark it
-	 * inactive, bundled onto the audio transport (same ice-ufrag/pwd/crypto). */
-	g_string_append_printf(a, "m=video %d RTP/SAVP 107\r\n", our_port);
+	g_string_append_printf(a, "m=video %d RTP/SAVP 107 99\r\n", our_port);
 	g_string_append_printf(a, "c=IN IP4 %s\r\n", our_ip ? our_ip : "127.0.0.1");
 	g_string_append(a, "a=rtpmap:107 H264/90000\r\n");
-	g_string_append(a, "a=fmtp:107 profile-level-id=42C02A;packetization-mode=1\r\n");
+	g_string_append(a, "a=rtpmap:99 rtx/90000\r\n");
+	g_string_append(a, "a=fmtp:107 level-asymmetry-allowed=1;packetization-mode=1;"
+	                    "profile-level-id=42e01f;max-fs=8160;max-mbps=244800;max-fps=3000\r\n");
+	g_string_append(a, "a=fmtp:99 apt=107\r\n");
+	g_string_append(a, "a=rtcp-fb:107 goog-remb\r\n");
+	g_string_append(a, "a=rtcp-fb:107 transport-cc\r\n");
+	g_string_append(a, "a=rtcp-fb:107 nack\r\n");
+	g_string_append(a, "a=rtcp-fb:107 nack pli\r\n");
 	g_string_append(a, "a=mid:video_1\r\n");
-	g_string_append(a, "a=inactive\r\n");
+	g_string_append(a, call->video_active ? "a=sendrecv\r\n" : "a=inactive\r\n");
 	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
 	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
 	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
 	g_string_append(a, "a=rtcp-mux\r\n");
+	g_string_append(a, "a=rtcp-rsize\r\n");
 	g_string_append(a, "a=label:main-video\r\n");
+
+	g_free(our_ip);
+	return a;
+}
+
+/* Kicks off the two-step media-controller handshake (attach -> parse acceptance link -> accept
+ * w/ SDP) using build_answer_sdp() above. If the peer's OFFER already has an active m=video line,
+ * activates video from this very first answer rather than waiting for a later renegotiation. */
+static void
+media_send_answer(TeamsMediaProc *mp)
+{
+	TeamsCall *call = mp->call;
+	GString *a;
+
+	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
+	mp->answered = TRUE;
+
+	{ gchar *dir = sdp_video_direction(call->sdp_offer);
+	  if (dir && strcmp(dir, "inactive") != 0 && !call->video_active) {
+	      call->video_active = TRUE;
+	      teams_call_log("answer: offer already wants video (a=%s), activating from the start", dir);
+	      if (g_video_cb) g_video_cb(call->sa, TRUE);
+	  }
+	  g_free(dir); }
+
+	a = build_answer_sdp(mp);
 
 	g_free(call->our_answer_sdp);
 	call->our_answer_sdp = g_strdup(a->str);
-	teams_call_log("ANSWER SDP built (%d bytes) - starting attach->accept handshake", (int) a->len);
+	teams_call_log("ANSWER SDP built (%d bytes, video=%d) - starting attach->accept handshake",
+	               (int) a->len, call->video_active);
 	teams_calling_log_sdp(call->our_answer_sdp);   /* dump full answer for offline diffing */
 	teams_calling_post_answer(call, a->str);   /* now = attach then accept */
 	g_string_free(a, TRUE);
-	g_free(our_ip);
 }
 
 /* CALLER: build the OFFER SDP from our media params + POST the cpconv create request to place the
@@ -327,7 +400,9 @@ media_send_offer(TeamsMediaProc *mp)
 	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
 	mp->answered = TRUE;
 
-	sdp = g_string_new("v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nb=CT:4000\r\nt=0 0\r\na=group:BUNDLE 0\r\n");
+	sdp = g_string_new(mp->want_video
+		? "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nb=CT:4000\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n"
+		: "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nb=CT:4000\r\nt=0 0\r\na=group:BUNDLE 0\r\n");
 	g_string_append(sdp, "m=audio 3480 RTP/SAVP 102 9 0 8\r\nc=IN IP4 0.0.0.0\r\n");
 	g_string_append(sdp, "a=rtpmap:102 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n");
 	g_string_append(sdp, "a=fmtp:102 minptime=10;useinbandfec=1\r\na=rtcp-mux\r\na=mid:0\r\na=sendrecv\r\na=label:main-audio\r\n");
@@ -336,6 +411,24 @@ media_send_offer(TeamsMediaProc *mp)
 	if (mp->our_cands) { gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1);
 		for (i = 0; cl[i]; i++) if (cl[i][0]) g_string_append_printf(sdp, "a=%s\r\n", cl[i]);
 		g_strfreev(cl); }
+
+	/* Outgoing video (dial-with-video): add a second m-line matching build_answer_sdp's video
+	 * codec shape - no HAR reference for an outgoing-with-video offer (only incoming was
+	 * captured), so this is first-attempt, same as the rest of this offer's own documented
+	 * "CONFIRM WITH CAPTURE" status. call->video_active only goes TRUE once the callee's answer
+	 * confirms it (teams_calling_handle_media_answer) - this just reflects our OWN request. */
+	if (mp->want_video) {
+		g_string_append(sdp, "m=video 3480 RTP/SAVP 107 99\r\nc=IN IP4 0.0.0.0\r\n");
+		g_string_append(sdp, "a=rtpmap:107 H264/90000\r\na=rtpmap:99 rtx/90000\r\n");
+		g_string_append(sdp, "a=fmtp:107 level-asymmetry-allowed=1;packetization-mode=1;"
+		                     "profile-level-id=42e01f;max-fs=8160;max-mbps=244800;max-fps=3000\r\n");
+		g_string_append(sdp, "a=fmtp:99 apt=107\r\n");
+		g_string_append(sdp, "a=rtcp-fb:107 goog-remb\r\na=rtcp-fb:107 transport-cc\r\n");
+		g_string_append(sdp, "a=rtcp-fb:107 nack\r\na=rtcp-fb:107 nack pli\r\n");
+		g_string_append(sdp, "a=rtcp-mux\r\na=rtcp-rsize\r\na=mid:1\r\na=sendrecv\r\na=label:main-video\r\n");
+		g_string_append_printf(sdp, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", mp->our_ufrag, mp->our_pwd);
+		g_string_append_printf(sdp, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	}
 
 	offer_esc = g_strescape(sdp->str, "");
 	legid = g_strdup_printf("%08X%08X%08X%08X", g_random_int(), g_random_int(), g_random_int(), g_random_int());
@@ -377,8 +470,9 @@ media_send_offer(TeamsMediaProc *mp)
 		"\"groupContext\":null,\"groupChat\":null,\"meetingInfo\":null,\"meetingData\":null,"
 		"\"endpointState\":{\"endpointStateSequenceNumber\":2,\"endpointProperties\":"
 		"{\"additionalEndpointProperties\":{\"infoShownInReportMode\":\"FullInformation\"}}},");
-	g_string_append(body, "\"callInvitation\":{\"callModalities\":[\"Audio\"],\"replaces\":null,"
-		"\"transferor\":null,\"clientTransferContext\":null,\"customContext\":null,\"links\":{");
+	g_string_append_printf(body, "\"callInvitation\":{\"callModalities\":[%s],\"replaces\":null,"
+		"\"transferor\":null,\"clientTransferContext\":null,\"customContext\":null,\"links\":{",
+		mp->want_video ? "\"Audio\",\"Video\"" : "\"Audio\"");
 	AGL("call", "progress"); AGL("call", "mediaAnswer"); AGL("call", "acceptance");
 	AGL("call", "redirection"); AGL("call", "end");
 	g_string_truncate(body, body->len - 1);
@@ -483,6 +577,15 @@ teams_media_start(TeamsCall *call)
 		"/media/cryptofs/wpe-glibc/lib/librt.so.1 /usr/lib/libasound.so.2", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_CONFIG_PATH", "/usr/share/alsa/alsa.conf", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_PLUGIN_DIR", "/usr/lib/alsa-lib", TRUE);
+	/* teams_media (unlike imlibpurpletransport/WhatsApp/Telegram) is NOT patched to the wpe-glibc
+	 * interpreter - it uses the stock /lib/ld-linux.so.3 (confirmed via readelf -l). Spawned as our
+	 * child, it just inherits OUR OWN LD_LIBRARY_PATH (set by imwrap.sh) unmodified - no override
+	 * needed. An explicit override was tried once, to route around a libpalmgstskype.so ->
+	 * libmedia-clonk.so -> libpbnjson_cpp.so GLIBCXX conflict, when this subprocess linked the
+	 * H.264/skypekit video bridge directly - but that approach was abandoned (the bridge now lives
+	 * in the plugin process instead; see teams_media.c's top-of-file comment) and this subprocess is
+	 * back to a pure gst-1.20/nice build with no libpalmgstskype.so dependency, so the inherited
+	 * environment (already proven for audio-only calls) is sufficient again. */
 
 	if (!g_spawn_async_with_pipes(NULL, (gchar **) argv, envp,
 	                              G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
@@ -905,7 +1008,81 @@ teams_calling_handle_media_answer(TeamsAccount *sa, JsonObject *body_obj)
 	g_strfreev(lines);
 	call->state = TEAMS_CALL_ACTIVE;
 	push_state(call, NULL);
+
+	/* Outgoing dial-with-video: only now, once the callee's OWN answer confirms an active video
+	 * m-line, do we consider video actually negotiated (mp->want_video alone was just our request -
+	 * see media_send_offer). Mirrors the incoming path's "activate on real negotiated state, not
+	 * on request alone" principle. */
+	if (mp->want_video && !call->video_active) {
+		gchar *dir = sdp_video_direction(blob);
+		if (dir && strcmp(dir, "inactive") != 0) {
+			call->video_active = TRUE;
+			teams_call_log("mediaAnswer: callee confirmed video (a=%s)", dir);
+			if (g_video_cb) g_video_cb(sa, TRUE);
+		} else {
+			teams_call_log("mediaAnswer: video was requested but callee's answer didn't confirm it");
+		}
+		g_free(dir);
+	}
 	g_free(ruf); g_free(rpw); g_free(rxkey);
+}
+
+/* Peer pushed a mid-call renegotiation offer (e.g. they turned their camera on/off), delivered via
+ * the mediaRenegotiation link we generated and handed them in our own accept
+ * (teams_calling_post_accept's l_reneg). Real, captured behavior of an actual Teams client: video
+ * is commonly added AFTER an audio-only accept this way, not always present in the initial offer -
+ * see media_send_answer's offer-time check for the other case. CONFIRM WITH CAPTURE: the exact
+ * mediaAnswer link resolution is inferred from a HAR of this flow (mediaNegotiation.links.mediaAnswer
+ * in the push body), not yet exercised against a live Teams backend by this code. */
+static void
+teams_calling_handle_renegotiation(TeamsAccount *sa, JsonObject *body_obj, const gchar *request_url)
+{
+	TeamsCall *call = teams_calling_current(sa);
+	TeamsMediaProc *mp = g_mproc;
+	JsonObject *mn, *mc, *links;
+	const gchar *blob = NULL, *answer_link = NULL;
+	gchar *dir;
+	gboolean peer_wants_video;
+	(void) request_url;
+
+	if (!call || !mp) { teams_call_log("renegotiate: no active call/engine"); return; }
+	mn = oget(body_obj, "mediaNegotiation");
+	if (!mn) { teams_call_log("renegotiate: no mediaNegotiation object (see capture log)"); return; }
+	if ((mc = oget(mn, "mediaContent"))) blob = sget(mc, "blob");
+	if ((links = oget(mn, "links")))     answer_link = sget(links, "mediaAnswer");
+	if (!blob) { teams_call_log("renegotiate: no SDP blob in mediaNegotiation"); return; }
+
+	dir = sdp_video_direction(blob);
+	peer_wants_video = dir && strcmp(dir, "inactive") != 0;
+	teams_call_log("renegotiate: video m-line direction=%s", dir ? dir : "(none)");
+	g_free(dir);
+
+	if (peer_wants_video && !call->video_active) {
+		call->video_active = TRUE;
+		teams_call_log("renegotiate: video ADDED mid-call");
+		if (g_video_cb) g_video_cb(sa, TRUE);
+	} else if (!peer_wants_video && call->video_active) {
+		call->video_active = FALSE;
+		teams_call_log("renegotiate: video REMOVED mid-call");
+		if (g_video_cb) g_video_cb(sa, FALSE);
+	}
+
+	if (!answer_link || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) {
+		teams_call_log("renegotiate: missing answer link or media params (uf=%d pw=%d key=%d link=%d), "
+		               "cannot respond", mp->our_ufrag != NULL, mp->our_pwd != NULL,
+		               mp->our_txkey != NULL, answer_link != NULL);
+		return;
+	}
+	{ GString *a = build_answer_sdp(mp);
+	  gchar *esc = g_strescape(a->str, "");
+	  gchar *body = g_strdup_printf(
+	      "{\"mediaAnswer\":{\"callModalities\":[\"Audio\"],"
+	        "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\"}}}",
+	      esc);
+	  teams_call_log("renegotiate: POSTing updated answer (%d bytes, video=%d) to %s",
+	                 (int) strlen(body), call->video_active, answer_link);
+	  flightproxy_post_cb(sa, answer_link, body, flightproxy_resp_cb, NULL);
+	  g_free(body); g_free(esc); g_string_free(a, TRUE); }
 }
 
 void
@@ -921,6 +1098,13 @@ teams_calling_handle_trouter(TeamsAccount *sa, JsonObject *body_obj, const gchar
 	if (request_url && (strstr(request_url, "/mediaAnswer") || strstr(request_url, "/mediaanswer"))) {
 		teams_call_log("outgoing: MEDIA ANSWER frame received");
 		teams_calling_handle_media_answer(sa, body_obj);
+		return;
+	}
+	/* Mid-call renegotiation push (e.g. peer turns their camera on/off) on the mediaRenegotiation
+	 * link we generated in our own accept - see teams_calling_post_accept's l_reneg. */
+	if (request_url && strstr(request_url, "/mediaRenegotiation")) {
+		teams_call_log("RENEGOTIATION frame received");
+		teams_calling_handle_renegotiation(sa, body_obj, request_url);
 		return;
 	}
 	if (request_url && strstr(request_url, "/progress")) {
@@ -1062,7 +1246,7 @@ teams_calling_hangup(TeamsAccount *sa)
 }
 
 gboolean
-teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri)
+teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri, gboolean video)
 {
 	/* Outgoing (caller): spawn teams_media --caller to gather our ICE + generate the offer's SRTP
 	 * key, then media_send_offer() builds the SDP offer and POSTs the cpconv create request (which
@@ -1081,6 +1265,15 @@ teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri)
 	envp = g_environ_setenv(envp, "GST_PLUGIN_SYSTEM_PATH_1_0", gstpath, TRUE);
 	envp = g_environ_setenv(envp, "GST_REGISTRY", "/media/internal/teams-gst-registry.bin", TRUE);
 	g_free(gstpath);
+	/* Same ALSA voip/voipsource PCM fix as teams_media_start() (answerer path) - see that copy's
+	 * comment. No LD_LIBRARY_PATH override here either, for the same reason: teams_media is back to
+	 * a pure gst-1.20/nice build (no libpalmgstskype.so), so simply inheriting our own environment
+	 * (set by imwrap.sh) is sufficient. */
+	envp = g_environ_setenv(envp, "LD_PRELOAD",
+		"/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/libstdc++.so.6 "
+		"/media/cryptofs/wpe-glibc/lib/librt.so.1 /usr/lib/libasound.so.2", TRUE);
+	envp = g_environ_setenv(envp, "ALSA_CONFIG_PATH", "/usr/share/alsa/alsa.conf", TRUE);
+	envp = g_environ_setenv(envp, "ALSA_PLUGIN_DIR", "/usr/lib/alsa-lib", TRUE);
 
 	if (!g_spawn_async_with_pipes(NULL, (gchar **) argv, envp, G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
 	                              &pid, &in_fd, &out_fd, NULL, &err)) {
@@ -1098,6 +1291,7 @@ teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri)
 
 	mp = g_new0(TeamsMediaProc, 1);
 	mp->call = call; mp->pid = pid; mp->in_fd = in_fd; mp->is_caller = TRUE;
+	mp->want_video = video;
 	mp->callagent_id = purple_uuid_random();
 	mp->our_cands = g_string_new("");
 	mp->out_ch = g_io_channel_unix_new(out_fd);

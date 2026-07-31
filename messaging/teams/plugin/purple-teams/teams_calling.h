@@ -66,6 +66,14 @@ typedef struct _TeamsCall {
 	gchar *our_endpoint_id;    /* our calling endpoint id (= sa->endpoint), used in acceptedBy */
 	gchar *our_participant_id; /* our participantId (generated), reused in attach join + acceptedBy */
 	gchar *callagent_id;       /* generated callAgent id for our control paths (end link, etc.) */
+
+	/* Video: TRUE once video is actually negotiated active for this call (either present in the
+	 * initial offer/answer, or added later via a mid-call renegotiation push - see
+	 * teams_calling_handle_renegotiation in teams_calling.c). Drives both what SDP we build and
+	 * teams_calling_set_video_cb()'s notifications (which teams_call_luna.c uses to open/close the
+	 * clonk video bridge). NOT set for an outgoing dial-with-video request until the callee's
+	 * answer actually confirms it - see TeamsMediaProc.want_video in teams_calling.c. */
+	gboolean video_active;
 } TeamsCall;
 
 /* Called from teams_trouter.c's /NGCallManagerWin handler with the decoded callNotification
@@ -83,11 +91,21 @@ typedef void (*TeamsCallStateCb)(TeamsAccount *sa, const char *state, const char
 void teams_calling_set_state_cb(TeamsCallStateCb cb);
 
 /* Phone-app-facing actions (called by the LS2 bridge). Return FALSE if no such call / not
- * possible. answer/dial spin up the media engine; reject/hangup tear down + POST control. */
+ * possible. answer/dial spin up the media engine; reject/hangup tear down + POST control.
+ * dial's video param requests a video m-line in our offer (see TeamsMediaProc.want_video in
+ * teams_calling.c) - whether it actually goes active depends on the callee's answer. */
 gboolean teams_calling_answer(TeamsAccount *sa);
 gboolean teams_calling_reject(TeamsAccount *sa);
 gboolean teams_calling_hangup(TeamsAccount *sa);
-gboolean teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri);
+gboolean teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri, gboolean video);
+
+/* The LS2 bridge registers this to learn when TeamsCall.video_active flips, in either direction
+ * (an inbound renegotiation, video already active in the initial offer/answer, or the callee's
+ * answer to an outgoing dial-with-video request). Drives teams_call_luna.c's clonk video bridge
+ * lifecycle (teams_call_luna_open_clonk/close_clonk), which calls skypekit_video_start/stop()
+ * directly - skypekit.cpp lives in this same process/library, not a separate subprocess. */
+typedef void (*TeamsCallVideoCb)(TeamsAccount *sa, gboolean active);
+void teams_calling_set_video_cb(TeamsCallVideoCb cb);
 
 /* The account's current call (or NULL). */
 TeamsCall *teams_calling_current(TeamsAccount *sa);

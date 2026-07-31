@@ -9,8 +9,28 @@
  *   - generate our own random TX master and hand it back (base64) for the SDP answer's a=crypto.
  * We also generate our own ICE ufrag/pwd (libnice) and emit them + our candidates for the answer.
  *
- *   RX: nicesrc -> srtpdec(peer master via request-key) -> rtpopusdepay -> opusdec -> alsasink device=voip
- *   TX: alsasrc device=voipsource -> opusenc -> rtpopuspay(pt) -> srtpenc(our master) -> nicesink
+ *   RX: nicesrc -> srtpdec(peer master via request-key) -> rtpptdemux --pt 102--> rtpopusdepay -> opusdec -> alsasink device=voip
+ *                                                                    `--pt 107--> h264 bridge (see below)
+ *   TX: alsasrc device=voipsource -> opusenc -> rtpopuspay(pt) --\
+ *       h264 bridge (see below) -----------------------------funnel -> srtpenc(our master) -> nicesink
+ *
+ * H.264 video (BUNDLE'd onto the SAME ICE/SRTP transport+key as audio, PT 107, RFC 6184 FU-A):
+ * this process does NOT depacketize/decode H.264 or talk to skypekit/clonk at all - that bridge
+ * (h264_rtp.c/skypekit.cpp) now lives in the main plugin process (libteams-personal.so), which has
+ * the LS2 access the clonk session needs and, critically, is the ONLY process whose runtime
+ * environment can satisfy libpalmgstskype.so's transitive libmedia-clonk/libpbnjson_cpp/
+ * liblunaservice dependency chain (that chain needs the OLD system libstdc++/libc; this process's
+ * gst-1.20/libnice stack needs wpe-glibc's NEWER libc - no single environment satisfies both, as
+ * established by extensive live on-device testing). Instead, this process just relays whole,
+ * already-RTP-framed H.264 packets across an extra UNIX-domain-socket hop to/from the plugin:
+ *   RX: on_rx_video_sample() forwards raw (post-SRTP-decrypt) video RTP packets, length-prefixed,
+ *       to whatever plugin-side client is connected to TM_RELAY_SOCK. No-op if nothing's connected.
+ *   TX: raw RTP packets arriving FROM the relay client (already correctly built by the plugin's own
+ *       h264_packetize()+header code) are pushed into tx-video-src as-is, joining the shared funnel/
+ *       srtpenc/nicesink TX chain.
+ * The relay socket listens unconditionally once the pipeline is up (relay_listen_start(), called from
+ * tm_run_pipeline()) - there is no STARTVIDEO/STOPVIDEO IPC step; an audio-only call simply never
+ * gets a client connection, and the video branches sit idle.
  *
  * IPC (line protocol over stdin/stdout, driven by teams_calling.c):
  *   in : START <rx_master_b64> <remote_ufrag> <remote_pwd> <pt>
@@ -49,6 +69,18 @@
 #define TM_OPUS_CHANNELS  1
 #define TM_DEFAULT_PT     102
 
+/* H.264 video RTP: 90 kHz, PT 107 — matches what teams_calling.c's SDP always advertises for
+ * rtpmap:107 H264/90000 (both answer and offer), so this is a fixed constant, not negotiated
+ * over the IPC protocol the way the audio PT is. */
+#define TM_VIDEO_CLOCKRATE 90000
+#define TM_VIDEO_PT        107
+
+/* UNIX-domain socket the plugin process's teams_video_relay.cpp connects to once video is
+ * negotiated. Each direction's wire format is a 2-byte big-endian length prefix followed by exactly
+ * one whole RTP packet (12-byte header + payload) - see the top-of-file comment. */
+#define TM_RELAY_SOCK      "/tmp/teams-video-relay.sock"
+#define TM_RELAY_BUF_MAX   2048
+
 #define SRTP_CIPHER_GCM256 "aes-256-gcm"
 #define SRTP_AUTH_NULL     "null"          /* GCM is AEAD -> no separate auth transform */
 #define TM_GCM_MASTER_SIZE 44              /* AEAD_AES_256_GCM: 32-byte key || 12-byte salt */
@@ -73,6 +105,27 @@ typedef struct {
 
     gboolean      audiod_on;
     gboolean      running;
+
+    /* H.264 video: pipeline branches are always built (see build_pipeline()); whether they carry
+     * real data depends purely on whether a plugin-side client is connected to the relay socket
+     * below (see the top-of-file comment - no STARTVIDEO/STOPVIDEO IPC gate needed). */
+    GstElement        *video_appsrc;     /* tx-video-src: pushed from on_relay_client_readable */
+    GstElement        *rx_audio_caps;    /* rx-rtpcaps: ptdemux routing target for the audio PT */
+    GstElement        *rx_video_caps;    /* rx-video-rtpcaps: ptdemux routing target for PT 107 */
+    int                video_pt;         /* TM_VIDEO_PT, set once in tm_start() */
+
+    /* Video RTP relay socket (see TM_RELAY_SOCK). relay_listen_fd/relay_listen_src live for the
+     * whole call; relay_fd/relay_client_src come and go as the plugin connects/disconnects (e.g.
+     * across a renegotiation that drops video mid-call). relay_rx_* track the small read-state
+     * machine in on_relay_client_readable (2-byte length prefix, then that many payload bytes). */
+    int        relay_listen_fd;
+    int        relay_fd;
+    GSource   *relay_listen_src;
+    GSource   *relay_client_src;
+    guint8     relay_rxbuf[TM_RELAY_BUF_MAX];
+    gsize      relay_rx_have;
+    gsize      relay_rx_want;
+    gboolean   relay_rx_have_len;
 } TeamsMedia;
 
 static TeamsMedia g_tm;
@@ -342,6 +395,145 @@ static GstCaps *opus_rtp_caps(int pt)
                                "payload",       G_TYPE_INT,    pt, NULL);
 }
 
+static GstCaps *h264_rtp_video_caps(int pt)
+{
+    return gst_caps_new_simple("application/x-rtp",
+                               "media",         G_TYPE_STRING, "video",
+                               "clock-rate",    G_TYPE_INT,    TM_VIDEO_CLOCKRATE,
+                               "encoding-name", G_TYPE_STRING, "H264",
+                               "payload",       G_TYPE_INT,    pt, NULL);
+}
+
+/* ---- Video RTP relay: shuttles whole RTP packets across TM_RELAY_SOCK to/from the plugin
+ * process, which now owns the actual H.264 depacketize/packetize and skypekit/clonk bridge (see
+ * the top-of-file comment). We never touch RTP semantics here beyond reading the header's first
+ * couple of bytes for routing (already done by on_rtpptdemux_new_pt upstream). ---- */
+
+/* appsink "new-sample" on rx-video-appsink: pull one decrypted RTP video packet and forward it,
+ * length-prefixed, to the connected relay client (if any - a no-op otherwise, e.g. audio-only
+ * calls or before the plugin has connected). Best-effort, non-blocking: a stalled/slow client just
+ * drops frames, same policy as the appsink's own drop=TRUE. */
+static GstFlowReturn on_rx_video_sample(GstElement *sink, gpointer user)
+{
+    TeamsMedia *tm = (TeamsMedia *)user;
+    GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    if (!sample) return GST_FLOW_OK;
+    GstBuffer *buf = gst_sample_get_buffer(sample);
+    GstMapInfo map;
+    if (buf && gst_buffer_map(buf, &map, GST_MAP_READ)) {
+        if (tm->relay_fd >= 0 && map.size >= 12 && map.size <= 0xffff) {
+            guint16 framelen = (guint16)map.size;
+            guint8 lenhdr[2] = { (guint8)(framelen >> 8), (guint8)(framelen & 0xff) };
+            if (send(tm->relay_fd, lenhdr, 2, MSG_NOSIGNAL) == 2)
+                send(tm->relay_fd, map.data, map.size, MSG_NOSIGNAL);
+        }
+        gst_buffer_unmap(buf, &map);
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
+
+/* GIOChannel watch on the connected relay client: read whatever's available, accumulating one
+ * length-prefixed RTP packet at a time (relay_rx_have/relay_rx_want/relay_rx_have_len track the
+ * two-stage state machine). A complete packet is already correctly RTP-framed by the plugin side
+ * (h264_packetize + its own header build) - push it into tx-video-src as-is. */
+static gboolean on_relay_client_readable(GIOChannel *ch, GIOCondition cond, gpointer user)
+{
+    TeamsMedia *tm = (TeamsMedia *)user;
+    if (cond & (G_IO_HUP | G_IO_ERR)) {
+        tm_trace("relay: client disconnected");
+        close(tm->relay_fd); tm->relay_fd = -1; tm->relay_client_src = NULL;
+        return FALSE;
+    }
+    gsize got = 0;
+    GIOStatus st = g_io_channel_read_chars(ch, (gchar *)(tm->relay_rxbuf + tm->relay_rx_have),
+                                           tm->relay_rx_want - tm->relay_rx_have, &got, NULL);
+    if (st == G_IO_STATUS_ERROR || (st == G_IO_STATUS_EOF && got == 0)) {
+        tm_trace("relay: client read error/EOF");
+        close(tm->relay_fd); tm->relay_fd = -1; tm->relay_client_src = NULL;
+        return FALSE;
+    }
+    tm->relay_rx_have += got;
+    if (tm->relay_rx_have < tm->relay_rx_want) return TRUE;   /* wait for the rest */
+
+    if (!tm->relay_rx_have_len) {
+        guint16 framelen = (guint16)(((guint)tm->relay_rxbuf[0] << 8) | tm->relay_rxbuf[1]);
+        if (framelen < 12 || framelen > TM_RELAY_BUF_MAX) {
+            tm_trace("relay: bad frame length from client, dropping connection");
+            close(tm->relay_fd); tm->relay_fd = -1; tm->relay_client_src = NULL;
+            return FALSE;
+        }
+        tm->relay_rx_have_len = TRUE;
+        tm->relay_rx_have = 0;
+        tm->relay_rx_want = framelen;
+    } else {
+        if (tm->video_appsrc) {
+            GstBuffer *pkt = gst_buffer_new_and_alloc((guint)tm->relay_rx_want);
+            gst_buffer_fill(pkt, 0, tm->relay_rxbuf, tm->relay_rx_want);
+            GstFlowReturn fr;
+            g_signal_emit_by_name(tm->video_appsrc, "push-buffer", pkt, &fr);
+            gst_buffer_unref(pkt);
+        }
+        tm->relay_rx_have_len = FALSE;
+        tm->relay_rx_have = 0;
+        tm->relay_rx_want = 2;
+    }
+    return TRUE;
+}
+
+/* Listen-socket watch: accept the plugin's connection (replacing any stale prior one - only one
+ * call, hence one client, at a time) and start watching it for readability. Stays registered for
+ * the whole call so a reconnect (e.g. after a renegotiation drops and re-adds video) works too. */
+static gboolean on_relay_listen_readable(GIOChannel *ch, GIOCondition cond, gpointer user)
+{
+    (void)ch; (void)cond;
+    TeamsMedia *tm = (TeamsMedia *)user;
+    int fd = accept(tm->relay_listen_fd, NULL, NULL);
+    if (fd < 0) return TRUE;
+    if (tm->relay_client_src) { g_source_destroy(tm->relay_client_src); tm->relay_client_src = NULL; }
+    if (tm->relay_fd >= 0) { close(tm->relay_fd); tm->relay_fd = -1; }
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    tm->relay_fd = fd;
+    tm->relay_rx_have = 0; tm->relay_rx_want = 2; tm->relay_rx_have_len = FALSE;
+    GIOChannel *cch = g_io_channel_unix_new(fd);
+    g_io_channel_set_encoding(cch, NULL, NULL);
+    g_io_channel_set_buffered(cch, FALSE);
+    GSource *src = g_io_create_watch(cch, G_IO_IN | G_IO_HUP | G_IO_ERR);
+    g_source_set_callback(src, (GSourceFunc)on_relay_client_readable, tm, NULL);
+    g_source_attach(src, tm->ctx);
+    g_source_unref(src);
+    tm->relay_client_src = src;
+    g_io_channel_unref(cch);
+    tm_trace("relay: client connected");
+    return TRUE;
+}
+
+/* Bind+listen TM_RELAY_SOCK, unconditionally, for the lifetime of the call. Idle/harmless if the
+ * plugin never connects (audio-only calls). Called once from tm_run_pipeline(). */
+static void relay_listen_start(TeamsMedia *tm)
+{
+    unlink(TM_RELAY_SOCK);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { tm_trace("relay: socket() failed"); return; }
+    struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX;
+    g_strlcpy(a.sun_path, TM_RELAY_SOCK, sizeof a.sun_path);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 1) != 0) {
+        tm_trace("relay: bind/listen failed"); close(fd); return;
+    }
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    tm->relay_listen_fd = fd;
+    GIOChannel *ch = g_io_channel_unix_new(fd);
+    g_io_channel_set_encoding(ch, NULL, NULL);
+    g_io_channel_set_buffered(ch, FALSE);
+    GSource *src = g_io_create_watch(ch, G_IO_IN);
+    g_source_set_callback(src, (GSourceFunc)on_relay_listen_readable, tm, NULL);
+    g_source_attach(src, tm->ctx);
+    g_source_unref(src);
+    tm->relay_listen_src = src;
+    g_io_channel_unref(ch);
+    tm_trace("relay: listening");
+}
+
 /* ------------------------------------------------------------------ bus ------------------------ */
 
 static gboolean on_bus(GstBus *bus, GstMessage *msg, gpointer user)
@@ -470,6 +662,48 @@ static gboolean build_ice(TeamsMedia *tm, gboolean controlling, const char *remo
 
 /* ------------------------------------------------------------------ pipeline ------------------- */
 
+/* rtpptdemux "pad-added": one static-in-effect src pad appears the first time each payload type is
+ * seen on the decrypted RTP stream (BUNDLE'd audio+video share one srtpdec/ICE component, split
+ * here). Pad names are "src_%u" where %u is the payload type. Route the audio PT to the existing
+ * Opus chain, the video PT to the new H.264 bridge, and anything else (e.g. rtx PT 99 — no
+ * RTX/NACK/PLI handling in this build) to a fresh fakesink so it doesn't stall the demux. */
+static void on_rtpptdemux_new_pt(GstElement *demux, GstPad *pad, gpointer user)
+{
+    (void)demux;
+    TeamsMedia *tm = (TeamsMedia *)user;
+    guint pt = 0;
+    if (sscanf(GST_PAD_NAME(pad), "src_%u", &pt) != 1) {
+        tm_trace("ptdemux: pad-added with unparsable name, ignoring"); return;
+    }
+
+    GstElement *target = NULL;
+    if ((int)pt == tm->pt)         target = tm->rx_audio_caps;
+    else if ((int)pt == tm->video_pt) target = tm->rx_video_caps;
+
+    GstPad *sink = NULL;
+    if (target) {
+        sink = gst_element_get_static_pad(target, "sink");
+    } else {
+        GstElement *fs = mk("fakesink", NULL);
+        if (fs) {
+            g_object_set(fs, "sync", FALSE, "async", FALSE, NULL);
+            gst_bin_add(GST_BIN(tm->pipeline), fs);
+            gst_element_sync_state_with_parent(fs);
+            sink = gst_element_get_static_pad(fs, "sink");
+        }
+    }
+    if (sink) {
+        GstPadLinkReturn r = gst_pad_link(pad, sink);
+        gst_object_unref(sink);
+        char t[64]; g_snprintf(t, sizeof t, "ptdemux: PT %u -> %s (%s)", pt,
+            target ? (target == tm->rx_video_caps ? "video" : "audio") : "fakesink",
+            r == GST_PAD_LINK_OK ? "linked" : "LINK FAILED");
+        tm_trace(t);
+    } else {
+        tm_trace("ptdemux: no sink pad available to route to");
+    }
+}
+
 static gboolean build_pipeline(TeamsMedia *tm)
 {
     tm->pipeline = gst_pipeline_new("teams-call");
@@ -477,6 +711,7 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *nsrc  = mk("nicesrc",      "rx-nicesrc");
     GstElement *rxcap = mk("capsfilter",   "rx-srtpcaps");
     GstElement *sdec  = mk("srtpdec",      "rx-srtpdec");
+    GstElement *ptdemux = mk("rtpptdemux", "rx-ptdemux");   /* splits BUNDLE'd audio/video by PT */
     GstElement *rtcpfake = mk("fakesink",  "rx-rtcpfake");   /* discards rtcp-mux'd RTCP from srtpdec */
     GstElement *rxrtp = mk("capsfilter",   "rx-rtpcaps");
     GstElement *depay = mk("rtpopusdepay", "rx-depay");
@@ -489,6 +724,13 @@ static gboolean build_pipeline(TeamsMedia *tm)
      * call pipeline (-> "not-linked"); appsink is a pure software sink that always accepts buffers, and
      * we control the qspkd socket lifecycle ourselves. qspkd -> system PulseAudio -> speaker. */
     GstElement *asink = mk("appsink", "rx-appsink");
+
+    /* RX video: appsink hands raw (post-decrypt) RTP video packets to on_rx_video_sample, which
+     * forwards them as-is (length-prefixed) to the plugin process over the relay socket. No
+     * gstreamer-side H.264 decode here — mediaserver's clonk pipeline (in the plugin process) does
+     * that, via teams_video_relay.cpp. */
+    GstElement *vrtp  = mk("capsfilter", "rx-video-rtpcaps");
+    GstElement *vsink = mk("appsink",    "rx-video-appsink");
 
     /* TX mic source: appsrc fed by our own qmicd reader thread (qmic_start), NOT the qmicsrc element -
      * see the qmic_start/qmic_reader_thread comment for why. /media/internal/teams-txtone forces a
@@ -503,8 +745,16 @@ static gboolean build_pipeline(TeamsMedia *tm)
     GstElement *senc  = mk("srtpenc",      "tx-srtpenc");
     GstElement *nsink = mk("nicesink",     "tx-nicesink");
 
-    if (!nsrc||!rxcap||!sdec||!rxrtp||!depay||!odec||!aconv||!ares||!rxs16||!asink||!rtcpfake||
-        !asrc||!tconv||!tres||!tcap||!oenc||!pay||!senc||!nsink) {
+    /* TX video source: appsrc pushed from on_relay_client_readable (already-RTP-framed packets
+     * arriving from the plugin's teams_video_relay.cpp over the relay socket). Joins the audio TX
+     * branch at funnel before the SHARED srtpenc/nicesink — same BUNDLE transport+key as audio, no
+     * second crypto context needed. */
+    GstElement *vsrc    = mk("appsrc", "tx-video-src");
+    GstElement *funnel  = mk("funnel", "tx-funnel");
+
+    if (!nsrc||!rxcap||!sdec||!ptdemux||!rxrtp||!depay||!odec||!aconv||!ares||!rxs16||!asink||!rtcpfake||
+        !vrtp||!vsink||
+        !asrc||!tconv||!tres||!tcap||!oenc||!pay||!senc||!nsink||!vsrc||!funnel) {
         if (tm->pipeline) { gst_object_unref(tm->pipeline); tm->pipeline = NULL; } return FALSE;
     }
     g_object_set(rtcpfake, "sync", FALSE, "async", FALSE, NULL);
@@ -514,6 +764,7 @@ static gboolean build_pipeline(TeamsMedia *tm)
 
     { GstCaps *c = gst_caps_new_empty_simple("application/x-srtp"); g_object_set(rxcap, "caps", c, NULL); gst_caps_unref(c); }
     g_signal_connect(sdec, "request-key", G_CALLBACK(on_srtpdec_request_key), tm);
+    g_signal_connect(ptdemux, "pad-added", G_CALLBACK(on_rtpptdemux_new_pt), tm);
     { GstCaps *c = opus_rtp_caps(tm->pt); g_object_set(rxrtp, "caps", c, NULL); gst_caps_unref(c); }
     { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE", NULL);
       g_object_set(rxs16, "caps", c, NULL); gst_caps_unref(c); }
@@ -521,6 +772,13 @@ static gboolean build_pipeline(TeamsMedia *tm)
      * blocking pa_simple_write paces us to real time. */
     g_object_set(asink, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 8, "drop", FALSE, NULL);
     g_signal_connect(asink, "new-sample", G_CALLBACK(on_rx_sample), &g_tm);
+
+    { GstCaps *c = h264_rtp_video_caps(tm->video_pt); g_object_set(vrtp, "caps", c, NULL); gst_caps_unref(c); }
+    /* drop=TRUE: RTP packet queue, not full frames - bound memory if the relay client (plugin
+     * process) briefly stalls (e.g. mid keyframe-restart); live video wants the latest data, not a
+     * backlog. */
+    g_object_set(vsink, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 64, "drop", TRUE, NULL);
+    g_signal_connect(vsink, "new-sample", G_CALLBACK(on_rx_video_sample), tm);
 
     { GstCaps *c = gst_caps_new_simple("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
         "rate", G_TYPE_INT, TM_OPUS_CLOCKRATE, "channels", G_TYPE_INT, TM_OPUS_CHANNELS, NULL);
@@ -539,15 +797,41 @@ static gboolean build_pipeline(TeamsMedia *tm)
     g_object_set(pay,  "pt", tm->pt, NULL);
     configure_srtpenc(senc, tm->tx_master);
 
-    gst_bin_add_many(GST_BIN(tm->pipeline),
-        nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, rxs16, asink, rtcpfake,
-        asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL);
+    /* tx-video-src: RTP packets pushed pre-built (header+payload) by video_rtp_emit, so its caps
+     * only need to describe the RTP session (payload/clock-rate), not a raw media format. */
+    { GstCaps *c = h264_rtp_video_caps(tm->video_pt);
+      g_object_set(vsrc, "caps", c, "is-live", TRUE, "format", GST_FORMAT_TIME, "block", FALSE, NULL);
+      gst_caps_unref(c); }
 
-    if (!gst_element_link_many(nsrc, rxcap, sdec, rxrtp, depay, odec, aconv, ares, rxs16, asink, NULL)) {
-        g_printerr("teams_media: RX link failed\n"); return FALSE; }
-    /* srtpdec has a STATIC "always" rtcp_src pad (rtcp-mux'd RTCP, decrypted). link_many only touched
-     * rtp_src, so rtcp_src stays unlinked -> its push returns NOT_LINKED and kills the RX chain. Drain
-     * it to the fakesink explicitly (get_static_pad, since it exists at creation - no pad-added). */
+    tm->rx_audio_caps = rxrtp;
+    tm->rx_video_caps = vrtp;
+    tm->video_appsrc  = vsrc;
+
+    gst_bin_add_many(GST_BIN(tm->pipeline),
+        nsrc, rxcap, sdec, ptdemux, rxrtp, depay, odec, aconv, ares, rxs16, asink, rtcpfake,
+        vrtp, vsink,
+        asrc, tconv, tres, tcap, oenc, pay, senc, nsink, vsrc, funnel, NULL);
+
+    if (!gst_element_link_many(nsrc, rxcap, sdec, NULL)) {
+        g_printerr("teams_media: RX link (nsrc..sdec) failed\n"); return FALSE; }
+    /* srtpdec has STATIC "always" pads rtp_src/rtcp_src (proven below by the rtcp_src handling,
+     * unchanged from before this edit). Link rtp_src to rtpptdemux explicitly rather than via
+     * gst_element_link (which would be ambiguous between sdec's two src pads). */
+    { GstPad *rtp_src = gst_element_get_static_pad(sdec, "rtp_src");
+      GstPad *demux_sink = gst_element_get_static_pad(ptdemux, "sink");
+      gboolean ok = rtp_src && demux_sink && gst_pad_link(rtp_src, demux_sink) == GST_PAD_LINK_OK;
+      if (rtp_src) gst_object_unref(rtp_src);
+      if (demux_sink) gst_object_unref(demux_sink);
+      if (!ok) { g_printerr("teams_media: sdec.rtp_src -> ptdemux.sink link failed\n"); return FALSE; } }
+    /* ptdemux's src pads appear dynamically (on_rtpptdemux_new_pt), one per payload type actually
+     * seen on the wire - the audio/video branches below just wait, already built+added to the bin. */
+    if (!gst_element_link_many(rxrtp, depay, odec, aconv, ares, rxs16, asink, NULL)) {
+        g_printerr("teams_media: RX audio link failed\n"); return FALSE; }
+    if (!gst_element_link(vrtp, vsink)) {
+        g_printerr("teams_media: RX video link failed\n"); return FALSE; }
+    /* srtpdec has a STATIC "always" rtcp_src pad (rtcp-mux'd RTCP, decrypted). Nothing above touched
+     * it, so it stays unlinked -> its push returns NOT_LINKED and kills the RX chain. Drain it to the
+     * fakesink explicitly (get_static_pad, since it exists at creation - no pad-added). */
     { GstPad *rtcp = gst_element_get_static_pad(sdec, "rtcp_src");
       GstPad *fsink = gst_element_get_static_pad(rtcpfake, "sink");
       if (rtcp && fsink)
@@ -556,8 +840,13 @@ static gboolean build_pipeline(TeamsMedia *tm)
       else tm_trace("rtcp_src/fakesink pad missing");
       if (rtcp) gst_object_unref(rtcp);
       if (fsink) gst_object_unref(fsink); }
-    if (!gst_element_link_many(asrc, tconv, tres, tcap, oenc, pay, senc, nsink, NULL)) {
-        g_printerr("teams_media: TX link failed\n"); return FALSE; }
+    if (!gst_element_link_many(asrc, tconv, tres, tcap, oenc, pay, NULL)) {
+        g_printerr("teams_media: TX audio link failed\n"); return FALSE; }
+    /* pay (audio) and vsrc (video) both feed funnel's request sink pads; funnel's single src feeds
+     * the ONE shared srtpenc/nicesink (same BUNDLE transport+key for both streams). */
+    if (!gst_element_link(pay, funnel) || !gst_element_link(vsrc, funnel) ||
+        !gst_element_link(funnel, senc) || !gst_element_link(senc, nsink)) {
+        g_printerr("teams_media: TX funnel/srtpenc/nicesink link failed\n"); return FALSE; }
     if (!tx_tone) qmic_start(asrc);   /* begin draining qmicd now, ahead of PLAYING, to avoid backlog */
 
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(tm->pipeline));
@@ -596,6 +885,7 @@ static int tm_run_pipeline(void)
     if (gst_element_set_state(g_tm.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         g_printerr("teams_media: set PLAYING failed\n"); return -1;
     }
+    relay_listen_start(&g_tm);
     if (!g_tm.thread) { g_tm.running = TRUE; g_tm.thread = g_thread_new("teams-media", media_thread, &g_tm); }
     return 0;
 }
@@ -612,6 +902,9 @@ static int tm_start(int is_caller, const char *rx_master_b64, const char *remote
     memset(&g_tm, 0, sizeof g_tm);
     g_tm.cand_cb = cand_cb; g_tm.audiod_cb = audiod_cb;
     g_tm.pt = pt > 0 ? pt : TM_DEFAULT_PT;
+    g_tm.video_pt = TM_VIDEO_PT;
+    g_tm.relay_listen_fd = -1;   /* memset above leaves these 0, which is a valid fd (stdin) */
+    g_tm.relay_fd = -1;
     g_is_caller = is_caller ? TRUE : FALSE;
 
     if (!is_caller) {
@@ -685,6 +978,12 @@ static void tm_stop(void)
     if (!g_tm.running) return;
     g_tm.running = FALSE;
     qmic_stop();    /* stop the mic reader BEFORE the pipeline (it pushes into the appsrc) */
+    /* Tear down the relay socket before the pipeline (its handlers touch video_appsrc/relay_fd). */
+    if (g_tm.relay_client_src) { g_source_destroy(g_tm.relay_client_src); g_tm.relay_client_src = NULL; }
+    if (g_tm.relay_fd >= 0) { close(g_tm.relay_fd); g_tm.relay_fd = -1; }
+    if (g_tm.relay_listen_src) { g_source_destroy(g_tm.relay_listen_src); g_tm.relay_listen_src = NULL; }
+    if (g_tm.relay_listen_fd >= 0) { close(g_tm.relay_listen_fd); g_tm.relay_listen_fd = -1; }
+    unlink(TM_RELAY_SOCK);
     if (g_tm.pipeline) gst_element_set_state(g_tm.pipeline, GST_STATE_NULL);
     qspk_close();   /* release the qspkd socket (one client at a time) */
     if (g_tm.audiod_on && g_tm.audiod_cb) g_tm.audiod_cb(0);
