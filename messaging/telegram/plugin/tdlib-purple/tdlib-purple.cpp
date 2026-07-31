@@ -1013,14 +1013,28 @@ static void tgprpl_account_removed_cb(PurpleAccount *account, gpointer unused)
     if (!username || !*username)
         return;
 
-    // Normally the account is already disconnected before this fires, so getTdClient() is NULL and
-    // we simply wipe the on-disk store. Guard the "client still live" case anyway: log out first so
-    // the device is unlinked from the Telegram account server-side before local keys are destroyed.
+    // Normally the account is already disconnected before this fires (tgprpl_close -> delete client,
+    // a SYNCHRONOUS close: ~TdTransceiver sends td_api::close and joins the poll thread, which returns
+    // only on authorizationStateClosed), so getTdClient() is NULL and the store is safe to wipe. But
+    // when the account is deleted while still CONNECTING (e.g. stuck at the phone-code step),
+    // purple_accounts_delete has not run tgprpl_close, so the client is still live and its background
+    // thread is actively writing the sqlite DB + binlog. The old code called the fire-and-forget async
+    // logOut() and immediately wiped the store, which RACED the open tdlib: it re-created
+    // db.sqlite/td.binlog under removeDirRecursive so g_rmdir failed and the store survived ("Telegram
+    // data remains after delete"). Fix: tear the live client down SYNCHRONOUSLY here (same path as
+    // tgprpl_close) so tdlib has fully flushed + closed before we remove the files, and clear
+    // protocol_data so libpurple's later tgprpl_close doesn't double-free. A local close (not a network
+    // logOut) so account teardown never blocks on the network; the wipe below removes the session keys
+    // regardless, so the device can no longer access the account even though its server-side session
+    // entry lingers until the user clears it in Telegram.
     PurpleTdClient *tdClient = getTdClient(account);
     if (tdClient) {
-        purple_debug_info(config::pluginId, "account-removed: logging out %s before store teardown\n",
+        purple_debug_info(config::pluginId, "account-removed: closing live tdlib client for %s before store teardown\n",
                           username);
-        tdClient->logOut();
+        delete tdClient;
+        PurpleConnection *gc = purple_account_get_connection(account);
+        if (gc)
+            purple_connection_set_protocol_data(gc, NULL);
     }
 
     std::string databaseDir = PurpleTdClient::getDatabaseDir(username);
