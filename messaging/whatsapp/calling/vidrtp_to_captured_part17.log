@@ -1,0 +1,36 @@
+
+=== recv 535 bytes @ 1785416202 ===
+     0: 5a 52 00 01 00 42 01 8d 04 80 e0 f8 3c 89 e6 68  ZR...B......<..h
+    16: 7f 7b b6 13 9b 41 ea a0 3a d4 39 e1 fa b7 cf 98  .{...A..:.9.....
+    32: fb da fa df eb 5f 57 fa b5 4d ff 3d 6a 4e af 37  ....._W..M.=jN.7
+    48: 59 8f aa 70 f5 fa 3b 9e bf 92 fe ac 57 59 57 5c  Y..p..;.....WYW\
+    64: e3 d5 be ac ae b9 71 df af 44 75 cb ef 63 66 cf  ......q..Du..cf.
+    80: d5 8f 96 c2 cd 5f 15 39 a6 b4 cb 0a 7e 76 be 5e  ....._.9....~v.^
+    96: df 37 49 ca 9a ad 3f 33 dc 3b 17 49 72 e3 4d 53  .7I...?3.;.Ir.MS
+   112: a3 f3 48 7c 3f 05 50 46 ce 51 b3 7c b7 51 2b 60  ..H|?.PF.Q.|.Q+`
+   128: 7e b3 b4 1e eb 07 d7 92 48 ef 3d 2e 88 e4 bb f7  ~.......H.=.....
+   144: f3 63 a5 8a fe ed 0f f3 07 f8 c6 b4 45 20 f8 19  .c..........E ..
+   160: 91 30 02 46 77 54 bf f9 87 7a be 26 11 3e e8 7a  .0.FwT...z.&.>.z
+   176: 59 36 e7 0f f8 94 b9 49 7d 61 e4 7a 65 ef a5 ea  Y6.....I}a.ze...
+   192: c8 ca f8 4a 93 86 4c 29 34 6a 6a 11 e7 5c f9 7f  ...J..L)4jj..\..
+   208: de 38 66 3a 10 30 46 a8 d3 da 92 e5 b7 68 05 49  .8f:.0F......h.I
+   224: b1 df 6a f7 e0 0b 33 22 99 b0 bf 80 3f fd 4f 5f  ..j...3"....?.O_
+   240: a7 28 f1 91 90 c6 a8 40 56 c6 9b ea 91 9f 1d c2  .(.....@V.......
+   256: b2 8b 03 b0 88 81 fc 7f fe 04 5f c9 f4 f6 1a ad  .........._.....
+   272: 80 63 3f 7a 27 42 5f 6f 53 c2 98 65 c4 b7 f1 3c  .c?z'B_oS..e...<
+   288: dd ef 3b e9 37 1e 90 af c1 bc 1d 00 07 25 ce d7  ..;.7........%..
+   304: 7b fe a1 5a 5a 4e 3b e5 43 b8 7f d5 75 78 ee 64  {..ZZN;.C...ux.d
+   320: 6f 37 ea 23 65 2f 84 de 77 2c 37 87 b9 d6 91 07  o7.#e/..w,7.....
+   336: 7e 22 77 67 45 44 a0 da 89 a8 0a f1 28 64 9a 9d  ~"wgED......(d..
+   352: ab fc a5 c2 a4 cd 53 71 1d 78 8d 87 df fe 14 03  ......Sq.x......
+   368: 3b d8 1e 45 f5 48 c7 f3 74 c7 e8 e4 61 2c 21 6d  ;..E.H..t...a,!m
+   384: 73 46 a7 42 6e 97 50 7d 16 2d ba 8d fd 03 29 15  sF.Bn.P}.-....).
+   400: 3d 00 75 4e 51 9f d1 80 d2 52 fd 11 eb db 4c 81  =.uNQ....R....L.
+   416: e5 9c 60 45 23 f9 87 f6 95 44 8b 10 19 bb 1e 69  ..`E#....D.....i
+   432: 02 e1 ce 6c d2 5f e6 31 2f 56 92 6c 47 24 bc 71  ...l._.1/V.lG$.q
+   448: f5 d7 17 cd 84 67 3a 52 bb c6 51 dc 83 7f 61 af  .....g:R..Q...a.
+   464: 1d c5 05 15 6c 61 b7 6b 87 a1 ef 50 aa 09 f0 4b  ....la.k...P...K
+   480: 1f 36 c2 f3 77 67 dd 25 f2 bf ab 97 d5 91 dc d6  .6..wg.%........
+   496: 67 1f d7 58 be a9 87 0b 64 82 4d f5 74 b9 e7 ea  g..X....d.M.t...
+   512: c7 d5 a3 ba a6 93 ad 42 3d 58 93 a7 1e 3b af 7d  .......B=X...;.}
+   528: 59 f5 75 f5 2d 80 7a                             Y.u.-.z

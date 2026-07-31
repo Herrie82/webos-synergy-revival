@@ -13,9 +13,14 @@ package main
 // (glue/call.c) owns the Luna bus (com.palm.whatsapp.call), the callStateQuery
 // subscription, and the audiod PCM routing.
 //
-// C  -> Go (exported): gowhatsapp_go_call_dial / _answer / _hangup / _hangup_all
+// C  -> Go (exported): gowhatsapp_go_call_dial / _answer / _hangup / _hangup_all,
+//                      gowhatsapp_call_video_frame_out(data,len) (glue/skypekit.cpp, Thread A ->
+//                      Call.SendVideoWithDuration — see WHATSAPP_VIDEO_STATUS.md "hook it up
+//                      properly" plan)
 // Go -> C (glue/call.c): gowhatsapp_call_on_state(json), gowhatsapp_call_on_speaker(pcm,n),
 //                        gowhatsapp_call_audio_active(on), gowhatsapp_call_read_mic(out,n)
+// Go -> C (glue/skypekit.cpp): skypekit_video_receive_frame(data,len) — Call.ReceiveVideo's
+//                        sink (attachMedia) forwards each peer access unit here.
 
 /*
 #include <stdlib.h>
@@ -24,6 +29,10 @@ extern void gowhatsapp_call_on_state(const char *json);      // full callStateQu
 extern void gowhatsapp_call_on_speaker(const float *frame, int n); // received PCM -> speaker
 extern void gowhatsapp_call_audio_active(int on);            // open/close ALSA playback+capture
 extern int  gowhatsapp_call_read_mic(float *out, int n);    // Go pulls mic PCM from the C ring
+extern void gowhatsapp_call_video_active(int on);            // open/note-close the clonk session (videoURI)
+extern void gowhatsapp_call_request_keyframe(void);           // stop+restart capture -> fresh IDR
+// Implemented in glue/skypekit.cpp:
+extern void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int len);
 */
 import "C"
 
@@ -56,8 +65,14 @@ type callInfo struct {
 	state       string // dialing|incoming|active|onHold|disconnected
 	incomingVid bool
 	outgoingVid bool
-	cause       string
-	mic         *micSource
+	// incomingVideoState mirrors the CallSynergizer tri-state (see
+	// core-apps com.palm.app.phone/source/ActiveCall.js): "unavailable" (this call has
+	// no video), "available" (video capability exists but the peer isn't currently
+	// streaming), "streaming" (peer video actively flowing). Driven by
+	// meowcaller's OnVideoState callback, see wireCall.
+	incomingVideoState string
+	cause              string
+	mic                *micSource
 }
 
 var (
@@ -113,13 +128,14 @@ func (m *micSource) Close() error { return nil }
 
 func emitCallState() {
 	type callJSON struct {
-		ID            string `json:"id"`
-		Address       string `json:"address"`
-		DisplayName   string `json:"displayName"`
-		Origin        string `json:"origin"`
-		OnHold        bool   `json:"onHold"`
-		IncomingVideo bool   `json:"incomingVideo"`
-		OutgoingVideo bool   `json:"outgoingVideo"`
+		ID                 string `json:"id"`
+		Address            string `json:"address"`
+		DisplayName        string `json:"displayName"`
+		Origin             string `json:"origin"`
+		OnHold             bool   `json:"onHold"`
+		IncomingVideo      bool   `json:"incomingVideo"`
+		OutgoingVideo      bool   `json:"outgoingVideo"`
+		IncomingVideoState string `json:"incomingVideoState"`
 	}
 	callMu.Lock()
 	var cjs []callJSON
@@ -128,10 +144,15 @@ func emitCallState() {
 	for _, ci := range calls {
 		lineState = ci.state // single call per line: the line state IS the call state
 		cause = ci.cause
+		ivs := ci.incomingVideoState
+		if ivs == "" {
+			ivs = "unavailable"
+		}
 		cjs = append(cjs, callJSON{
 			ID: ci.id, Address: ci.address, DisplayName: ci.displayName,
 			Origin: ci.origin, OnHold: ci.state == "onHold",
 			IncomingVideo: ci.incomingVid, OutgoingVideo: ci.outgoingVid,
+			IncomingVideoState: ivs,
 		})
 	}
 	callMu.Unlock()
@@ -189,10 +210,50 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 	} else {
 		ci.state = "dialing"
 	}
+	// A from-start video call (offer or our own dial-with-video) already has
+	// localVideo/remoteVideo set on the meowcaller side by the time wireCall runs
+	// (see engine.go's offer handling) -- IsVideo() reflects that immediately.
+	if mcCall.IsVideo() {
+		ci.incomingVideoState = "available"
+	} else {
+		ci.incomingVideoState = "unavailable"
+	}
 
 	mcCall.OnPeerAccept(func() { setCallState(ci.id, "active", "") })
 	mcCall.OnReady(func() { setCallState(ci.id, "active", "") })
-	mcCall.OnEnd(func(reason string) { setCallState(ci.id, "disconnected", reason) })
+	mcCall.OnEnd(func(reason string) {
+		C.gowhatsapp_call_video_active(C.int(0))
+		setCallState(ci.id, "disconnected", reason)
+	})
+	// Tracks the PEER's video on/off -- independent of whether OUR OWN capture/render
+	// pipeline works (see WHATSAPP_VIDEO_STATUS.md: the native clonk bug blocks local
+	// camera/rendering, not the WhatsApp-level signaling this reflects).
+	mcCall.OnVideoState(func(vs meowcaller.VideoState) {
+		callMu.Lock()
+		if c, ok := calls[ci.id]; ok {
+			c.incomingVid = vs.Active
+			switch {
+			case vs.Active:
+				c.incomingVideoState = "streaming"
+			case c.c.IsVideo():
+				c.incomingVideoState = "available"
+			default:
+				c.incomingVideoState = "unavailable"
+			}
+		}
+		callMu.Unlock()
+		emitCallState()
+	})
+	// The peer's authenticated PLI/FIR feedback (packet loss recovery): our encoder should
+	// make its next access unit an IDR. There's no LS2-exposed "request keyframe" on the
+	// native clonk session (WHATSAPP_VIDEO_STATUS.md's "hook it up properly" plan checked --
+	// ClonkPipeline::requestKeyframe() exists but isn't reachable from here), so this forces
+	// one indirectly: stop and restart capture, which re-initializes the native encoder and
+	// makes it emit a fresh SPS/PPS/IDR opening sequence, exactly like a fresh call start
+	// (confirmed live, Part 19/20 -- every capture start begins with a real IDR).
+	mcCall.OnVideoKeyframeRequest(func() {
+		C.gowhatsapp_call_request_keyframe()
+	})
 
 	callMu.Lock()
 	calls[ci.id] = ci
@@ -244,12 +305,52 @@ func attachMedia(ci *callInfo) {
 		}
 		C.gowhatsapp_call_on_speaker((*C.float)(unsafe.Pointer(&frame[0])), C.int(len(frame)))
 	}))
+	// Peer's decoded H.264 (Annex-B access units) -> glue/skypekit.cpp's Thread B, which
+	// RTP-packetizes and delivers them to mediaserver's native video player. Safe to attach
+	// unconditionally like Receive above: with no video active yet, skypekit_video_receive_frame
+	// just no-ops (the bridge threads aren't running -- see skypekit.h).
+	ci.c.ReceiveVideo(meowcaller.VideoSinkFunc(func(accessUnit []byte) {
+		if len(accessUnit) == 0 {
+			return
+		}
+		C.skypekit_video_receive_frame((*C.uchar)(unsafe.Pointer(&accessUnit[0])), C.uint(len(accessUnit)))
+	}))
 }
 
 func handleIncoming(mcCall *meowcaller.Call) {
 	ci := wireCall(mcCall, "incoming", "")
 	attachMedia(ci)
 	emitCallState() // ring the UI
+}
+
+// gowhatsapp_call_video_frame_out — called from glue/skypekit.cpp's Thread A (a native
+// pthread, NOT the luna-service mainloop the rest of this section's exports assume) with one
+// complete access unit reassembled from mediaserver's own camera capture pipeline. There's no
+// call-id at this layer (skypekit.cpp has no notion of "which call" -- see skypekit.h), so this
+// routes to whichever call is currently live, mirroring the same single-live-call fallback
+// gowhatsapp_go_call_changemedia already uses elsewhere in this file.
+//
+//export gowhatsapp_call_video_frame_out
+func gowhatsapp_call_video_frame_out(data *C.char, length C.int) {
+	if length <= 0 {
+		return
+	}
+	callMu.Lock()
+	var ci *callInfo
+	for _, c := range calls {
+		if c.state != "disconnected" {
+			ci = c
+			break
+		}
+	}
+	callMu.Unlock()
+	if ci == nil {
+		return
+	}
+	accessUnit := C.GoBytes(unsafe.Pointer(data), length)
+	if err := ci.c.SendVideoWithDuration(accessUnit, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "wacall: SendVideo error:", err)
+	}
 }
 
 // ============================ exported C API ============================
@@ -353,6 +454,75 @@ func hangupLive() {
 //export gowhatsapp_go_call_hangup_all
 func gowhatsapp_go_call_hangup_all() C.int {
 	go hangupLive()
+	return 0
+}
+
+// changeMedia is the Phone app's video on/off toggle (core-apps VideoCall.js/
+// AbstractCall.js: "changeMedia" against this service's implementation, params
+// {id, outgoingVideo?, incomingVideo?} -- a field's ABSENCE means "leave that
+// direction as it is", not "turn it off", matching how VideoCall.js builds the
+// call (only sets the field it's actually changing).
+//
+// outgoingVideo:true starts a fresh audio->video upgrade (StartVideo) if the call
+// doesn't have video yet, or just unmutes the camera (SetVideoEnabled) if it does --
+// mirrors how dial-with-video/answer-with-video already choose between StartVideo/
+// AcceptVideo elsewhere in this file. incomingVideo has no dedicated wire signal in
+// the protocol (WhatsApp video state is sender-driven); it's tracked locally as
+// whether we're willing to render what the peer sends.
+//
+//export gowhatsapp_go_call_changemedia
+func gowhatsapp_go_call_changemedia(cID *C.char, hasOutgoing, outgoing, hasIncoming, incoming C.int) C.int {
+	id := C.GoString(cID)
+	go func() {
+		callMu.Lock()
+		ci := calls[id]
+		if ci == nil {
+			// id can lag behind the UI (same tolerance as hangup/dial elsewhere in this
+			// file) -- fall back to the sole live call, if there is exactly one.
+			for _, c := range calls {
+				if c.state != "disconnected" {
+					if ci != nil {
+						ci = nil
+						break
+					}
+					ci = c
+				}
+			}
+		}
+		callMu.Unlock()
+		if ci == nil {
+			fmt.Fprintln(os.Stderr, "wacall: changeMedia: no matching call for id", id)
+			return
+		}
+
+		if hasOutgoing != 0 {
+			want := outgoing != 0
+			var err error
+			switch {
+			case want && ci.c.IsVideo():
+				err = ci.c.SetVideoEnabled(true)
+			case want:
+				err = ci.c.StartVideo()
+			case ci.c.IsVideo():
+				err = ci.c.SetVideoEnabled(false)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "wacall: changeMedia outgoingVideo error:", err)
+			}
+			ci.outgoingVid = want
+		}
+		if hasIncoming != 0 {
+			ci.incomingVid = incoming != 0
+		}
+
+		anyVideo := ci.outgoingVid || ci.incomingVid || ci.c.IsVideo()
+		on := 0
+		if anyVideo {
+			on = 1
+		}
+		C.gowhatsapp_call_video_active(C.int(on))
+		emitCallState()
+	}()
 	return 0
 }
 

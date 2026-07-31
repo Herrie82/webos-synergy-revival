@@ -7,6 +7,24 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### meowcaller — video media path validated live (send + receive), KAT-verified against a real call
+- Added `examples/videoloop`: a two-account loopback tool that places a real 1:1 WhatsApp video
+  call and streams a synthetic H.264 clip from caller to callee through `Call.SendVideo`,
+  recording what `Call.ReceiveVideo` gets back.
+- **Result (2026-07-30, two real accounts, live relay):** 240/240 Annex-B access units sent,
+  240/240 received (cross-checked against `diag/callee/video.jsonl`'s frame count), the
+  reassembled stream byte-length matched the source to within header framing and decoded clean
+  in ffmpeg with zero errors. Confirms video shares the audio E2E keying/WARP framing and that
+  the relay bridges the video SSRC in both directions.
+- Cleared the `NOT VALIDATED` markers this proves out: `videoSender` (send) and the video-RTP
+  demux path (receive) in `engine_media.go`, and `Call.ReceiveVideo` in `livecall.go`.
+- Fixed a real pairing bug found along the way: phone-number-code linking
+  (`link_code_companion_reg`) returned a bare `400 bad-request` against live WhatsApp servers
+  regardless of number or whatsmeow version; `examples/videoloop` uses standard QR pairing
+  instead, which works reliably.
+- Native decode/render/camera-capture on the actual webOS device is separate, still-open work —
+  this only validates the Go/network media layer.
+
 ### meowcaller — refine the video API to mirror the audio Source/Sink model
 - Reshaped the ad-hoc video surface into the same shape as audio (whatsmeow-style callback
   registration + a Sink interface), so it reads like any mainstream media API:

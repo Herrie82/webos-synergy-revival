@@ -23,9 +23,17 @@ LUNA_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/i
 PMLOG_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
 LSSTUB=$REPO/build-output/imtransport/lib/liblunaservice.so
 
+# glue/skypekit.cpp links directly against the real, headerless libpalmgstskype.so (SkypeKit's
+# native RTP transport — see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md) using the
+# asm-mangled-symbol trick proven in that directory's skypekit_send_test.cpp/
+# skypekit_decode_test.cpp. FW_ROOTFS/SOLIB_DIR match those scripts exactly.
+FW_ROOTFS=/home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs
+SOLIB_DIR=$FW_ROOTFS/usr/lib/gstreamer-0.10
+
 source /home/herrie/webos/wpe/env-glibc-gcc125.sh 2>/dev/null || true
 export PATH=$TC/bin:$PATH
 : "${CC:=arm-unknown-linux-gnueabi-gcc}"
+: "${CXX:=arm-unknown-linux-gnueabi-g++}"
 : "${STRIP:=arm-unknown-linux-gnueabi-strip}"
 export PKG_CONFIG_PATH=$PURPLE/lib/pkgconfig:$GLIB_STAGING/lib/pkgconfig
 export PKG_CONFIG_LIBDIR=$PKG_CONFIG_PATH
@@ -50,13 +58,20 @@ GCFLAGS="$CFLAGS $CPPFLAGS -fPIC -DPURPLE_PLUGINS -DPLUGIN_VERSION=$VERSION \
 OBJS=()
 for s in init login qrcode bridge process_message display_message groups blist \
          send_message handle_attachment send_file presence options receipt pixbuf commands \
-         call denoise aec gometa_init; do
+         call denoise aec h264_rtp gometa_init; do
 	echo "  CC glue/$s.c"; $CC $GCFLAGS -c "$GLUE/$s.c" -o "$BUILD/glue_$s.o"; OBJS+=("$BUILD/glue_$s.o")
 done
 # root C files (bridge/constants = whatsmeow; gometabridge = facebook dispatch)
 for s in bridge constants gometabridge; do
 	echo "  CC $s.c"; $CC $GCFLAGS -c "$SRC/$s.c" -o "$BUILD/root_$s.o"; OBJS+=("$BUILD/root_$s.o")
 done
+
+# glue/skypekit.cpp: C++ (asm-mangled SkypeKit symbol bindings need extern "C" from C++, see
+# above) — compiled separately with $CXX, otherwise same include set as the C glue.
+echo "  CXX glue/skypekit.cpp"
+$CXX $CFLAGS $CPPFLAGS -fPIC -fno-rtti -I"$GLUE" -I"$SRC" -I"$BUILD" \
+	-c "$GLUE/skypekit.cpp" -o "$BUILD/glue_skypekit.o"
+OBJS+=("$BUILD/glue_skypekit.o")
 
 echo "=== STAGE 2b: WebRTC float noise-suppression static lib (libwarns.a) ==="
 # The proven source set libtgvoip compiles for its float NS (signal_processing + fft4g + ns), built
@@ -111,10 +126,17 @@ arm-unknown-linux-gnueabi-ar rcs "$BUILD/libwarns.a" "${WOBJS[@]}"
 echo "  -> libwarns.a $(ls -la "$BUILD/libwarns.a" | awk '{print $5}') bytes"
 
 echo "=== STAGE 3: link libwhatsmeow.so ==="
+# -lpalmgstskype/-L$SOLIB_DIR/-rpath-link resolve glue/skypekit.cpp's real SkypeKit symbols at
+# link time; -rpath (not just -rpath-link) bakes /usr/lib/gstreamer-0.10 into the built .so's own
+# DT_RUNPATH so it finds libpalmgstskype.so at runtime on-device without needing
+# LD_LIBRARY_PATH set by whatever launches this plugin (unlike the standalone test tools in
+# messaging/whatsapp/calling/, which do need it set manually each run).
 $CC -shared -fPIC $LDFLAGS -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
 	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" "$BUILD/libwarns.a" \
 	-L"$PURPLE/lib" -L"$GLIB_STAGING/lib" $(pkg-config --libs purple glib-2.0) \
 	"$LSSTUB" -lasound \
+	-L"$SOLIB_DIR" -lpalmgstskype -Wl,--allow-shlib-undefined \
+	-Wl,-rpath-link,"$FW_ROOTFS/usr/lib" -Wl,-rpath,/usr/lib/gstreamer-0.10 \
 	-lopusfile -lopus -logg -lpthread -ldl -lm -lresolv -lstdc++
 
 echo "=== Stripping ==="

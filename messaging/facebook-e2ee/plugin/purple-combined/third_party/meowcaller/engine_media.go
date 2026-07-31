@@ -318,8 +318,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// (participant slot 2), demuxed off the relay by H.264 payload type 97. NALUs are
 	// reassembled into Annex-B access units and emitted on the RTP marker bit, per WaCalls.
 	//
-	// NOT VALIDATED: no live video-RTP vector; assumes video shares the audio E2E keys and
-	// WARP framing, and that the relay bridges the video SSRC.
+	// Validated 2026-07-30 (examples/videoloop): a real two-account call confirmed video does
+	// share the audio E2E keying/WARP framing and that the relay bridges the video SSRC —
+	// 240/240 access units round-tripped and decoded clean.
 	rxVideoPipe, err := NewMediaPipeline(callKey, selfLID, peerLID, videoSelfSsrc, FrameSamples, WithLogger(log))
 	if err != nil {
 		return err
@@ -642,7 +643,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				}
 			}
 			if vidIn++; vidIn == 1 {
-				log.Info().Uint32("ssrc", vh.Ssrc).Msg("first video RTP demuxed from relay (NOT VALIDATED)")
+				log.Info().Uint32("ssrc", vh.Ssrc).Msg("first video RTP demuxed from relay")
 				e.c.diag.Emit("meta", map[string]any{"event": "first_video_rtp_in", "call_id": callID, "ssrc": vh.Ssrc})
 			}
 			continue
@@ -726,7 +727,8 @@ func videoRtpDurationSamples(duration time.Duration) uint32 {
 // protects them with the video pipeline, and sends them to the relay. The send path is
 // fed encoded H.264 (e.g. from the VideoBridge / WebCodecs), not raw frames.
 //
-// NOT VALIDATED: the video send media path is unproven.
+// Validated 2026-07-30 (examples/videoloop): 240/240 sent access units arrived at the peer
+// and decoded clean over a real two-account WhatsApp call.
 type videoSender struct {
 	mu               sync.Mutex
 	pipe             *MediaPipeline

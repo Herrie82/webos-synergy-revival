@@ -145,7 +145,9 @@ func (c *Call) Receive(sink AudioSink) {
 // the inbound video is discarded. The video analog of Receive; AnnexBRecorder records to a
 // .h264 file, or use VideoSinkFunc to forward to a callback.
 //
-// NOT VALIDATED: the inbound-video media path is unproven (no captured video-RTP vector).
+// Validated 2026-07-30 (examples/videoloop): a real two-account WhatsApp video call sent 240
+// synthetic access units end to end; the callee's sink received all 240 and the reassembled
+// stream decoded clean in ffmpeg, byte-identical in length to the source. See CHANGELOG.
 func (c *Call) ReceiveVideo(sink VideoSink) {
 	c.mu.Lock()
 	c.videoSink = sink

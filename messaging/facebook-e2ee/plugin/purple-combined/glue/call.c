@@ -43,6 +43,8 @@
 #define WA_AEC_DELAY_MS 179
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
+#include "skypekit.h"     // native SkypeKit RTP bridge (see WHATSAPP_VIDEO_STATUS.md "hook it
+                          // up properly" plan) — capture/playback socket threads
 
 static LSPalmService *g_psh = NULL;
 static LSHandle *g_pub = NULL;
@@ -89,13 +91,176 @@ static void reply(LSHandle *sh, LSMessage *msg, const char *payload) {
 	}
 }
 
+/* ---------- clonk: the real-time video-call session backing "videoURI" ----------
+ * See messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 1-18) for the full
+ * reverse-engineering writeup this is built against: the LS2 call sequence, the native
+ * firmware caps-negotiation bug and its argument-shift workaround (Part 16), the SkypeKit
+ * RTP socket ordering dependency (Part 17), and the wire format (Part 18) that glue/skypekit.cpp
+ * implements. Session *creation* was always confirmed working; this deepens clonk_open/
+ * clonk_close to actually bring up capture+playback and the skypekit.cpp socket bridge. */
+static char g_clonk_uri[256] = {0};
+static char *g_last_callstate_json = NULL; // most recent raw JSON from Go, pre-URI-injection
+
+static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
+static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
+
+// clonk_uri_call — fires "<g_clonk_uri><method>" with the given JSON payload. Every clonk
+// action method needs the {"args":[...]} wrapper even for zero-arg calls (see
+// LunaInterface::getArguments's dom["args"] requirement, WHATSAPP_VIDEO_STATUS.md Part 8) --
+// callers always pass a literal "{\"args\":[...]}" string, never "{}".
+static void clonk_uri_call_ctx(const char *method, const char *payload, LSFilterFunc cb,
+                                void *ctx) {
+	if (!g_prv || !g_clonk_uri[0]) return;
+	char uri[320];
+	snprintf(uri, sizeof uri, "%s%s", g_clonk_uri, method);
+	LSError e;
+	LSErrorInit(&e);
+	LSMessageToken t;
+	if (!LSCallOneReply(g_prv, uri, payload, cb, ctx, &t, &e)) {
+		fprintf(stderr, "wa-call: clonk %s call failed: %s\n", method, e.message);
+		LSErrorFree(&e);
+	}
+}
+static void clonk_uri_call(const char *method, const char *payload, LSFilterFunc cb) {
+	clonk_uri_call_ctx(method, payload, cb, NULL);
+}
+
+// videoCaptureStart args are (w, h, fps, bitrate) on the wire, but ClonkPipeline::
+// setCamCapsFilter() reads the *wrong* VideoSettings offsets when building camsrc's caps
+// filter (+4/+8 instead of +0/+4) -- a real, shipped firmware bug (WHATSAPP_VIDEO_STATUS.md
+// Part 16). Since VideoSettings is otherwise a plain unshifted copy of these same arguments,
+// putting our intended width in the h slot and our intended height in the fps slot lands the
+// CORRECT width/height in the actual applied caps once that bug reads them one field over.
+// Confirmed live: camsrc reaches PLAYING with zero GStreamer errors using exactly this shape.
+static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	fprintf(stderr, "wa-call: clonk videoCaptureStart: %s\n", LSMessageGetPayload(msg));
+	// Thread A (capture->peer) must be bound+listening before videoPlayerStart triggers
+	// mediaserver's RunVideoHost() -- see WHATSAPP_VIDEO_STATUS.md Part 17 and skypekit.h.
+	skypekit_video_start();
+	clonk_uri_call("videoPlayerStart", "{\"args\":[320,240]}", clonk_video_player_start_reply);
+	return true;
+}
+static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	fprintf(stderr, "wa-call: clonk videoPlayerStart: %s\n", LSMessageGetPayload(msg));
+	return true;
+}
+
+static bool clonk_keyframe_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	fprintf(stderr, "wa-call: clonk keyframe-restart videoCaptureStart: %s\n", LSMessageGetPayload(msg));
+	return true;
+}
+static bool clonk_keyframe_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	fprintf(stderr, "wa-call: clonk keyframe-restart videoCaptureStop: %s\n", LSMessageGetPayload(msg));
+	// Thread A/B and the clonk session itself stay up throughout -- only the capture
+	// pipeline restarts, so no skypekit_video_start()/videoPlayerStart() here (unlike
+	// clonk_video_capture_start_reply's first-time-open sequence above).
+	clonk_uri_call("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonk_keyframe_start_reply);
+	return true;
+}
+
+// Called from Go (Call.OnVideoKeyframeRequest) when the peer sends authenticated PLI/FIR
+// feedback asking for a fresh keyframe. See the call.go comment for why this is a
+// stop/restart rather than a direct request -- no LS2-exposed keyframe trigger exists.
+void gowhatsapp_call_request_keyframe(void) {
+	if (!g_clonk_uri[0]) return;
+	fprintf(stderr, "wa-call: keyframe requested, restarting capture\n");
+	clonk_uri_call("videoCaptureStop", "{\"args\":[]}", clonk_keyframe_stop_reply);
+}
+
+// Splices the real clonk videoURI into Go's callState JSON. Go always emits the
+// literal placeholder "videoURI":"" (Go owns call-state structure/logic; C owns the
+// clonk session and its URI -- this is where the two meet). Caller g_free()s the result.
+static char *inject_video_uri(const char *json) {
+	static const char needle[] = "\"videoURI\":\"\"";
+	const char *pos = strstr(json, needle);
+	if (!pos || !g_clonk_uri[0]) return g_strdup(json);
+	GString *out = g_string_new(NULL);
+	g_string_append_len(out, json, pos - json);
+	g_string_append(out, "\"videoURI\":\"");
+	g_string_append(out, g_clonk_uri); // a palm:// LS2 URI, no JSON-special characters
+	g_string_append_c(out, '"');
+	g_string_append(out, pos + sizeof(needle) - 1);
+	return g_string_free(out, FALSE);
+}
+
+static void publish_callstate_locked(const char *json) {
+	char *out = inject_video_uri(json);
+	LSError e;
+	LSErrorInit(&e);
+	if (g_pub) LSSubscriptionReply(g_pub, "callState", out, &e);
+	if (g_prv) LSSubscriptionReply(g_prv, "callState", out, &e);
+	g_free(out);
+}
+
+static bool clonk_open_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	const char *p = LSMessageGetPayload(msg);
+	char uri[sizeof g_clonk_uri] = "";
+	if (p && json_str(p, "location", uri, sizeof uri)) {
+		strncpy(g_clonk_uri, uri, sizeof g_clonk_uri - 1);
+		g_clonk_uri[sizeof g_clonk_uri - 1] = 0;
+		fprintf(stderr, "wa-call: clonk session open: %s\n", g_clonk_uri);
+		// Re-push immediately so subscribers get the real videoURI without waiting for
+		// the next unrelated call-state change.
+		if (g_last_callstate_json) publish_callstate_locked(g_last_callstate_json);
+		// framerate MUST be 30 (camsrc's only supported rate) and the 2nd/3rd argument
+		// slots are intentionally swapped -- see clonk_video_capture_start_reply's comment.
+		clonk_uri_call("videoCaptureStart", "{\"args\":[320,320,240,400000]}",
+		               clonk_video_capture_start_reply);
+	} else {
+		fprintf(stderr, "wa-call: clonk session open failed: %s\n", p ? p : "(no payload)");
+	}
+	return true;
+}
+
+// Opens a clonk session for the current call if one isn't already open. Idempotent.
+static void clonk_open(void) {
+	if (g_clonk_uri[0] || !g_prv) return;
+	LSError e;
+	LSErrorInit(&e);
+	LSMessageToken t;
+	if (!LSCallOneReply(g_prv, "palm://com.palm.mediad/service/clonk", "{}",
+	                    clonk_open_reply, NULL, &t, &e)) {
+		fprintf(stderr, "wa-call: clonk open call failed: %s\n", e.message);
+		LSErrorFree(&e);
+	}
+}
+
+static bool clonk_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)sh; (void)ctx;
+	fprintf(stderr, "wa-call: clonk %s: %s\n", (const char *)ctx, LSMessageGetPayload(msg));
+	return true;
+}
+
+// Drops our reference to the clonk session on call end / video fully off. No confirmed
+// explicit session-teardown method (see WHATSAPP_VIDEO_STATUS.md Part 3/5) -- mediaserver
+// tears a session down when its *creating* client's LS2 connection drops, which we share
+// with the rest of this long-lived service, so we don't disconnect to force that. A fresh
+// session is opened next time video starts.
+static void clonk_close(void) {
+	if (!g_clonk_uri[0]) return;
+	skypekit_video_stop(); // stop our own socket threads before telling mediaserver to stop
+	clonk_uri_call_ctx("videoPlayerStop", "{\"args\":[]}", clonk_stop_reply, "videoPlayerStop");
+	clonk_uri_call_ctx("videoCaptureStop", "{\"args\":[]}", clonk_stop_reply, "videoCaptureStop");
+	g_clonk_uri[0] = 0;
+}
+
+// Called from Go whenever this call's overall video state flips (see
+// gowhatsapp_go_call_changemedia and OnEnd in call.go).
+void gowhatsapp_call_video_active(int on) {
+	if (on) clonk_open(); else clonk_close();
+}
+
 /* ---------- Go -> C: push callState to subscribers on the mainloop ---------- */
 static gboolean push_callstate(gpointer data) {
 	char *json = (char *)data;
-	LSError e;
-	LSErrorInit(&e);
-	if (g_pub) LSSubscriptionReply(g_pub, "callState", json, &e);
-	if (g_prv) LSSubscriptionReply(g_prv, "callState", json, &e);
+	g_free(g_last_callstate_json);
+	g_last_callstate_json = g_strdup(json);
+	publish_callstate_locked(json);
 	g_free(json);
 	return G_SOURCE_REMOVE;
 }
@@ -490,6 +655,24 @@ static bool m_ok(LSHandle *sh, LSMessage *msg, void *ctx) {
 	reply(sh, msg, "{\"returnValue\":true}");
 	return true;
 }
+// changeMedia — the Phone app's video on/off toggle (core-apps VideoCall.js/
+// AbstractCall.js), params {id, outgoingVideo?, incomingVideo?}. A field's ABSENCE
+// means "leave that direction as-is", not "turn it off" — VideoCall.js only sets the
+// field it's actually changing (see changeMedia() there). Fire-and-forget like
+// dial/answer: the real state change flows back via callStateQuery.
+static bool m_changemedia(LSHandle *sh, LSMessage *msg, void *ctx) {
+	(void)ctx;
+	const char *p = LSMessageGetPayload(msg);
+	char id[128] = "";
+	if (p) json_str(p, "id", id, sizeof id);
+	int has_out = p && strstr(p, "\"outgoingVideo\"") != NULL;
+	int has_in  = p && strstr(p, "\"incomingVideo\"") != NULL;
+	int out_on  = has_out && json_true(p, "outgoingVideo");
+	int in_on   = has_in && json_true(p, "incomingVideo");
+	gowhatsapp_go_call_changemedia(id, has_out, out_on, has_in, in_on);
+	reply(sh, msg, "{\"returnValue\":true}");
+	return true;
+}
 
 static LSMethod methods[] = {
 	{"dial", m_dial},
@@ -506,7 +689,7 @@ static LSMethod methods[] = {
 	{"extract", m_ok},
 	{"dtmf", m_ok},
 	{"dtmfEnd", m_ok},
-	{"changeMedia", m_ok},
+	{"changeMedia", m_changemedia},
 	{NULL, NULL},
 };
 
