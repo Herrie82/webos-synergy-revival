@@ -3,6 +3,7 @@
 //
 
 #include "VideoSource.h"
+#include "../PrivateDefines.h"
 
 #ifdef __ANDROID__
 #include "../os/android/VideoSourceAndroid.h"
@@ -34,6 +35,11 @@ std::vector<uint32_t> VideoSource::GetAvailableEncoders(){
 	return VideoSourceAndroid::availableEncoders;
 #elif defined(__APPLE__) && !defined(TARGET_OSX32)
 	return VideoToolboxEncoderSource::GetAvailableEncoders();
+#else
+	// webOS: real H.264 encode happens natively via mediaserver's clonk pipeline, bridged in
+	// by SkypeKitVideoSource (see skypekit-tgvoip.cpp) -- this platform was never given its own
+	// VideoSource subclass upstream, so without this branch SetupOutgoingVideoStream() always
+	// finds zero codecs in common and our own PKT_INIT always advertises zero encoders.
+	return std::vector<uint32_t>{CODEC_AVC};
 #endif
-	return std::vector<uint32_t>();
 }

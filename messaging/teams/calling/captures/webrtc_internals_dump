@@ -1,0 +1,122 @@
+{
+ "deviceMemory": 32,
+ "hardwareConcurrency": 14,
+ "timestamp": 1785575693273,
+ "getUserMedia": [
+  {
+   "audio": "",
+   "origin": "https://teams.live.com",
+   "pid": 4724,
+   "request_id": 0,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "timestamp": 1785575641209.091,
+   "url": "https://teams.live.com/v2/",
+   "video": "{\"width\": {\"min\": 1280, \"max\": 1280}, \"height\": {\"min\": 720, \"max\": 720}, \"frameRate\": {\"min\": 15, \"max\": 30, \"ideal\": 30}}"
+  },
+  {
+   "audio_track_info": "{\"id\":\"5c988afe-8100-41b8-9c80-a4a4d84987c9\",\"label\":\"Default - Microphone Array on SoundWire Device (4- Realtek XU)\"}",
+   "pid": 4724,
+   "request_id": 0,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "stream_id": "cf262398-8902-4510-bee0-3c5cadfb98bc",
+   "timestamp": 1785575648040.394,
+   "video_track_info": "{\"id\":\"84c26d1d-1fbf-49c0-9ebb-e4d5bcf43a58\",\"label\":\"OV08X40\"}"
+  },
+  {
+   "origin": "https://teams.live.com",
+   "pid": 4724,
+   "request_id": 1,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "timestamp": 1785575648921.509,
+   "url": "https://teams.live.com/v2/",
+   "video": "{\"width\": {\"min\": 1280, \"max\": 1280}, \"height\": {\"min\": 720, \"max\": 720}, \"frameRate\": {\"min\": 15, \"max\": 30, \"ideal\": 30}, \"deviceId\": {\"exact\": [\"af24a868d7fe66ef2576413cfbe96ebac646bf221e98493129dc7c7b69b9de6b\"]}}"
+  },
+  {
+   "audio_track_info": "null",
+   "pid": 4724,
+   "request_id": 1,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "stream_id": "b7f192e3-606c-45af-822d-84a4532dd48c",
+   "timestamp": 1785575656881.711,
+   "video_track_info": "{\"id\":\"c45caf9f-55f1-4d79-811d-96a7e54ca923\",\"label\":\"OV08X40\"}"
+  },
+  {
+   "audio": "{\"deviceId\": {\"exact\": [\"9e2872615789821cf3042fc9d48c2c7a38b3573bfe3a19098ab75f92b0693c40\"]}}",
+   "origin": "https://teams.live.com",
+   "pid": 4724,
+   "request_id": 2,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "timestamp": 1785575656885.685,
+   "url": "https://teams.live.com/v2/"
+  },
+  {
+   "audio_track_info": "{\"id\":\"7d87531e-60ca-4126-a207-744004f11c5c\",\"label\":\"Microphone Array on SoundWire Device (4- Realtek XU)\"}",
+   "pid": 4724,
+   "request_id": 2,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "stream_id": "ca0ff92a-4b89-459d-b8a0-70ebf5e8a35f",
+   "timestamp": 1785575659863.756,
+   "video_track_info": "null"
+  },
+  {
+   "origin": "https://teams.live.com",
+   "pid": 4724,
+   "request_id": 3,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "timestamp": 1785575659868.652,
+   "url": "https://teams.live.com/v2/",
+   "video": "{\"width\": {\"min\": 1280, \"max\": 1280}, \"height\": {\"min\": 720, \"max\": 720}, \"frameRate\": {\"min\": 15, \"max\": 30, \"ideal\": 30}, \"deviceId\": {\"exact\": [\"af24a868d7fe66ef2576413cfbe96ebac646bf221e98493129dc7c7b69b9de6b\"]}}"
+  },
+  {
+   "audio_track_info": "null",
+   "pid": 4724,
+   "request_id": 3,
+   "request_type": "getUserMedia",
+   "rid": 2536,
+   "stream_id": "29803828-273b-4f7a-8536-14167e3fb2ee",
+   "timestamp": 1785575661099.54,
+   "video_track_info": "{\"id\":\"ccd7cf28-8b5f-4a16-94b9-364b4f69dafa\",\"label\":\"OV08X40\"}"
+  }
+ ],
+ "PeerConnections": {},
+ "UserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+ "UserAgentData": {
+  "brands": [
+   {
+    "brand": "Not;A=Brand",
+    "version": "8"
+   },
+   {
+    "brand": "Chromium",
+    "version": "150"
+   },
+   {
+    "brand": "Microsoft Edge",
+    "version": "150"
+   }
+  ],
+  "fullVersionList": [
+   {
+    "brand": "Not;A=Brand",
+    "version": "8.0.0.0"
+   },
+   {
+    "brand": "Chromium",
+    "version": "150.0.7871.187"
+   },
+   {
+    "brand": "Microsoft Edge",
+    "version": "150.0.4078.105"
+   }
+  ],
+  "mobile": false,
+  "platform": "Windows"
+ }
+}

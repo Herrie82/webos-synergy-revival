@@ -37,6 +37,12 @@
  *        RELAY turn <ip> <port> <user> <pass> <udp|tcp|tls>   (optional; MS-TURN relay)
  *        RELAY stun <host> <port>                             (optional)
  *        RCAND <candidate:... sdp line>                       (a remote ICE candidate; repeatable)
+ *        RESTART <rx_master_b64|-> <remote_ufrag> <remote_pwd> (mid-call renegotiation: peer swapped
+ *                                                               to a new media leg - new remote ICE
+ *                                                               creds [+ optionally a new RX key],
+ *                                                               applied WITHOUT rebuilding the
+ *                                                               already-PLAYING pipeline; follow with
+ *                                                               RCAND for the new leg's candidates)
  *        STOP
  *   out: UFRAG <our_ufrag>
  *        PWD <our_pwd>
@@ -1076,6 +1082,54 @@ static int run_ipc(int is_caller)
         } else if (strncmp(line, "RCAND ", 6) == 0) {
             if (!started) { emit("ERR rcand-before-start\n"); continue; }
             tm_add_remote_candidate(line + 6);
+        } else if (strncmp(line, "RESTART ", 8) == 0) {
+            /* Mid-call ICE restart: the peer pushed a renegotiation with new remote ufrag/pwd
+             * (commonly a whole new media leg/relay - Teams cycles through several of these on a
+             * single renegotiation storm, captured live 2026-08-01). If a new key is given, swap
+             * g_tm.rx_master, which srtpdec picks up lazily on its next request-key call
+             * (on_srtpdec_request_key).
+             *
+             * Just calling nice_agent_set_remote_credentials() (the original version of this
+             * command) is NOT enough: nice_agent_set_remote_candidates()/RCAND is purely additive
+             * (agent.c: _set_remote_candidates_locked() only ever appends), so every leg Teams
+             * cycles through piles its candidates on top of the previous leg's in the same
+             * checklist with nothing ever cleared - by the 3rd+ restart the agent is juggling
+             * candidates from 3+ unrelated legs. Do a REAL RFC 5245 restart instead via
+             * nice_agent_restart_stream(): per libnice's nice_component_restart(), this clears the
+             * component's stale remote-candidate list (nice_stream_restart -> component_restart)
+             * and restores RFC7675 local consent, WITHOUT touching our already-bound local
+             * candidates (no re-gather needed - same sockets are still valid). It DOES regenerate
+             * our own local ice-ufrag/pwd though (nice_stream_initialize_credentials), so we must
+             * re-emit them - same UFRAG/PWD lines teams_calling.c already parses at START - before
+             * the caller can build a next answer with matching local creds.
+             * RESTART <rxkey_b64|-> <rem_ufrag> <rem_pwd> */
+            char *sp = NULL;
+            char *rxk = strtok_r(line + 8, " ", &sp);
+            char *ruf = strtok_r(NULL, " ", &sp);
+            char *rpw = strtok_r(NULL, " ", &sp);
+            if (!started || !g_tm.agent || !ruf || !rpw) { emit("ERR restart-missing-fields\n"); continue; }
+            if (rxk && strcmp(rxk, "-") != 0) {
+                gsize rxlen = 0;
+                guchar *k = g_base64_decode(rxk, &rxlen);
+                if (k && rxlen >= 32) {
+                    GstBuffer *nb = master_buffer_from_bytes(k, rxlen);
+                    if (g_tm.rx_master) gst_buffer_unref(g_tm.rx_master);
+                    g_tm.rx_master = nb;
+                }
+                g_free(k);
+            }
+            if (!nice_agent_restart_stream(g_tm.agent, g_tm.stream_id)) {
+                emit("ERR restart-stream-failed\n"); continue;
+            }
+            { gchar *uf = NULL, *pw = NULL;
+              nice_agent_get_local_credentials(g_tm.agent, g_tm.stream_id, &uf, &pw);
+              emit("UFRAG %s\n", uf ? uf : "");
+              emit("PWD %s\n",   pw ? pw : "");
+              g_free(uf); g_free(pw); }
+            nice_agent_set_remote_credentials(g_tm.agent, g_tm.stream_id, ruf, rpw);
+            g_message("teams_media: ICE restart - stream reset, new local+remote creds applied%s",
+                      (rxk && strcmp(rxk, "-") != 0) ? " (+ new rx key)" : "");
+            emit("RESTARTED\n");
         } else if (!strcmp(line, "STOP")) {
             break;
         } else {

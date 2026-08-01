@@ -87,6 +87,22 @@ pub fn set_ice_servers(servers: Vec<crate::ice::IceServer>) {
 /// wires them into the nice agent (set_stun_server / set_relay_info) before it gathers candidates.
 fn write_relay_lines<W: std::io::Write>(w: &mut W) {
     let servers = ice_servers().lock().unwrap();
+    // TEMP diagnostic (2026-07-30): dump the live, full-credential RELAY lines to a file so the
+    // standalone turn_loopback test (messaging/signal/calling/media/turn_loopback.c) can reuse a
+    // real, currently-valid TURN allocation without needing its own Signal account/session. Remove
+    // once the TURN relay-to-relay receive-path question is resolved.
+    if let Ok(mut f) = std::fs::File::create("/media/internal/turn_creds.txt") {
+        for s in servers.iter() {
+            let line = match s.kind {
+                crate::ice::IceKind::Stun => format!("RELAY stun {} {}\n", s.host, s.port),
+                crate::ice::IceKind::Turn => format!(
+                    "RELAY turn {} {} {} {} {}\n",
+                    s.host, s.port, s.username, s.password, s.transport
+                ),
+            };
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
     for s in servers.iter() {
         let line = match s.kind {
             crate::ice::IceKind::Stun => format!("RELAY stun {} {}\n", s.host, s.port),

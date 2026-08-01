@@ -15,6 +15,7 @@ TGVOIP=$REPO/messaging/telegram/plugin/libtgvoip/install/usr  # libtgvoip (build
 LUNAINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/include/public  # luna-service2 headers (external dep)
 PMLOGINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic  # PmLogLib.h (pulled in by lunaservice.h)
 LSSTUB=$REPO/build-output/imtransport/lib                     # device link stubs (liblunaservice.so; gitignored)
+FW_ROOTFS=/home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs  # firmware rootfs (libpalmgstskype.so; same as build-skypekit-send-test.sh)
 
 OUT=$BUILD/libtelegram-tdlib.so
 STRIPPED=$BUILD/libtelegram-tdlib.stripped.so
@@ -40,7 +41,8 @@ if [ "$1" = "-r" ] || [ "$1" = "--reconfigure" ] || [ ! -f "$BUILD/build.ninja" 
 		-Dtgvoip_INCLUDE_DIRS="$TGVOIP/include/tgvoip" \
 		-Dtgvoip_LIBRARIES="$TGVOIP/lib/libtgvoip.a;$GLIB_STAGING/lib/libopus.so;$GLIB_STAGING/lib/libasound.so;$GLIB_STAGING/lib/libcrypto.so" \
 		-Dlunaservice_INCLUDE_DIRS="$LUNAINC;$LUNAINC/luna-service2;$PMLOGINC" \
-		-Dlunaservice_LIBRARIES="$LSSTUB/liblunaservice.so"
+		-Dlunaservice_LIBRARIES="$LSSTUB/liblunaservice.so" \
+		-DSkypeKitFwRootfs="$FW_ROOTFS"
 fi
 
 echo "=== Building ==="

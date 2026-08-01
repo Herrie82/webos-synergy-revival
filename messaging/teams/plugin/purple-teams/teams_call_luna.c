@@ -48,7 +48,13 @@ setstr(gchar **slot, const char *v)
 static gchar *
 build_payload(void)
 {
-	GString *p = g_string_new("{\"returnValue\":true,\"allowVideoCalls\":true,\"videoURI\":\"\",\"lines\":[");
+	GString *p = g_string_new("{\"returnValue\":true,\"allowVideoCalls\":true,\"videoURI\":\"");
+	if (g_clonkUri) {
+		gchar *uri = g_strescape(g_clonkUri, "");
+		g_string_append(p, uri);
+		g_free(uri);
+	}
+	g_string_append(p, "\",\"lines\":[");
 	if (g_state && *g_state) {
 		gchar *addr = g_strescape(g_peerAddr ? g_peerAddr : "", "");
 		gchar *name = g_strescape((g_peerName && *g_peerName) ? g_peerName : (g_peerAddr ? g_peerAddr : ""), "");
@@ -385,6 +391,15 @@ clonk_open_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 		g_free(g_clonkUri);
 		g_clonkUri = uri;
 		teams_call_log("clonk session open: %s", g_clonkUri);
+		/* Re-push immediately so subscribers (the Phone app's ActiveCall.js) get the real
+		 * videoURI without waiting for the next unrelated call-state change - mirrors
+		 * WhatsApp's glue/call.c clonk_open_reply(). */
+		if (g_pub || g_prv) {
+			gchar *payload = build_payload();
+			push_to(g_pub, payload);
+			push_to(g_prv, payload);
+			g_free(payload);
+		}
 		/* videoCaptureStart args are (w,h,fps,bitrate) on the wire, but ClonkPipeline::
 		 * setCamCapsFilter() reads the wrong VideoSettings offsets (+4/+8 instead of +0/+4) - a
 		 * real firmware bug (WHATSAPP_VIDEO_STATUS.md Part 16). Shifting width into the h slot

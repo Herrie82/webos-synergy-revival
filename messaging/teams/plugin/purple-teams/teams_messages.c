@@ -3057,13 +3057,23 @@ void
 teams_set_idle(PurpleConnection *pc, int time)
 {
 	TeamsAccount *sa = purple_connection_get_protocol_data(pc);
-	gboolean is_active = FALSE;
+	gboolean is_active = TRUE;
 	gchar *post;
-	
-	if (time < 30) {
-		is_active = TRUE;
-	}
-	
+
+	/* CAPTURED LIVE (2026-08-01): `time` here is webOS's PHYSICAL touchscreen/keyboard idle
+	 * clock (libpurple core also calls this directly via prpl_info->set_idle whenever that
+	 * clock ticks, not just from teams_idle_update's 120s poll below). This device runs the
+	 * Teams account as an always-on background messaging bridge, not something anyone sits
+	 * and touches - so that clock is "idle" almost permanently, and gating isActive on it
+	 * reported isActive:false to Microsoft's presence backend every ~2 minutes. Teams gates
+	 * whether a call can even be ROUTED to an account on its published availability, so the
+	 * account read as Away/unavailable most of the time and callers got an instant "Cannot
+	 * complete the call" without any signaling ever reaching us - until a fresh login
+	 * (teams_set_status force-publishes Available) or a lucky screen-wake right before
+	 * dialing reset the clock. Always report active instead, same as the other always-on
+	 * connectors on this device. */
+	(void) time;
+
 	post = g_strdup_printf("{\"endpointId\":\"%s\",\"isActive\":%s}", sa->endpoint, is_active ? "true" : "false");
 	//TODO check if it's a 404 response and recreate the endpoint (by resetting the availability) if it's gone
 	teams_post_or_get(sa, TEAMS_METHOD_POST | TEAMS_METHOD_SSL, TEAMS_PRESENCE_HOST, "/v1/me/reportmyactivity/", post, NULL, NULL, TRUE);

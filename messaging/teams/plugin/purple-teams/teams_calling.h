@@ -74,6 +74,15 @@ typedef struct _TeamsCall {
 	 * clonk video bridge). NOT set for an outgoing dial-with-video request until the callee's
 	 * answer actually confirms it - see TeamsMediaProc.want_video in teams_calling.c. */
 	gboolean video_active;
+
+	/* CAPTURED LIVE (2026-08-01): TRUE when media_send_answer() has decided the call starts with
+	 * video active (offer already wanted it) but has deliberately NOT yet fired g_video_cb() -
+	 * doing so synchronously before the attach POST blocked the event loop long enough (bringing
+	 * up the local Clonk camera pipeline is not cheap) that the attach request itself died with
+	 * a bare connection failure (code 0, no response at all) - Teams/the peer never even saw an
+	 * answer, so the call sat on "Calling..." forever. attach_resp_cb() fires the deferred
+	 * callback once the attach round-trip has actually completed. */
+	gboolean video_cb_pending;
 } TeamsCall;
 
 /* Called from teams_trouter.c's /NGCallManagerWin handler with the decoded callNotification

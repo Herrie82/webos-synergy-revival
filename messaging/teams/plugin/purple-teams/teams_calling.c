@@ -122,6 +122,16 @@ typedef struct {
 	 * clonk video bridge itself lives in this same process (teams_call_luna.c calls it directly,
 	 * same as Telegram) - no cross-process ack needed here anymore. */
 	gboolean          want_video;
+
+	/* Set by teams_calling_handle_renegotiation() right after it sends a RESTART to the engine;
+	 * consumed by media_on_output() when the engine's matching RESTARTED line arrives. We can't
+	 * build+POST the renegotiation answer synchronously in the same call as the RESTART write -
+	 * nice_agent_restart_stream() regenerates OUR OWN local ice-ufrag/pwd (see teams_media.c's
+	 * RESTART handler), and build_answer_sdp() needs those NEW values, which only reach us
+	 * asynchronously over the pipe (the same UFRAG/PWD lines media_on_output already parses for
+	 * the initial START). Answering immediately would race and very likely still send the STALE
+	 * pre-restart local creds. */
+	gchar            *pending_reneg_answer_link;
 } TeamsMediaProc;
 
 static TeamsCallVideoCb g_video_cb = NULL;
@@ -142,7 +152,11 @@ flightproxy_resp_cb(PurpleHttpConnection *hc, PurpleHttpResponse *resp, gpointer
 	(void) hc; (void) u;
 	code = purple_http_response_get_code(resp);
 	data = purple_http_response_get_data(resp, &len);
-	teams_call_log("FLIGHTPROXY resp code=%d body=%.300s", code, data ? data : "(none)");
+	if (code <= 0)
+		teams_call_log("FLIGHTPROXY resp code=%d err=%s", code,
+		               purple_http_response_get_error(resp) ? purple_http_response_get_error(resp) : "(none)");
+	else
+		teams_call_log("FLIGHTPROXY resp code=%d body=%.300s", code, data ? data : "(none)");
 }
 
 /* Teams calling client identity (matches teams.live.com's SkypeSpacesWeb TFL client string). */
@@ -176,6 +190,30 @@ static void
 flightproxy_post(TeamsAccount *sa, const gchar *url, const gchar *body)
 {
 	flightproxy_post_cb(sa, url, body, NULL, NULL);
+}
+
+/* DELETE (leave/end) a conversation-controller resource - same auth headers as flightproxy_post_cb,
+ * just a different HTTP method and no body. CONFIRM WITH CAPTURE: no HAR of an actual client-
+ * initiated hangup exists yet; DELETE on the "conv/<id>" REST resource matches the conversation-
+ * service's naming (leaving/ending a conversation) and is the best-effort guess used by
+ * teams_calling_hangup() for an ACTIVE call - untested against a live backend. */
+static void
+flightproxy_delete(TeamsAccount *sa, const gchar *url)
+{
+	gchar *chain, *msgid;
+	PurpleHttpRequest *req;
+	if (!url) return;
+	chain = purple_uuid_random(); msgid = purple_uuid_random();
+	req = purple_http_request_new(url);
+	purple_http_request_set_method(req, "DELETE");
+	purple_http_request_set_keepalive_pool(req, sa->keepalive_pool);
+	purple_http_request_header_set(req, "X-Skypetoken", sa->skype_token);
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Client", TEAMS_SKYPE_CLIENT);
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Chain-Id", chain);
+	purple_http_request_header_set(req, "X-Microsoft-Skype-Message-Id", msgid);
+	purple_http_request(sa->pc, req, flightproxy_resp_cb, NULL);
+	purple_http_request_unref(req);
+	g_free(chain); g_free(msgid);
 }
 
 /* build a callAgent trouter control path: <surl>callAgent/<agent>/<hash8>/<kind>/<name>/ */
@@ -267,9 +305,17 @@ static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpoin
 /* Build the SDP answer from our media params + the offer (SDES-GCM path; the offer supports both
  * SDES a=crypto and DTLS, and our engine keys via SDES). Shape mirrors the web client's accepted
  * answer: BUNDLE + mid:audio_0/video_1 + rtcp-mux + label, a=crypto instead of DTLS fingerprint.
- * The video m-line's direction is driven by call->video_active - the offer/answer m-line-mirroring
- * requirement means we ALWAYS emit it (or the peer rejects the whole answer, FinalAnswerError
- * 406/4122), but only mark it a=sendrecv (not a=inactive) once video is actually negotiated.
+ * CAPTURED LIVE (2026-08-01, rtcstats_dump from a real teams.live.com call - see
+ * messaging/teams/calling/captures/): the video m-line's direction is ALWAYS a=sendrecv in every
+ * one of a real client's answers, including the very first one before video is ever "on" and
+ * across all 5 renegotiation rounds of a normal call - direction never toggles to a=inactive.
+ * Actual video flow is controlled at the track/encoding level (whether H.264 RTP is actually being
+ * sent), not by the SDP m-line direction. Gating this on call->video_active (mirroring the offer's
+ * direction back to the peer instead of always sendrecv) is what the previous version of this
+ * function did, and is the leading suspect for the MediaError-410 storm every call has hit: it's
+ * simply not what Teams' backend expects to see. The offer/answer m-line-mirroring requirement
+ * still means we must ALWAYS emit the m-line at all (or the peer rejects the whole answer,
+ * FinalAnswerError 406/4122) - only the direction attribute's conditional was wrong.
  * Codec/fmtp/rtcp-fb values are the real ones from a captured live Teams video call (H264/90000
  * PT 107, rtx PT 99, packetization-mode=1, profile-level-id=42e01f). Shared by the initial answer
  * (media_send_answer, below) and any later mid-call renegotiation
@@ -278,7 +324,6 @@ static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpoin
 static GString *
 build_answer_sdp(TeamsMediaProc *mp)
 {
-	TeamsCall *call = mp->call;
 	GString *a;
 	gchar *our_ip = NULL; int our_port = 3480;
 
@@ -344,7 +389,7 @@ build_answer_sdp(TeamsMediaProc *mp)
 	g_string_append(a, "a=rtcp-fb:107 nack\r\n");
 	g_string_append(a, "a=rtcp-fb:107 nack pli\r\n");
 	g_string_append(a, "a=mid:video_1\r\n");
-	g_string_append(a, call->video_active ? "a=sendrecv\r\n" : "a=inactive\r\n");
+	g_string_append(a, "a=sendrecv\r\n");   /* always - see this function's header comment */
 	g_string_append_printf(a, "a=ice-ufrag:%s\r\n", mp->our_ufrag);
 	g_string_append_printf(a, "a=ice-pwd:%s\r\n", mp->our_pwd);
 	g_string_append_printf(a, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
@@ -370,9 +415,11 @@ media_send_answer(TeamsMediaProc *mp)
 
 	{ gchar *dir = sdp_video_direction(call->sdp_offer);
 	  if (dir && strcmp(dir, "inactive") != 0 && !call->video_active) {
-	      call->video_active = TRUE;
+	      call->video_active = TRUE;   /* needed now - build_answer_sdp() below reads it */
 	      teams_call_log("answer: offer already wants video (a=%s), activating from the start", dir);
-	      if (g_video_cb) g_video_cb(call->sa, TRUE);
+	      /* Defer the actual g_video_cb() (Clonk camera pipeline bring-up) until attach_resp_cb()
+	       * confirms the attach POST succeeded - see video_cb_pending's comment in teams_calling.h. */
+	      call->video_cb_pending = TRUE;
 	  }
 	  g_free(dir); }
 
@@ -507,7 +554,27 @@ media_answer_timeout(gpointer user)
 	return G_SOURCE_REMOVE;
 }
 
-/* read UFRAG/PWD/TXKEY/CAND/READY/AUDIOD from teams_media's stdout */
+/* Build + POST a mid-call renegotiation answer using WHATEVER local ufrag/pwd/cands mp currently
+ * holds. Shared by teams_calling_handle_renegotiation() (the no-restart-needed fallback, answered
+ * immediately) and media_on_output()'s RESTARTED handler (answered only once the engine's fresh
+ * post-restart local creds have actually arrived - see pending_reneg_answer_link's comment). */
+static void
+send_reneg_answer(TeamsMediaProc *mp, const gchar *answer_link)
+{
+	TeamsCall *call = mp->call;
+	GString *a = build_answer_sdp(mp);
+	gchar *esc = g_strescape(a->str, "");
+	gchar *body = g_strdup_printf(
+	    "{\"mediaAnswer\":{\"callModalities\":[%s],"
+	      "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\"}}}",
+	    call->video_active ? "\"Audio\",\"Video\"" : "\"Audio\"", esc);
+	teams_call_log("renegotiate: POSTing updated answer (%d bytes, video=%d) to %s",
+	               (int) strlen(body), call->video_active, answer_link);
+	flightproxy_post_cb(call->sa, answer_link, body, flightproxy_resp_cb, NULL);
+	g_free(body); g_free(esc); g_string_free(a, TRUE);
+}
+
+/* read UFRAG/PWD/TXKEY/CAND/READY/RESTARTED/AUDIOD from teams_media's stdout */
 static gboolean
 media_on_output(GIOChannel *ch, GIOCondition cond, gpointer user)
 {
@@ -520,13 +587,31 @@ media_on_output(GIOChannel *ch, GIOCondition cond, gpointer user)
 		else if (g_str_has_prefix(line, "PWD ")) { g_free(mp->our_pwd); mp->our_pwd = g_strdup(line + 4); }
 		else if (g_str_has_prefix(line, "TXKEY ")) { g_free(mp->our_txkey); mp->our_txkey = g_strdup(line + 6); }
 		else if (g_str_has_prefix(line, "CAND ")) { if (mp->our_cands) g_string_append_printf(mp->our_cands, "%s\n", line + 5); }
+		else if (!strcmp(line, "RESTARTED")) {
+			/* The RESTART's fresh UFRAG/PWD lines are always emitted BEFORE this marker (see
+			 * teams_media.c), so mp->our_ufrag/our_pwd are already the new post-restart values
+			 * by the time we get here - safe to answer now. */
+			if (mp->pending_reneg_answer_link) {
+				gchar *link = mp->pending_reneg_answer_link;
+				mp->pending_reneg_answer_link = NULL;
+				send_reneg_answer(mp, link);
+				g_free(link);
+			}
+		}
+		else if (g_str_has_prefix(line, "ERR ")) {
+			teams_call_log("media engine ERR: %s", line + 4);
+			if (mp->pending_reneg_answer_link) {
+				teams_call_log("renegotiate: engine restart failed, dropping pending answer");
+				g_free(mp->pending_reneg_answer_link);
+				mp->pending_reneg_answer_link = NULL;
+			}
+		}
 		else if (g_str_has_prefix(line, "READY")) {
 			mp->ready = TRUE;
 			teams_call_log("media engine READY; gathering candidates before answer");
 			/* give ICE ~1.5s to gather candidates, then build + POST the answer */
 			if (!mp->answer_timer) mp->answer_timer = g_timeout_add(1500, media_answer_timeout, mp);
 		}
-		else if (g_str_has_prefix(line, "ERR ")) teams_call_log("media engine ERR: %s", line + 4);
 		else if (g_str_has_prefix(line, "AUDIOD ")) teams_call_log("media audiod %s", line + 7);
 		g_free(line); line = NULL;
 	}
@@ -652,6 +737,7 @@ teams_media_stop(void)
 	if (mp->pid) { g_spawn_close_pid(mp->pid); }
 	g_string_free(mp->our_cands, TRUE);
 	g_free(mp->our_ufrag); g_free(mp->our_pwd); g_free(mp->our_txkey); g_free(mp->callagent_id);
+	g_free(mp->pending_reneg_answer_link);
 	g_free(mp);
 	teams_call_log("media stopped");
 }
@@ -725,7 +811,9 @@ attach_resp_cb(PurpleHttpConnection *hc, PurpleHttpResponse *resp, gpointer u)
 	(void) hc;
 	code = purple_http_response_get_code(resp);
 	data = purple_http_response_get_data(resp, &len);
-	teams_call_log("attach resp code=%d (%d bytes)", code, (int) len);
+	teams_call_log("attach resp code=%d (%d bytes) success=%d err=%s", code, (int) len,
+	               (int) purple_http_response_is_successful(resp),
+	               purple_http_response_get_error(resp) ? purple_http_response_get_error(resp) : "(none)");
 	if (code < 200 || code >= 300 || !data) {
 		teams_call_log("attach FAILED: %.240s", data ? data : "(no body)");
 		return;
@@ -740,6 +828,13 @@ attach_resp_cb(PurpleHttpConnection *hc, PurpleHttpResponse *resp, gpointer u)
 		g_free(acc_dup);
 	} else {
 		teams_call_log("attach OK but no callInvitation.links.acceptance in response");
+	}
+	/* Attach (and the accept POST just fired above) are both now in flight - safe to bring up the
+	 * local camera pipeline. See video_cb_pending's comment: doing this any earlier risked
+	 * blocking the event loop long enough to kill the attach request outright. */
+	if (call->video_cb_pending) {
+		call->video_cb_pending = FALSE;
+		if (g_video_cb) g_video_cb(call->sa, TRUE);
 	}
 	if (root) json_object_unref(root);
 }
@@ -767,7 +862,7 @@ teams_calling_post_answer(TeamsCall *call, const char *answer_sdp)
 		  "\"applicationType\":\"TFL\"},"
 		"\"capabilities\":null,\"endpointCapabilities\":73463}",
 		end_link);
-	teams_call_log("post_answer: attach (step 1/2) -> %d-byte body", (int) strlen(body));
+	teams_call_log("post_answer: attach (step 1/2) -> %d-byte body, url=%s", (int) strlen(body), call->link_attach);
 	flightproxy_post_cb(call->sa, call->link_attach, body, attach_resp_cb, call);
 	g_free(end_link); g_free(body);
 }
@@ -1057,6 +1152,44 @@ teams_calling_handle_renegotiation(TeamsAccount *sa, JsonObject *body_obj, const
 	teams_call_log("renegotiate: video m-line direction=%s", dir ? dir : "(none)");
 	g_free(dir);
 
+	/* CAPTURED LIVE (2026-08-01): a renegotiation push commonly swaps the peer to a brand-new
+	 * media leg - fresh ice-ufrag/pwd (and sometimes a whole new a=crypto key/mediaLegId/relay),
+	 * not just a direction flip. Previously we only read the video direction out of this blob and
+	 * never told the running media engine about the new remote ICE creds/candidates, so the engine
+	 * kept trying to reach the STALE leg while we happily POSTed back an "answer" to the new one -
+	 * every leg after the first was a silent no-op. Teams cycles a few times, then kills the whole
+	 * call as MediaError (code 410) once none of them ever connect. Apply the new creds/key +
+	 * candidates via RESTART/RCAND (see teams_media.c) before replying, same as the initial-answer
+	 * path (teams_calling_handle_media_answer) already does for the caller side. */
+	gboolean sent_restart = FALSE;
+	if (mp->in_fd >= 0) {
+		gchar *ruf = sdp_line_val(blob, "a=ice-ufrag:");
+		gchar *rpw = sdp_line_val(blob, "a=ice-pwd:");
+		gchar *rxkey = sdp_gcm_key(blob);
+		if (ruf && rpw) {
+			gchar *s = g_strdup_printf("RESTART %s %s %s\n", rxkey ? rxkey : "-", ruf, rpw);
+			if (write(mp->in_fd, s, strlen(s)) < 0) {}
+			g_free(s);
+			{ gchar **rlines = g_strsplit(blob, "\n", -1); int j;
+			  for (j = 0; rlines[j]; j++) {
+				  gchar *l = g_strstrip(rlines[j]);
+				  if (g_str_has_prefix(l, "a=candidate:")) {
+					  gchar *r = g_strdup_printf("RCAND %s\n", l + 2);
+					  if (write(mp->in_fd, r, strlen(r)) < 0) {}
+					  g_free(r);
+				  }
+			  }
+			  g_strfreev(rlines);
+			}
+			teams_call_log("renegotiate: sent RESTART+cands to engine (uf=%s)", ruf);
+			sent_restart = TRUE;
+		} else {
+			teams_call_log("renegotiate: offer missing ice-ufrag/pwd, cannot restart ICE (uf=%d pw=%d)",
+			               ruf != NULL, rpw != NULL);
+		}
+		g_free(ruf); g_free(rpw); g_free(rxkey);
+	}
+
 	if (peer_wants_video && !call->video_active) {
 		call->video_active = TRUE;
 		teams_call_log("renegotiate: video ADDED mid-call");
@@ -1073,16 +1206,19 @@ teams_calling_handle_renegotiation(TeamsAccount *sa, JsonObject *body_obj, const
 		               mp->our_txkey != NULL, answer_link != NULL);
 		return;
 	}
-	{ GString *a = build_answer_sdp(mp);
-	  gchar *esc = g_strescape(a->str, "");
-	  gchar *body = g_strdup_printf(
-	      "{\"mediaAnswer\":{\"callModalities\":[\"Audio\"],"
-	        "\"mediaContent\":{\"blob\":\"%s\",\"contentType\":\"application/sdp-ngc-1.0\"}}}",
-	      esc);
-	  teams_call_log("renegotiate: POSTing updated answer (%d bytes, video=%d) to %s",
-	                 (int) strlen(body), call->video_active, answer_link);
-	  flightproxy_post_cb(sa, answer_link, body, flightproxy_resp_cb, NULL);
-	  g_free(body); g_free(esc); g_string_free(a, TRUE); }
+
+	if (sent_restart) {
+		/* Engine's RESTART is in flight - it's about to regenerate OUR OWN local ice-ufrag/pwd
+		 * (real RFC 5245 restart, see teams_media.c), so mp->our_ufrag/our_pwd are stale RIGHT
+		 * NOW and answering with them would hand the peer credentials our own agent no longer
+		 * recognizes. Defer: media_on_output() calls send_reneg_answer() once the engine's
+		 * RESTARTED line confirms the fresh local creds have already landed in mp. A second
+		 * renegotiation arriving before the first's RESTARTED comes back simply supersedes it. */
+		g_free(mp->pending_reneg_answer_link);
+		mp->pending_reneg_answer_link = g_strdup(answer_link);
+		return;
+	}
+	send_reneg_answer(mp, answer_link);
 }
 
 void
@@ -1233,10 +1369,19 @@ teams_calling_hangup(TeamsAccount *sa)
 	if (!call) { teams_call_log("hangup: no call"); return FALSE; }
 	teams_call_log("hangup: ending call with %s", call->peer_mri ? call->peer_mri : "?");
 
-	/* An active call is ended via the conversation controller; a still-ringing incoming
-	 * call is declined via link_reject. CONFIRM WITH CAPTURE the exact end/hangup shape. */
+	/* CAPTURED LIVE (2026-08-01): this used to be a no-op for an ACTIVE call - only the
+	 * still-ringing/not-yet-accepted case (link_reject) sent anything to Teams. Hanging up an
+	 * ACTIVE call tore down our own media/state locally but told Teams' backend and the peer
+	 * NOTHING, so the peer's client (e.g. the Android app) kept sitting there mid-negotiation
+	 * after we'd already disconnected. An active call is ended via the conversation controller
+	 * (conversationInvitation.conversationController, parsed into call->conversation_controller
+	 * at notification time but never previously used anywhere). CONFIRM WITH CAPTURE the exact
+	 * end/hangup shape - flightproxy_delete()'s DELETE-with-no-body is a best-effort guess
+	 * (REST "leave/end this conversation" semantics), not yet verified against a live backend. */
 	if (call->state == TEAMS_CALL_INCOMING && call->link_reject)
 		call_http_post(sa, call->link_reject, NULL);
+	else if (call->conversation_controller)
+		flightproxy_delete(sa, call->conversation_controller);
 
 	call->state = TEAMS_CALL_DISCONNECTED;
 	push_state(call, "normal");

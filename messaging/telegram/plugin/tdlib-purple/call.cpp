@@ -8,6 +8,7 @@
 #include "td-client.h"
 #include "call-luna.h"
 #include "skypekit-tgvoip.h"
+#include <glib.h>
 
 static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
 {
@@ -16,6 +17,12 @@ static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
     protocol->udp_reflector_ = true;
     protocol->min_layer_     = 65;
     protocol->max_layer_     = 92;
+    // library_versions_ deliberately left empty: declaring our vendored libtgvoip fork's own
+    // version string ("2.5") here made the peer's real client reject the call outright as an
+    // outdated client ("please update Telegram") instead of helping video negotiate -- confirmed
+    // live (every call, incoming and outgoing, started dropping immediately). Telegram's server
+    // apparently checks this against a real, current release list, not just "is it non-empty".
+    // Reverted; calls work fine with this unset (audio negotiates without it).
     return protocol;
 }
 
@@ -95,6 +102,10 @@ static std::string getPurpleUserName(UserId userId, TdAccountData &account)
         return std::string();
 }
 
+// Guards the SetVideoSource() retry timer below; file-scope so deactivateCall() can cancel it
+// on hangup (a static local inside activateCall would be unreachable from there).
+static guint g_videoSourceRetryId = 0;
+
 static bool activateCall(const td::td_api::call &call, const std::string &buddyName,
                          TdAccountData &account, TdTransceiver &transceiver)
 {
@@ -150,12 +161,38 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     // file); the objects are cheap and simply reused/reattached across calls.
     static SkypeKitVideoSource *videoSource = nullptr;
     static SkypeKitVideoRenderer *videoRenderer = nullptr;
+    if (g_videoSourceRetryId) {
+        g_source_remove(g_videoSourceRetryId);
+        g_videoSourceRetryId = 0;
+    }
     if (call.is_video_) {
         callLunaOpenClonk();
         if (!videoSource) videoSource = new SkypeKitVideoSource(callLunaRequestKeyframe);
         if (!videoRenderer) videoRenderer = new SkypeKitVideoRenderer();
-        voip->SetVideoSource(videoSource);
         voip->SetVideoRenderer(videoRenderer);
+        // VoIPController::SetVideoSource() requires its own outgoing video Stream object to
+        // already exist, but that object is only created reactively -- deep inside
+        // VoIPController's packet thread, when the peer's first PKT_INIT arrives over the
+        // just-established UDP media channel (VoIPController.cpp's PKT_INIT handler calling
+        // SetupOutgoingVideoStream()). Calling it here, synchronously right after SetConfig(),
+        // is always too early (no UDP round-trip has happened yet) and always logged "Can't set
+        // video source when there is no outgoing video stream" while silently leaving the camera
+        // never attached. SetVideoSource() is cheap/idempotent to call repeatedly, so retry on a
+        // short timer (bounded) until libtgvoip has had time to complete that exchange.
+        voip->SetVideoSource(videoSource); // first attempt, expected to still be too early
+        struct RetryCtx { tgvoip::VoIPController *voip; int triesLeft; };
+        auto *ctx = new RetryCtx{voip, 10}; // ~3s at 300ms, bounded so a dead call can't retry forever
+        g_videoSourceRetryId = g_timeout_add_full(G_PRIORITY_DEFAULT, 300,
+            +[](gpointer data) -> gboolean {
+                auto *c = static_cast<RetryCtx *>(data);
+                c->voip->SetVideoSource(videoSource);
+                if (--c->triesLeft <= 0) {
+                    g_videoSourceRetryId = 0;
+                    return G_SOURCE_REMOVE;
+                }
+                return G_SOURCE_CONTINUE;
+            }, ctx,
+            +[](gpointer data) { delete static_cast<RetryCtx *>(data); });
     }
 
     std::vector<tgvoip::Endpoint> endpoints;
@@ -202,6 +239,10 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
 static void deactivateCall(TdAccountData &account)
 {
 #ifndef NoVoip
+    if (g_videoSourceRetryId) {
+        g_source_remove(g_videoSourceRetryId);
+        g_videoSourceRetryId = 0;
+    }
     callLunaSetCallAudio(false);   // clear audiod phone scenario on hangup
     callLunaCloseClonk();          // no-op if video was never active (checks internally)
     tgvoip::VoIPController *voip = account.getCallData();
