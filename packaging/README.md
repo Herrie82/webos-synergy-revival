@@ -149,8 +149,11 @@ packaging/
   app is likewise shared across connectors.
 - **QuickOffice / Photos / DocViewer integration** and **`device-setup/*` fixes** — device-wide
   patches/add-ons unrelated to any one connector (gstreamer codecs, chatthreader/contacts patches,
-  BT audio routing, the Thai font fallback, the retired-Skype cleanup, etc). Each fix's own
-  `device-setup/<name>/install*.sh` was the source of truth for what `generic/postinst` replicates.
+  BT audio routing, the Thai font fallback, the retired-Skype/AOL/Yahoo! cleanup, etc). Each fix's
+  own `device-setup/<name>/install*.sh` was the source of truth for what `generic/postinst`
+  replicates. `device-setup/legacy-im-disable` (AOL/AIM + Yahoo!, same non-destructive move pattern
+  as `skype-disable`) was added directly in `postinst`/`prerm` — no payload files to stage, so it
+  isn't in `stage.sh`'s device-setup copy loop, same as `skype-disable` itself.
 
 ## Known best-effort / unconfirmed pieces
 

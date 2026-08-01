@@ -190,11 +190,11 @@ fi
 # ---------------------------------------------------------------- device-setup: skype-disable
 # Non-destructive: moves the defunct Skype stack out of the way (reversible from prerm's backup).
 log "skype-disable: retiring the defunct Skype stack..."
-BAK=/var/skype-disabled-backup
+SKYBAK=/var/skype-disabled-backup
 ds_move() {
   [ -e "$1" ] || return 0
-  mkdir -p "$(dirname "$BAK$1")"
-  mv -f "$1" "$BAK$1" 2>/dev/null && log "  moved $1"
+  mkdir -p "$(dirname "$SKYBAK$1")"
+  mv -f "$1" "$SKYBAK$1" 2>/dev/null && log "  moved $1"
 }
 ds_move /usr/share/dbus-1/system-services/com.palm.skype.service
 ds_move /usr/share/dbus-1/system-services/com.palm.skypevalidator.service
@@ -218,6 +218,64 @@ ds_move /var/skypekit
 # hard ELF NEEDED + RPATH on it (readelf -d confirmed); removing it fails their entire dlopen, not
 # just calling. See device-setup/skype-disable/README.md.
 for p in /usr/bin/skypem linux-armv7-skypekit-voicepcm-videortp /usr/bin/skypevalidator; do
+  pkill -TERM -f "$p" 2>/dev/null
+done
+
+# ---------------------------------------------------------------- device-setup: legacy-im-disable
+# Non-destructive: moves the defunct AOL/AIM + Yahoo! stacks out of the way (same pattern as
+# skype-disable above; reversible from prerm's backup).
+log "legacy-im-disable: retiring the defunct AOL/AIM + Yahoo! stacks..."
+LEGBAK=/var/legacy-im-disabled-backup
+leg_move() {
+  [ -e "$1" ] || return 0
+  mkdir -p "$(dirname "$LEGBAK$1")"
+  mv -f "$1" "$LEGBAK$1" 2>/dev/null && log "  moved $1"
+}
+# AOL/AIM
+leg_move /usr/palm/public/accounts/com.palm.aol
+leg_move /usr/bin/imaccountvalidator
+leg_move /usr/share/ls2/roles/prv/com.palm.imaccountvalidator.json
+leg_move /usr/share/dbus-1/system-services/com.palm.imaccountvalidator.service
+# Yahoo! IM
+leg_move /usr/bin/imyahootransport
+leg_move /usr/share/ls2/roles/prv/com.palm.imyahoo.json
+leg_move /usr/share/dbus-1/system-services/com.palm.imyahoo.service
+leg_move /etc/palm/activities/com.palm.imyahoo
+leg_move /etc/palm/db/kinds/com.palm.imcommand.yahoo
+leg_move /etc/palm/db/kinds/com.palm.imloginstate.yahoo
+leg_move /etc/palm/db/kinds/com.palm.immessage.yahoo
+leg_move /etc/palm/db/kinds/com.palm.contact.imyahoo
+leg_move /etc/palm/tempdb/kinds/com.palm.imbuddystatus.yahoo
+# Yahoo! Contacts sync
+leg_move /usr/palm/services/com.palm.service.contacts.yahoo
+leg_move /usr/share/ls2/roles/prv/com.palm.service.contacts.yahoo.json
+leg_move /usr/share/ls2/roles/pub/com.palm.service.contacts.yahoo.json
+leg_move /usr/share/dbus-1/system-services/com.palm.service.contacts.yahoo.service
+leg_move /etc/palm/db/kinds/com.palm.contact.yahoo
+leg_move /etc/palm/db/kinds/com.palm.contact.transport.yahoo
+leg_move /etc/palm/db/kinds/com.palm.account.contacts.yahoo
+leg_move /etc/palm/db/permissions/com.palm.contact.yahoo
+leg_move /etc/palm/db/permissions/com.palm.contact.transport.yahoo
+leg_move /etc/palm/db/permissions/com.palm.account.contacts.yahoo
+# Yahoo! Calendar sync
+leg_move /usr/palm/services/com.palm.service.calendar.yahoo
+leg_move /usr/share/ls2/roles/prv/com.palm.service.calendar.yahoo.json
+leg_move /usr/share/ls2/roles/pub/com.palm.service.calendar.yahoo.json
+leg_move /usr/share/dbus-1/system-services/com.palm.service.calendar.yahoo.service
+leg_move /etc/palm/db/kinds/com.palm.calendar.yahoo
+leg_move /etc/palm/db/kinds/com.palm.calendarevent.yahoo
+leg_move /etc/palm/db/kinds/com.palm.calendar.transport.yahoo
+leg_move /etc/palm/db/kinds/com.palm.calendarevent.transport.yahoo
+leg_move /etc/palm/db/kinds/com.palm.account.calendar.yahoo
+leg_move /etc/palm/db/permissions/com.palm.calendar.yahoo
+leg_move /etc/palm/db/permissions/com.palm.calendarevent.yahoo
+# Yahoo! master/auth service + account template
+leg_move /usr/bin/yahoo-service
+leg_move /usr/share/ls2/roles/prv/com.palm.yahoo.json
+leg_move /usr/share/dbus-1/system-services/com.palm.yahoo.service
+leg_move /etc/palm/db/kinds/com.palm.yahoo.authservice
+leg_move /usr/palm/public/accounts/com.palm.yahoo
+for p in /usr/bin/imyahootransport /usr/bin/yahoo-service /usr/bin/imaccountvalidator; do
   pkill -TERM -f "$p" 2>/dev/null
 done
 
