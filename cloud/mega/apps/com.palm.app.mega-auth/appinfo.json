@@ -1,6 +1,6 @@
 {
 	"id": "com.palm.app.mega-auth",
-	"version": "1.0.0",
+	"version": "0.9.0",
 	"vendor": "webOS Ports",
 	"type": "web",
 	"main": "index.html",

@@ -1,0 +1,278 @@
+#!/bin/sh
+# postinst — generic package. Runs as root via Preware/ipkg (NOT palm-install). Wires up
+# imlibpurpleservice + the shared libpurple backend, cloudcore, QuickOffice/Photos/DocViewer
+# integration, and the device-setup/* fixes. All steps are idempotent; a failed step logs and
+# continues rather than aborting the whole install (best-effort, matches how these were
+# originally applied by hand over novacom).
+set +e
+DS=/opt/synergy-revival/device-setup
+log() { echo "[synergy-generic] $*"; }
+
+mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
+mount -o remount,rw / 2>/dev/null
+
+# ---------------------------------------------------------------- imlibpurpleservice
+log "registering messaging db8 kinds/permissions..."
+chmod 755 /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh /var/provision-im-reactions.sh \
+  /var/provision-person-search.sh 2>/dev/null
+/var/provision-im-db.sh
+/var/provision-person-search.sh
+luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+
+log "starting imtransport upstart job..."
+stop imtransport 2>/dev/null
+start imtransport 2>/dev/null
+
+# ---------------------------------------------------------------- device-setup: account-keepdata
+if [ -d "$DS/account-keepdata/handlers" ]; then
+  log "account-keepdata: patching com.palm.service.accounts handlers..."
+  D=/usr/palm/services/com.palm.service.accounts/handlers
+  cp "$DS/account-keepdata/handlers/delete.js" "$D/delete.js" 2>/dev/null
+  cp "$DS/account-keepdata/handlers/notify-deleted.js" "$D/notify-deleted.js" 2>/dev/null
+  for p in $(ps 2>/dev/null | grep 'com.palm.service.accounts.js' | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
+fi
+
+# ---------------------------------------------------------------- device-setup: bt-a2dp-fix
+if [ -f "$DS/bt-a2dp-fix/bt-a2dp-fix.sh" ]; then
+  log "bt-a2dp-fix: installing daemon..."
+  cp "$DS/bt-a2dp-fix/bt-a2dp-fix.sh" /usr/sbin/bt-a2dp-fix.sh
+  chmod 755 /usr/sbin/bt-a2dp-fix.sh
+  cp "$DS/bt-a2dp-fix/bt-a2dp-fix.upstart" /etc/event.d/bt-a2dp-fix
+  pkill -f bt-a2dp-fix.sh 2>/dev/null
+  stop bt-a2dp-fix 2>/dev/null; start bt-a2dp-fix 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: bt-hfg-call-patch
+# 1-byte PmBtEngine patch (com.palm.skype -> ANY transport) so BT hands-free call audio isn't
+# gated to Skype. See device-setup/bt-hfg-call-patch/README.md. No payload file; pure byte patch.
+log "bt-hfg-call-patch: patching PmBtEngine (BT HFG transport gate)..."
+BIN=/usr/bin/PmBtEngine
+if [ -f "$BIN" ]; then
+  printf '\061\000\000\012' > /tmp/.hfg_before
+  printf '\061\000\000\352' > /tmp/.hfg_after
+  dd if="$BIN" bs=1 skip=119792 count=4 2>/dev/null > /tmp/.hfg_got
+  if cmp -s /tmp/.hfg_got /tmp/.hfg_after; then
+    log "  already patched"
+  elif cmp -s /tmp/.hfg_got /tmp/.hfg_before; then
+    stop bluetooth 2>/dev/null; sleep 2
+    kill $(pidof PmBtEngine PmBtStack BluetoothMonitor) 2>/dev/null; sleep 2
+    [ -f "$BIN.orig" ] || cp "$BIN" "$BIN.orig"
+    printf '\352' | dd of="$BIN" bs=1 seek=119795 count=1 conv=notrunc 2>/dev/null
+    dd if="$BIN" bs=1 skip=119792 count=4 2>/dev/null > /tmp/.hfg_got2
+    cmp -s /tmp/.hfg_got2 /tmp/.hfg_after && log "  patched OK" || { log "  patch FAILED, restoring"; cp "$BIN.orig" "$BIN"; }
+    start bluetooth 2>/dev/null
+  else
+    log "  !! unexpected PmBtEngine build, skipping (see device-setup/bt-hfg-call-patch/README.md)"
+  fi
+  rm -f /tmp/.hfg_before /tmp/.hfg_after /tmp/.hfg_got /tmp/.hfg_got2
+fi
+
+# ---------------------------------------------------------------- device-setup: chatthreader-groupname-guard
+if [ -f "$DS/chatthreader-groupname-guard/imchannel.js" ]; then
+  log "chatthreader-groupname-guard: patching chatthreader models..."
+  CT=/usr/palm/services/com.palm.messaging.chatthreader/models
+  [ -f "$CT/imchannel.js.b4jidguard" ] || cp "$CT/imchannel.js" "$CT/imchannel.js.b4jidguard" 2>/dev/null
+  cp "$DS/chatthreader-groupname-guard/imchannel.js" "$CT/imchannel.js" 2>/dev/null
+  [ -f "$CT/dbmodels.js.b4jidguard" ] || cp "$CT/dbmodels.js" "$CT/dbmodels.js.b4jidguard" 2>/dev/null
+  sed -i 's/if (channelRec \&\& channelRec.displayName \&\& results\[0\].displayName !== channelRec.displayName) {/if (channelRec \&\& channelRec.displayName \&\& !DBModels.ImChannel._isRawId(channelRec.displayName, channelAddr) \&\& results[0].displayName !== channelRec.displayName) {/' "$CT/dbmodels.js" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: chatthreader-person-link-fix
+if [ -f "$DS/chatthreader-person-link-fix/newmessageassistant.js" ]; then
+  log "chatthreader-person-link-fix: patching newmessageassistant.js..."
+  CT=/usr/palm/services/com.palm.messaging.chatthreader/assistants
+  [ -f "$CT/newmessageassistant.js.b4personlink" ] || cp "$CT/newmessageassistant.js" "$CT/newmessageassistant.js.b4personlink" 2>/dev/null
+  cp "$DS/chatthreader-person-link-fix/newmessageassistant.js" "$CT/newmessageassistant.js" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: contacts-messaging-guard
+if [ -f "$DS/contacts-messaging-guard/personChanged.js" ]; then
+  log "contacts-messaging-guard: patching contacts.plugin.messaging..."
+  J=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
+  [ -f "$J/personChanged.js.b4bighackguard" ] || cp "$J/personChanged.js" "$J/personChanged.js.b4bighackguard" 2>/dev/null
+  cp "$DS/contacts-messaging-guard/personChanged.js" "$J/personChanged.js" 2>/dev/null
+  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
+fi
+
+# ---------------------------------------------------------------- device-setup: db8-maintenance
+if [ -f "$DS/db8-maintenance/db8-clean.sh" ]; then
+  log "db8-maintenance: installing db8-clean.sh convenience tool (run manually)..."
+  mkdir -p /usr/local/bin
+  cp "$DS/db8-maintenance/db8-clean.sh" /usr/local/bin/db8-clean.sh
+  chmod 755 /usr/local/bin/db8-clean.sh
+fi
+
+# ---------------------------------------------------------------- device-setup: filepicker-sort
+if [ -f "$DS/filepicker-sort/AlbumGridView.js" ]; then
+  log "filepicker-sort: patching FilePicker AlbumGridView.js..."
+  FP=/usr/lib/luna/system/luna-systemui/app/FilePicker
+  [ -f "$FP/AlbumGridView.js.orig" ] || cp "$FP/AlbumGridView.js" "$FP/AlbumGridView.js.orig" 2>/dev/null
+  cp "$DS/filepicker-sort/AlbumGridView.js" "$FP/AlbumGridView.js" 2>/dev/null
+  chmod 644 "$FP/AlbumGridView.js" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: fonts (Thai fallback)
+if [ -f "$DS/fonts/NotoSansThai-Regular.ttf" ]; then
+  log "fonts: installing Thai fallback into HeiT_nb.ttf slot..."
+  [ -f /usr/share/fonts/HeiT_nb.ttf.orig ] || cp /usr/share/fonts/HeiT_nb.ttf /usr/share/fonts/HeiT_nb.ttf.orig 2>/dev/null
+  cp "$DS/fonts/NotoSansThai-Regular.ttf" /usr/share/fonts/HeiT_nb.ttf 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: gst codecs
+if [ -d "$DS/gst-opus-codec/prebuilt" ]; then
+  log "gst-opus-codec: installing opus/ogg gstreamer plugins..."
+  cp -n /usr/lib/gstreamer-0.10/libgstogg.so /usr/lib/gstreamer-0.10/libgstogg.so.orig 2>/dev/null
+  cp "$DS/gst-opus-codec/prebuilt/libopus.so.0" /usr/lib/libopus.so.0 2>/dev/null
+  cp "$DS/gst-opus-codec/prebuilt/libgstopus.so" /usr/lib/gstreamer-0.10/libgstopus.so 2>/dev/null
+  cp "$DS/gst-opus-codec/prebuilt/libgstogg.so" /usr/lib/gstreamer-0.10/libgstogg.so 2>/dev/null
+  ( cd /usr/lib && ln -sf libopus.so.0 libopus.so; ldconfig 2>/dev/null )
+fi
+if [ -f "$DS/gst-plugins-base-audioresample/prebuilt/libgstaudioresample.so" ]; then
+  log "gst-plugins-base-audioresample: installing audioresample element..."
+  cp "$DS/gst-plugins-base-audioresample/prebuilt/libgstaudioresample.so" /usr/lib/gstreamer-0.10/libgstaudioresample.so 2>/dev/null
+fi
+if [ -d "$DS/gst-video-codecs/prebuilt" ]; then
+  log "gst-video-codecs: installing VP8/VP9/Matroska/Speex plugins..."
+  for so in libgstvpx.so libgstmatroska.so libgstspeex.so; do
+    cp "$DS/gst-video-codecs/prebuilt/$so" "/usr/lib/gstreamer-0.10/$so" 2>/dev/null
+  done
+fi
+rm -f ~/.gstreamer-0.10/registry.*.bin /home/root/.gstreamer-0.10/registry.*.bin 2>/dev/null
+
+# ---------------------------------------------------------------- device-setup: linker-parallel-reads
+if [ -f "$DS/linker-parallel-reads/autolinker.js" ]; then
+  log "linker-parallel-reads: patching contacts linker autolinker.js..."
+  L=/usr/palm/services/com.palm.service.contacts.linker
+  [ -f "$L/autolinker.js.b4optb" ] || cp "$L/autolinker.js" "$L/autolinker.js.b4optb" 2>/dev/null
+  cp "$DS/linker-parallel-reads/autolinker.js" "$L/autolinker.js" 2>/dev/null
+  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
+fi
+
+# ---------------------------------------------------------------- device-setup: skype-disable
+# Non-destructive: moves the defunct Skype stack out of the way (reversible from prerm's backup).
+log "skype-disable: retiring the defunct Skype stack..."
+BAK=/var/skype-disabled-backup
+ds_move() {
+  [ -e "$1" ] || return 0
+  mkdir -p "$(dirname "$BAK$1")"
+  mv -f "$1" "$BAK$1" 2>/dev/null && log "  moved $1"
+}
+ds_move /usr/share/dbus-1/system-services/com.palm.skype.service
+ds_move /usr/share/dbus-1/system-services/com.palm.skypevalidator.service
+ds_move /etc/palm/activities/com.palm.skype
+ds_move /etc/palm/activities/com.palm.skypevalidator
+ds_move /etc/event.d/skypekit
+ds_move /etc/event.d/skypekit-offport
+ds_move /usr/share/ls2/roles/prv/com.palm.skype.json
+ds_move /usr/share/ls2/roles/prv/com.palm.skypevalidator.json
+ds_move /etc/palm/db/kinds/com.palm.skype
+ds_move /etc/palm/db/permissions/com.palm.skype
+ds_move /etc/palm/tempdb/kinds/com.palm.skype
+ds_move /etc/palm/tempdb/permissions/com.palm.skype
+ds_move /usr/palm/public/accounts/com.palm.skype
+ds_move /usr/palm/applications/com.palm.app.skype
+ds_move /usr/bin/skypem
+ds_move /usr/bin/skypevalidator
+ds_move /usr/bin/linux-armv7-skypekit-voicepcm-videortp
+ds_move /var/skypekit
+ds_move /usr/lib/gstreamer-0.10/libpalmgstskype.so
+for p in /usr/bin/skypem linux-armv7-skypekit-voicepcm-videortp /usr/bin/skypevalidator; do
+  pkill -TERM -f "$p" 2>/dev/null
+done
+
+# ---------------------------------------------------------------- device-setup: videoplayer-webm
+if [ -d "$DS/videoplayer-webm/src" ]; then
+  log "videoplayer-webm: mislabeling webm/mkv in the mediastream framework..."
+  for f in /usr/palm/frameworks/mediastream/submission/24mediastream.js \
+           /usr/palm/frameworks/mediastream/submission/24/concatenated.js \
+           /usr/palm/frameworks/mediastream/submission/24/javascript/StreamingPlayEngine.js; do
+    [ -f "$f" ] || continue
+    if grep -q 'video/ogg' "$f" 2>/dev/null && grep -q '_msrc' "$f" 2>/dev/null; then
+      log "  already patched: $f"; continue
+    fi
+    [ -f "$f.orig" ] || cp "$f" "$f.orig"
+    python3 "$DS/videoplayer-webm/src/patch-mediastream.py" "$f" 2>/dev/null && log "  patched: $f" || log "  !! failed: $f"
+  done
+  # The autoplug shim (libmp-autoplug.so) is intentionally NOT installed here: it fixes WebM in the
+  # stock Video player but BREAKS mp4/H.264 playback. Apply it manually per
+  # device-setup/videoplayer-webm/README.md (MP_SHIM) if you need WebM more than mp4.
+  stop mediaserver 2>/dev/null; sleep 1; start mediaserver 2>/dev/null
+fi
+
+# ---------------------------------------------------------------- device-setup: webkit-webm-mime
+# Binary string patch of libWebKitLuna.so (video/x-ms-wmv -> video/webm); no payload file.
+log "webkit-webm-mime: patching libWebKitLuna.so MIME table..."
+LIB=$(ls /usr/lib/libWebKitLuna.so /usr/palm/lib/libWebKitLuna.so 2>/dev/null | head -1)
+if [ -n "$LIB" ]; then
+  if strings "$LIB" 2>/dev/null | grep -q "^video/webm$"; then
+    log "  already patched"
+  else
+    OFF=$(grep -abo "video/x-ms-wmv" "$LIB" | head -1 | cut -d: -f1)
+    if [ -n "$OFF" ]; then
+      cp "$LIB" /media/internal/libWebKitLuna.so.prewebm 2>/dev/null
+      printf 'video/webm\000\000\000\000' | dd of="$LIB" bs=1 seek="$OFF" count=14 conv=notrunc 2>/dev/null
+      strings "$LIB" 2>/dev/null | grep -q "^video/webm$" && log "  patched OK" || { log "  !! patch verify failed, restoring"; cp /media/internal/libWebKitLuna.so.prewebm "$LIB"; }
+    else
+      log "  !! target string not found, skipping (unexpected libWebKitLuna build)"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------- device-setup: whatsapp-e164-normalization
+if [ -f "$DS/whatsapp-e164-normalization/messaging.library-utils.js" ]; then
+  log "whatsapp-e164-normalization: migrating thread keys + patching messaging.library..."
+  sh "$DS/whatsapp-e164-normalization/migrate-ondevice.sh" 2>&1 | grep -v "^undefined"
+  M=/usr/palm/frameworks/messaging.library/submission/1.3
+  PLG=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
+  for f in javascript/utils.js concatenated.js; do
+    [ -f "$M/$f.b4e164" ] || cp "$M/$f" "$M/$f.b4e164" 2>/dev/null
+  done
+  cp "$DS/whatsapp-e164-normalization/messaging.library-utils.js" "$M/javascript/utils.js" 2>/dev/null
+  cp "$DS/whatsapp-e164-normalization/messaging.library-concatenated.js" "$M/concatenated.js" 2>/dev/null
+  if [ -f "$PLG/utils.js.b4whatsappnorm" ]; then
+    cp "$PLG/utils.js.b4whatsappnorm" "$PLG/utils.js" 2>/dev/null
+  fi
+  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
+fi
+
+# ---------------------------------------------------------------- quickoffice-integration
+if [ -d "$DS/quickoffice-integration" ]; then
+  log "quickoffice-integration: rerouting QuickOffice remote-file support..."
+  Q="$DS/quickoffice-integration"
+  for app in com.quickoffice.webos com.quickoffice.ar; do
+    d="/media/cryptofs/apps/usr/palm/applications/$app"
+    [ -d "$d" ] || continue
+    cp "$Q/source/RemoteFileService.js" "$d/source/" 2>/dev/null
+    cp "$Q/source/FileStore.js" "$d/source/" 2>/dev/null
+    patch -p1 -d "$d" < "$Q/patches/FolderContentsList.js.patch" 2>/dev/null || log "  !! FolderContentsList.js patch failed for $app (already applied?)"
+    patch -p1 -d "$d" < "$Q/patches/FolderContentsPane.js.patch" 2>/dev/null || log "  !! FolderContentsPane.js patch failed for $app (already applied?)"
+    cp "$Q/assets/toolbar-icon-refresh.png" "$d/images/" 2>/dev/null
+  done
+fi
+
+# ---------------------------------------------------------------- photos-integration
+if [ -d "$DS/photos-integration" ]; then
+  log "photos-integration: routing cloud accounts to Photos + Library icons..."
+  P="$DS/photos-integration"
+  DAPP=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
+  DSVC=/usr/palm/services/com.palm.service.photos
+  if [ -d "$DAPP" ]; then
+    patch -p1 -d "$DAPP" < "$P/patches/LibraryNavigationPanel.css.patch" 2>/dev/null || log "  !! LibraryNavigationPanel.css patch failed (already applied?)"
+    cp "$P"/assets/syn-*.png "$DAPP/images/" 2>/dev/null
+    # Best-effort: exact subpath for these two app-side patches isn't confirmed against a pristine
+    # IPK (see packaging/README.md) — log failure instead of aborting.
+    patch -p1 -d "$DAPP" < "$P/patches/PictureMode.js.patch" 2>/dev/null || log "  !! PictureMode.js patch not applied — apply manually per photos-integration/README.md"
+    patch -p1 -d "$DAPP" < "$P/patches/AlbumModeMultiselectControls.js.patch" 2>/dev/null || log "  !! AlbumModeMultiselectControls.js patch not applied — apply manually"
+  fi
+  if [ -d "$DSVC" ]; then
+    patch -p1 -d "$DSVC" < "$P/patches/Utils.js.patch" 2>/dev/null || log "  !! Utils.js patch not applied — apply manually per photos-integration/README.md"
+    patch -p1 -d "$DSVC" < "$P/patches/Sync-Manager.js.patch" 2>/dev/null || log "  !! Sync-Manager.js patch not applied — apply manually"
+  fi
+fi
+
+luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+mount -o remount,ro /dev/mapper/store-root / 2>/dev/null
+mount -o remount,ro / 2>/dev/null
+
+log "install complete. Restart the UI to pick up patched app/framework JS: stop LunaSysMgr; start LunaSysMgr"
+exit 0

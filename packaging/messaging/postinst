@@ -1,0 +1,11 @@
+#!/bin/sh
+# postinst — shared by every messaging (libpurple) connector package. The plugin only needs to be
+# on disk in backend/lib/purple-2/ (owned by generic) + the account template/app; restart the
+# transport so it re-enumerates prpls, and rescan apps for the new setup app.
+set +e
+luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+for p in $(pidof accounts.js 2>/dev/null); do kill "$p" 2>/dev/null; done
+stop imtransport 2>/dev/null
+start imtransport 2>/dev/null
+echo "[synergy-messaging] installed. Settings > Accounts > Add Account to finish setup."
+exit 0

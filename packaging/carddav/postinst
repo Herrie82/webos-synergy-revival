@@ -1,0 +1,38 @@
+#!/bin/sh
+# postinst — CardDAV/CalDAV connector. Adapted from carddav/deploy/deploy-cdav.sh's own
+# cdav-postinstall.sh (the extraction step is now ipkg's data.tar.gz unpack; everything after
+# that is unchanged).
+set +e
+SVCID=org.webosports.service.cdav
+APPID=org.webosports.app.cdav
+
+mount -o remount,rw / 2>/dev/null
+
+if [ ! -f /usr/palm/services/$SVCID/services.json ]; then
+  echo "[cdav] !! service files missing after install — aborting provisioning"
+  exit 1
+fi
+
+echo "[cdav] provisioning db8 kinds + permissions..."
+chmod +x /var/provision-cdav-db.sh 2>/dev/null
+sh /var/provision-cdav-db.sh
+
+echo "[cdav] rescanning luna-service2 roles..."
+ls-control scan-services 2>/dev/null || echo "   (ls-control scan-services not available)"
+
+echo "[cdav] registering the setup app + reloading Accounts templates..."
+luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$APPID'"}' >/dev/null 2>&1
+luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$SVCID'"}' >/dev/null 2>&1
+for p in $(ps 2>/dev/null | grep 'accounts.js' | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
+sleep 2
+luna-send -n 1 palm://com.palm.service.accounts/listAccountTemplates '{}' >/dev/null 2>&1
+
+echo "[cdav] (re)starting the service..."
+for p in $(ps 2>/dev/null | grep "$SVCID" | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
+luna-send -n 1 -f palm://$SVCID/checkStatus '{"accountId":"install-ping"}' >/dev/null 2>&1 &
+sleep 4
+
+mount -o remount,ro / 2>/dev/null
+echo "[cdav] install complete. If a template didn't appear in Accounts, restart LunaSysMgr or reboot."
+exit 0

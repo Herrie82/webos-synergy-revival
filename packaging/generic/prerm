@@ -1,0 +1,65 @@
+#!/bin/sh
+# prerm — generic package. Stops the shared transport and restores the stock files that
+# postinst patched (from the .orig/.b4* backups it made). Leaves user data (messages, contacts,
+# db8 records) alone. Best-effort: every step logs and continues on failure.
+set +e
+log() { echo "[synergy-generic] $*"; }
+
+log "stopping imtransport..."
+stop imtransport 2>/dev/null
+stop bt-a2dp-fix 2>/dev/null
+
+mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
+mount -o remount,rw / 2>/dev/null
+
+log "restoring patched stock files from backups..."
+restore() { [ -f "$1" ] && cp "$1" "$2" && log "  restored $2"; }
+
+restore /usr/palm/services/com.palm.messaging.chatthreader/models/imchannel.js.b4jidguard \
+        /usr/palm/services/com.palm.messaging.chatthreader/models/imchannel.js
+restore /usr/palm/services/com.palm.messaging.chatthreader/models/dbmodels.js.b4jidguard \
+        /usr/palm/services/com.palm.messaging.chatthreader/models/dbmodels.js
+restore /usr/palm/services/com.palm.messaging.chatthreader/assistants/newmessageassistant.js.b4personlink \
+        /usr/palm/services/com.palm.messaging.chatthreader/assistants/newmessageassistant.js
+restore /usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript/personChanged.js.b4bighackguard \
+        /usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript/personChanged.js
+restore /usr/lib/luna/system/luna-systemui/app/FilePicker/AlbumGridView.js.orig \
+        /usr/lib/luna/system/luna-systemui/app/FilePicker/AlbumGridView.js
+restore /usr/share/fonts/HeiT_nb.ttf.orig /usr/share/fonts/HeiT_nb.ttf
+restore /usr/palm/services/com.palm.service.contacts.linker/autolinker.js.b4optb \
+        /usr/palm/services/com.palm.service.contacts.linker/autolinker.js
+restore /usr/bin/PmBtEngine.orig /usr/bin/PmBtEngine
+restore /media/internal/libWebKitLuna.so.prewebm /usr/lib/libWebKitLuna.so
+restore /media/internal/libWebKitLuna.so.prewebm /usr/palm/lib/libWebKitLuna.so
+M=/usr/palm/frameworks/messaging.library/submission/1.3
+restore "$M/javascript/utils.js.b4e164" "$M/javascript/utils.js"
+restore "$M/concatenated.js.b4e164" "$M/concatenated.js"
+for f in /usr/palm/frameworks/mediastream/submission/24mediastream.js \
+         /usr/palm/frameworks/mediastream/submission/24/concatenated.js \
+         /usr/palm/frameworks/mediastream/submission/24/javascript/StreamingPlayEngine.js; do
+  restore "$f.orig" "$f"
+done
+
+log "restoring the retired Skype stack (non-destructive move, reversible)..."
+BAK=/var/skype-disabled-backup
+if [ -d "$BAK" ]; then
+  ( cd "$BAK" && find . -type f | while read -r f; do
+      mkdir -p "$(dirname "/${f#./}")"
+      mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
+    done )
+fi
+
+log "removing imlibpurpleservice + backend files..."
+rm -f /usr/bin/imlibpurpletransport /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh \
+      /var/provision-im-reactions.sh /var/provision-person-search.sh /etc/event.d/imtransport
+rm -f /usr/sbin/bt-a2dp-fix.sh /etc/event.d/bt-a2dp-fix /usr/local/bin/db8-clean.sh
+rm -rf /media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend
+rm -rf /usr/palm/services/_cloudcore
+rm -rf /opt/synergy-revival
+
+mount -o remount,ro /dev/mapper/store-root / 2>/dev/null
+mount -o remount,ro / 2>/dev/null
+
+log "removal complete. NOTE: db8 kinds/permissions and the retired Skype db8 kinds are left"
+log "registered (inert, harmless) — only a reflash fully clears those."
+exit 0

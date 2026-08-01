@@ -1,0 +1,24 @@
+#!/bin/sh
+# prerm — CardDAV/CalDAV connector. Stops the service and removes what postinst installed.
+# Leaves synced contacts/calendar data in the stock Contacts/Calendar db8 kinds alone (db8
+# kinds/permissions this package registered are left inert, matching the generic package's
+# convention — only a reflash fully clears those).
+set +e
+SVCID=org.webosports.service.cdav
+APPID=org.webosports.app.cdav
+
+for p in $(ps 2>/dev/null | grep "$SVCID" | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
+
+mount -o remount,rw / 2>/dev/null
+rm -rf /usr/palm/services/$SVCID
+rm -f /usr/share/ls2/roles/pub/$SVCID.json /usr/share/ls2/roles/prv/$SVCID.json
+rm -f /usr/share/dbus-1/system-services/$SVCID.service /usr/share/dbus-1/services/$SVCID.service
+rm -rf /usr/palm/public/accounts/org.webosports.cdav.account*
+rm -rf /media/cryptofs/apps/usr/palm/applications/$APPID
+rm -f /var/provision-cdav-db.sh
+mount -o remount,ro / 2>/dev/null
+
+ls-control scan-services 2>/dev/null
+luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+echo "[cdav] removal complete."
+exit 0

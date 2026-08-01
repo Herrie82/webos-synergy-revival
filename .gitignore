@@ -10,6 +10,9 @@
 # scratch
 /tmp/
 
+# --- packaging/: built .ipk output (rebuild via packaging/build-all.sh) ---
+/packaging/out/
+
 # --- messaging/: vendored native libpurple plugin build artifacts ---
 # Source is vendored; built objects/libs are rebuilt via each plugin's build step.
 build/

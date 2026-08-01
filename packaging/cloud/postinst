@@ -1,0 +1,9 @@
+#!/bin/sh
+# postinst — shared by every cloud connector package. The account template + legacy Mojo-style
+# service need nothing beyond being on disk (no ls2 role file, no db8 kind) — just nudge the
+# Accounts app and application manager to pick up the new template/app.
+set +e
+luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+for p in $(pidof accounts.js 2>/dev/null); do kill "$p" 2>/dev/null; done
+echo "[synergy-cloud] installed. Settings > Accounts > Add Account to finish setup."
+exit 0
