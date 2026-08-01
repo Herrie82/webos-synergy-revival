@@ -41,19 +41,44 @@ for f in /usr/palm/frameworks/mediastream/submission/24mediastream.js \
 done
 
 log "restoring the retired Skype stack (non-destructive move, reversible)..."
-BAK=/var/skype-disabled-backup
-if [ -d "$BAK" ]; then
-  ( cd "$BAK" && find . -type f | while read -r f; do
+SKYBAK=/var/skype-disabled-backup
+if [ -d "$SKYBAK" ]; then
+  ( cd "$SKYBAK" && find . -type f | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
       mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
     done )
 fi
 
+log "restoring stock libpurple engine (or removing what we added if there was no stock file)..."
+STOCKBAK=/var/synergy-stock-backup
+OV=/opt/synergy-revival/rootfs-overwrite
+restore_or_remove() {  # $1 = real absolute path we may have overwritten in postinst
+  local dst="$1"
+  if [ -e "$STOCKBAK$dst" ]; then
+    mv -f "$STOCKBAK$dst" "$dst" && log "  restored stock $dst"
+  else
+    rm -f "$dst"
+  fi
+}
+if [ -d "$OV/lib" ]; then
+  restore_or_remove /usr/lib/libpurple.so.0.14.13
+  restore_or_remove /usr/lib/libpurple.so.0
+  restore_or_remove /usr/lib/libpurple.so
+  for so in "$OV/lib/purple-2/"*.so; do
+    [ -f "$so" ] || continue
+    restore_or_remove "/usr/lib/purple-2/$(basename "$so")"
+  done
+fi
+if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
+  restore_or_remove /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
+fi
+rm -rf "$STOCKBAK"
+
 log "removing imlibpurpleservice + backend files..."
 rm -f /usr/bin/imlibpurpletransport /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh \
       /var/provision-im-reactions.sh /var/provision-person-search.sh /etc/event.d/imtransport
 rm -f /usr/sbin/bt-a2dp-fix.sh /etc/event.d/bt-a2dp-fix /usr/local/bin/db8-clean.sh
-rm -rf /media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend
+rm -rf /usr/lib/synergy-runtime
 rm -rf /usr/palm/services/_cloudcore
 rm -rf /opt/synergy-revival
 

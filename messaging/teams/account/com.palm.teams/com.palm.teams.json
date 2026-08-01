@@ -8,7 +8,7 @@
         },
         "validator": {
             "customUI": {
-                "appId": "com.palm.app.teams",
+                "appId": "org.webosports.app.teams",
                 "name": "validator.html"
             }
         },
@@ -19,12 +19,12 @@
             "com.palm.app.contacts",
             "com.palm.service.contacts",
             "com.palm.service.contacts.linker",
-            "com.palm.app.teams"
+            "org.webosports.app.teams"
         ],
         "writePermissions": [
             "com.palm.app.contacts",
             "com.palm.app.messaging",
-            "com.palm.app.teams"
+            "org.webosports.app.teams"
         ],
         "capabilityProviders": [
             {

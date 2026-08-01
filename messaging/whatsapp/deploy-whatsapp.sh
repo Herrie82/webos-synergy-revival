@@ -14,8 +14,8 @@ NR="novacom run file://bin/sh"
 # NOTE: this novacom build word-splits `sh -c "cmd"`, so run remote shell commands by
 # piping the (already-expanded) command string on stdin instead of via -c.
 nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
-BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
-BACKEND_LIB="$(dirname "$BACKEND_PURPLE2")"
+BACKEND_PURPLE2="${BACKEND_PURPLE2:-/usr/lib/purple-2}"
+BACKEND_LIB="${BACKEND_LIB:-/usr/lib/synergy-runtime}"
 # The WhatsApp prpl is the COMBINED plugin (facebook-e2ee/purple-combined) - ONE libwhatsmeow.so
 # hosts BOTH prpl-hehoe-whatsmeow and prpl-gometa (+ send-reaction, newsletters, calling). The old
 # standalone purple-gowhatsapp was removed; build with facebook-e2ee/plugin/purple-combined/build-combined.sh.
@@ -40,9 +40,10 @@ novacom put "file://$ACC/com.palm.whatsapp.json" < com.palm.whatsapp.json
 for f in images/whatsapp-32x32.png images/whatsapp-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"
 done
-nr "mount -o remount,ro /dev/mapper/store-root / || true"
+# rootfs stays rw through steps 3-4 too now (both write to the real /usr/lib, not the always-writable
+# /media/cryptofs app storage the old com.palm.app.teams/backend nesting used).
 
-echo "== 3. stage opus/ogg/opusfile runtime libs into backend/lib (size-verified) =="
+echo "== 3. stage opus/ogg/opusfile runtime libs into the private synergy-runtime dir (size-verified) =="
 # A dropped novacom connection ("unexpected EOF from server") mid-`put` leaves a TRUNCATED (often
 # 0-byte) file on the device with NO error. A 0-byte libopus.so.0 / libopusfile.so.0 then makes the
 # loader reject EVERY plugin that needs it ("libopus.so.0: file too short") -> libtelegram-tdlib.so
@@ -64,7 +65,7 @@ for L in libopusfile.so.0 libopus.so.0 libogg.so.0; do
   [ -f "$STAGING/lib/$L" ] && put_verify "$STAGING/lib/$L" "$BACKEND_LIB/$L"
 done
 
-echo "== 4. drop libwhatsmeow.so into the live backend plugin dir =="
+echo "== 4. drop libwhatsmeow.so into /usr/lib/purple-2 =="
 if [ -f "$PRPL" ]; then
   nr "mkdir -p $BACKEND_PURPLE2"
   novacom put "file://$BACKEND_PURPLE2/libwhatsmeow.so" < "$PRPL"

@@ -53,12 +53,19 @@ move /etc/palm/tempdb/permissions/com.palm.skype
 move /usr/palm/public/accounts/com.palm.skype
 move /usr/palm/applications/com.palm.app.skype
 
-# 4. Binaries, SkypeKit engine + runtime dir, gst plugin.
+# 4. Binaries, SkypeKit engine + runtime dir.
 move /usr/bin/skypem
 move /usr/bin/skypevalidator
 move /usr/bin/linux-armv7-skypekit-voicepcm-videortp
 move /var/skypekit
-move /usr/lib/gstreamer-0.10/libpalmgstskype.so
+# DO NOT move /usr/lib/gstreamer-0.10/libpalmgstskype.so despite the name: Teams, tdlib-purple
+# (Telegram) and the combined WhatsApp/Facebook plugin all have a hard ELF NEEDED on it (confirmed
+# via `readelf -d`) AND an RPATH of exactly /usr/lib/gstreamer-0.10 baked into each -- they reuse
+# its H.264/media glue code for their own calling features, unrelated to actual Skype. A missing
+# NEEDED library fails that plugin's entire dlopen (same failure class as a truncated libopus.so.0
+# elsewhere in this repo), silently breaking Teams/Telegram/WhatsApp messaging, not just calling.
+# Confirmed on-device: this file was moved by an earlier run of this script and had to be manually
+# restored from $BAK afterward -- leave it in place.
 
 # 5. Stop anything already running (graceful SIGTERM; these are safe to signal).
 for p in /usr/bin/skypem linux-armv7-skypekit-voicepcm-videortp /usr/bin/skypevalidator; do

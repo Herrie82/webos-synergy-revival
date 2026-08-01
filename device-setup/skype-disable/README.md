@@ -11,9 +11,17 @@ mediator (`skypem`) + SkypeKit engine on demand, plus Skype db8 kinds, an accoun
 - **db8** — the `com.palm.skype/` kind + permission dirs (the `com.palm.*.skypem:1` kinds) under both
   `db` and `tempdb`.
 - **Account + app** — the `com.palm.skype` account template and `com.palm.app.skype`.
-- **Binaries** — `skypem`, `skypevalidator`, the SkypeKit engine, `/var/skypekit`, `libpalmgstskype.so`.
+- **Binaries** — `skypem`, `skypevalidator`, the SkypeKit engine, `/var/skypekit`.
 
 Nothing is deleted; it is moved under `/var/skype-disabled-backup`. `rm -rf` that once you're sure.
+
+**NOT removed despite the name: `/usr/lib/gstreamer-0.10/libpalmgstskype.so`.** Teams, Telegram
+(tdlib-purple) and the combined WhatsApp/Facebook plugin all hard-`NEEDED` it (confirmed via
+`readelf -d`, each also carries an RPATH of exactly that directory) — they reuse its H.264/media
+glue for their own calling, unrelated to Skype. Removing it fails those plugins' entire `dlopen`
+(not just a calling feature), silently breaking messaging for those three connectors. This was
+moved by an earlier version of this script and had to be manually restored on-device — confirmed
+the hard way, don't repeat it.
 
 ## Apply on a device
 

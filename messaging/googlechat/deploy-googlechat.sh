@@ -13,7 +13,7 @@ NR="novacom run file://bin/sh"
 # NOTE: this novacom build word-splits `sh -c "cmd"`, so run remote shell commands by
 # piping the (already-expanded) command string on stdin instead of via -c.
 nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
-BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
+BACKEND_PURPLE2="${BACKEND_PURPLE2:-/usr/lib/purple-2}"
 BUILD="$PKG/plugin/purple-googlechat/build-arm"
 PRPL="$BUILD/libgooglechat.stripped.so"
 PBC="$BUILD/libprotobuf-c.stripped.so"
@@ -35,14 +35,13 @@ novacom put "file://$ACC/com.palm.googlechat.json" < com.palm.googlechat.json
 for f in images/googlechat-32x32.png images/googlechat-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"
 done
-nr "mount -o remount,ro /dev/mapper/store-root / || true"
-
-echo "== 3. drop libprotobuf-c.so.1 + libgooglechat.so into the live backend plugin dir =="
-BACKEND_LIB="$(dirname "$BACKEND_PURPLE2")"
+echo "== 3. drop libprotobuf-c.so.1 (private synergy-runtime dir) + libgooglechat.so (/usr/lib/purple-2) =="
+BACKEND_LIB="${BACKEND_LIB:-/usr/lib/synergy-runtime}"
 if [ -f "$PRPL" ] && [ -f "$PBC" ]; then
-  nr "mkdir -p $BACKEND_PURPLE2"
+  nr "mount -o remount,rw /dev/mapper/store-root / ; mkdir -p $BACKEND_PURPLE2 $BACKEND_LIB"
   novacom put "file://$BACKEND_LIB/libprotobuf-c.so.1" < "$PBC"
   novacom put "file://$BACKEND_PURPLE2/libgooglechat.so" < "$PRPL"
+  nr "mount -o remount,ro /dev/mapper/store-root / || true"
 else
   echo "   !! not built — run ./build-googlechat.sh first (see README.md)"
 fi

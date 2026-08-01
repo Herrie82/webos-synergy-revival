@@ -6,10 +6,49 @@
 # originally applied by hand over novacom).
 set +e
 DS=/opt/synergy-revival/device-setup
+OV=/opt/synergy-revival/rootfs-overwrite
+BAK=/var/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
+
+# ---------------------------------------------------------------- libpurple engine (overwrites
+# the real /usr/lib + /usr/lib/purple-2 -- genuine stock com.palm.imlibpurple infrastructure
+# being modernized in place, not a private add-on). Back up whatever's already at each
+# destination ONCE (idempotent: skip if a backup already exists from a prior install) so prerm
+# can restore it, matching the non-destructive move pattern already used by device-setup's
+# skype-disable / bt-hfg-call-patch / webkit-webm-mime fixes.
+overwrite_file() {  # $1 = staged source (under $OV), $2 = real absolute destination path
+  local src="$1" dst="$2"
+  [ -f "$src" ] || [ -L "$src" ] || return 0
+  if [ -e "$dst" ] && [ ! -e "$BAK$dst" ]; then
+    mkdir -p "$(dirname "$BAK$dst")"
+    cp -a "$dst" "$BAK$dst"
+    log "  backed up stock $dst"
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp -a "$src" "$dst"
+}
+if [ -d "$OV/lib" ]; then
+  log "installing libpurple 2.14 engine to /usr/lib (backing up any stock files first)..."
+  overwrite_file "$OV/lib/libpurple.so.0.14.13" /usr/lib/libpurple.so.0.14.13
+  overwrite_file "$OV/lib/libpurple.so.0" /usr/lib/libpurple.so.0
+  overwrite_file "$OV/lib/libpurple.so" /usr/lib/libpurple.so
+  for so in "$OV/lib/purple-2/"*.so; do
+    [ -f "$so" ] || continue
+    overwrite_file "$so" "/usr/lib/purple-2/$(basename "$so")"
+  done
+fi
+
+# com.palm.imlibpurple.service: stock points straight at the raw transport binary, bypassing
+# imwrap.sh (no wpe-glibc loader patch / SSL override / PmLog self-heal / ALSA preload) -- overwrite
+# it with the version that execs /var/imwrap.sh instead, backing up stock first (see stage.sh).
+if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
+  log "installing com.palm.imlibpurple.service (routes through imwrap.sh)..."
+  overwrite_file "$OV/dbus-1/system-services/com.palm.imlibpurple.service" \
+    /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
+fi
 
 # ---------------------------------------------------------------- imlibpurpleservice
 log "registering messaging db8 kinds/permissions..."
@@ -175,7 +214,9 @@ ds_move /usr/bin/skypem
 ds_move /usr/bin/skypevalidator
 ds_move /usr/bin/linux-armv7-skypekit-voicepcm-videortp
 ds_move /var/skypekit
-ds_move /usr/lib/gstreamer-0.10/libpalmgstskype.so
+# DO NOT move libpalmgstskype.so despite the name -- Teams/Telegram/WhatsApp-combined all have a
+# hard ELF NEEDED + RPATH on it (readelf -d confirmed); removing it fails their entire dlopen, not
+# just calling. See device-setup/skype-disable/README.md.
 for p in /usr/bin/skypem linux-armv7-skypekit-voicepcm-videortp /usr/bin/skypevalidator; do
   pkill -TERM -f "$p" 2>/dev/null
 done

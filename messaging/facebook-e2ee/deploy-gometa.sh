@@ -10,7 +10,7 @@ set -e
 PKG="$(cd "$(dirname "$0")" && pwd)"
 # novacom's `sh -c` word-splits, so pipe commands on stdin instead.
 nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
-BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
+BACKEND_PURPLE2="${BACKEND_PURPLE2:-/usr/lib/purple-2}"
 PRPL="$PKG/plugin/purple-combined/build-arm/libwhatsmeow.stripped.so"
 
 echo "== 1. push setup app com.palm.app.gometa =="
@@ -30,20 +30,20 @@ novacom put "file://$ACC/com.palm.gometa.json" < com.palm.gometa.json
 for f in images/facebook-32x32.png images/facebook-48x48.png; do
   novacom put "file://$ACC/$f" < "$f"
 done
-nr "mount -o remount,ro /dev/mapper/store-root / || true"
-
-echo "== 3. deploy combined plugin (unlink-first, size-verified) =="
+echo "== 3. deploy combined plugin into /usr/lib/purple-2 (unlink-first, size-verified) =="
 if [ -f "$PRPL" ]; then
   SZ=$(wc -c < "$PRPL")
   gzip -c "$PRPL" > /tmp/libwhatsmeow.so.gz
   novacom put "file:///media/internal/libwhatsmeow.so.gz" < /tmp/libwhatsmeow.so.gz
-  nr "cp $BACKEND_PURPLE2/libwhatsmeow.so $BACKEND_PURPLE2/libwhatsmeow.so.b4gometa 2>/dev/null; \
+  nr "mount -o remount,rw /dev/mapper/store-root / ; mkdir -p $BACKEND_PURPLE2; \
+      cp $BACKEND_PURPLE2/libwhatsmeow.so $BACKEND_PURPLE2/libwhatsmeow.so.b4gometa 2>/dev/null; \
       gunzip -c /media/internal/libwhatsmeow.so.gz > /media/internal/libwhatsmeow.so.new; \
       N=\$(wc -c < /media/internal/libwhatsmeow.so.new); \
       if [ \"\$N\" = \"$SZ\" ]; then rm -f $BACKEND_PURPLE2/libwhatsmeow.so; \
         mv /media/internal/libwhatsmeow.so.new $BACKEND_PURPLE2/libwhatsmeow.so; \
         chmod 755 $BACKEND_PURPLE2/libwhatsmeow.so; echo installed \$N bytes; \
-      else echo SIZE-MISMATCH \$N want $SZ; fi"
+      else echo SIZE-MISMATCH \$N want $SZ; fi; \
+      mount -o remount,ro /dev/mapper/store-root / || true"
 else
   echo "   !! $PRPL not built — run plugin/purple-combined/build-combined.sh first"
 fi

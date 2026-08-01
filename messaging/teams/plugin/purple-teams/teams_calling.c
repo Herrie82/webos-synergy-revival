@@ -658,7 +658,7 @@ teams_media_start(TeamsCall *call)
 	 * lacks them -> "Unknown PCM voip". Force the system libasound (via LD_PRELOAD, same as the
 	 * transport) + the system ALSA config so alsasink/alsasrc can open voip/voipsource -> PulseAudio. */
 	envp = g_environ_setenv(envp, "LD_PRELOAD",
-		"/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/libstdc++.so.6 "
+		"/usr/lib/synergy-runtime/libstdc++.so.6 "
 		"/media/cryptofs/wpe-glibc/lib/librt.so.1 /usr/lib/libasound.so.2", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_CONFIG_PATH", "/usr/share/alsa/alsa.conf", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_PLUGIN_DIR", "/usr/lib/alsa-lib", TRUE);
@@ -1415,7 +1415,7 @@ teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri, gboolean video)
 	 * a pure gst-1.20/nice build (no libpalmgstskype.so), so simply inheriting our own environment
 	 * (set by imwrap.sh) is sufficient. */
 	envp = g_environ_setenv(envp, "LD_PRELOAD",
-		"/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/libstdc++.so.6 "
+		"/usr/lib/synergy-runtime/libstdc++.so.6 "
 		"/media/cryptofs/wpe-glibc/lib/librt.so.1 /usr/lib/libasound.so.2", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_CONFIG_PATH", "/usr/share/alsa/alsa.conf", TRUE);
 	envp = g_environ_setenv(envp, "ALSA_PLUGIN_DIR", "/usr/lib/alsa-lib", TRUE);

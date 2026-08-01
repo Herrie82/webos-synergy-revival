@@ -1,8 +1,8 @@
 #!/bin/bash
 # stage.sh — assemble the "generic" package: everything every connector depends on.
 #   - imlibpurpleservice (transport binary, launch chain, db8 kinds/perms, ls2 roles)
-#   - the shared libpurple 2.14 + ssl-openssl backend engine (nested under com.palm.app.teams's
-#     own app dir on purpose — see packaging/README.md "why com.palm.app.teams")
+#   - the shared libpurple 2.14 + ssl-openssl engine, overwriting the real stock
+#     /usr/lib(+/purple-2) -- see packaging/README.md "why /usr/lib now"
 #   - _cloudcore + com.palm.app.cloud-auth (shared by every cloud connector)
 #   - quickoffice-integration / photos-integration / docviewer app
 #   - device-setup/* fixes (payload files only; the patch/copy logic lives in postinst)
@@ -16,6 +16,12 @@ STAGE="$1"
 source "$REPO/packaging/lib/common.sh"
 
 DS_OUT="$STAGE/opt/synergy-revival/device-setup"
+# Neutral staging area for files that OVERWRITE real stock rootfs paths: postinst backs up
+# whatever's already at the real destination (to /var/synergy-stock-backup/...) before copying
+# these into place -- ipkg's own data.tar.gz unpack happens BEFORE postinst runs, so anything
+# placed directly at its final path here would silently clobber stock with no chance to back it
+# up first. See generic/postinst.
+OVERWRITE="$STAGE/opt/synergy-revival/rootfs-overwrite"
 
 echo "== generic: imlibpurpleservice =="
 IM="$REPO/messaging/imlibpurpleservice/imlibpurpleservice"
@@ -42,22 +48,43 @@ cp "$IM/files/ls2/roles/pub/com.palm.imlibpurple.json" "$STAGE/usr/share/ls2/rol
 # lives in the core-apps repo's com.palm.app.contacts checkout, not here — see
 # messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md)
 
-echo "== generic: shared libpurple 2.14 + ssl-openssl backend (com.palm.app.teams/backend) =="
-# Physically nested under com.palm.app.teams for historical reasons (imwrap.sh and every
-# connector's plugin drop-in hardcode this path) — see packaging/README.md. Generic owns ONLY
-# the backend/ subtree; Teams' own package owns the app's top-level setup-app files (appinfo.json
-# etc). ipkg allows multiple packages to share a directory as long as no two own the same file.
+# com.palm.imlibpurple.service: stock ships this pointed straight at the raw transport binary
+# (Exec=/usr/bin/imlibpurpletransport), which bypasses imwrap.sh entirely -- no wpe-glibc loader
+# patch, no SSL override, no PmLog semaphore self-heal, no ALSA preload. On-demand LS2 activation
+# via this file with the stock Exec line would launch an effectively broken transport. This
+# overwrites real stock (cross-checked against StockRootfs + the live device, where it had already
+# been hand-fixed the same way, confirming the need) -- stage it in the neutral overwrite dir so
+# postinst backs up stock first, same as libpurple.so.
+mkdir -p "$OVERWRITE/dbus-1/system-services"
+cp "$IM/files/dbus-1/system-services/com.palm.imlibpurple.service" "$OVERWRITE/dbus-1/system-services/"
+
+echo "== generic: shared libpurple 2.14 + ssl-openssl engine (overwrites real /usr/lib) =="
+# libpurple.so.0.14.13 here has its 3 compiled-in absolute paths (plugin dir, sysconfdir,
+# datadir) binary-patched from the old com.palm.app.teams (renamed org.webosports.app.teams)/backend nesting to the real /usr/lib
+# locations (/usr/lib/purple-2, /etc, /usr/share) -- same technique as the existing
+# device-setup/webkit-webm-mime string patch. This is genuine stock Palm IM infrastructure
+# (com.palm.imlibpurple) being modernized in place, so it's staged to OVERWRITE (postinst backs up
+# whatever's already there first) rather than live in a private/app-nested location.
 LP="$REPO/messaging/libpurple/lib"
-mkdir -p "$STAGE/$APP_ROOT/com.palm.app.teams/backend/lib/purple-2"
-cp "$LP/libpurple.so.0.14.13" "$STAGE/$APP_ROOT/com.palm.app.teams/backend/lib/libpurple.so.0.14.13"
-ln -sf libpurple.so.0.14.13 "$STAGE/$APP_ROOT/com.palm.app.teams/backend/lib/libpurple.so.0"
-ln -sf libpurple.so.0.14.13 "$STAGE/$APP_ROOT/com.palm.app.teams/backend/lib/libpurple.so"
+mkdir -p "$OVERWRITE/lib/purple-2"
+cp "$LP/libpurple.so.0.14.13" "$OVERWRITE/lib/libpurple.so.0.14.13"
+ln -sf libpurple.so.0.14.13 "$OVERWRITE/lib/libpurple.so.0"
+ln -sf libpurple.so.0.14.13 "$OVERWRITE/lib/libpurple.so"
 # stock libpurple plugins only (NOT the stale libdiscord.so/libteams.so/libtelegram.so vendored
 # copies in this checkout — each connector's own package ships its current build instead).
 for so in autoaccept.so buddynote.so idle.so joinpart.so log_reader.so newline.so offlinemsg.so \
           psychic.so ssl.so ssl-openssl.so statenotify.so; do
-  [ -f "$LP/purple-2/$so" ] && cp "$LP/purple-2/$so" "$STAGE/$APP_ROOT/com.palm.app.teams/backend/lib/purple-2/$so"
+  [ -f "$LP/purple-2/$so" ] && cp "$LP/purple-2/$so" "$OVERWRITE/lib/purple-2/$so"
 done
+
+echo "== generic: private runtime deps (non-stock-colliding, direct install) =="
+# Third-party link deps unique to specific prpls -- kept OUT of /usr/lib so they can't silently
+# replace a system-wide lib version other apps rely on (unlike libpurple.so itself above, this
+# isn't "the same component being modernized", just an incidental dependency). imwrap.sh's
+# LD_PRELOAD/LD_LIBRARY_PATH points at this dir.
+mkdir -p "$STAGE/$BACKEND_LIB"
+GXX="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc93/arm-unknown-linux-gnueabi/lib"
+[ -f "$GXX/libstdc++.so.6.0.28" ] && cp "$GXX/libstdc++.so.6.0.28" "$STAGE/$BACKEND_LIB/libstdc++.so.6"
 
 echo "== generic: cloudcore (shared by every cloud connector) =="
 mkdir -p "$STAGE/$SERVICES_ROOT/_cloudcore"

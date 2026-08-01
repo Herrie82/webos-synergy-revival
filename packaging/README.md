@@ -65,15 +65,84 @@ packaging/
   chain (`imwrap.sh`/`imdaemon.sh`/the `imtransport` upstart job), and the shared messaging db8
   kinds/permissions + LS2 roles. One bridge service handles *every* protocol uniformly — there are
   no per-connector db8 sub-kinds the way a "normal" Synergy service would have.
-- **The shared libpurple 2.14 + ssl-openssl backend** (`messaging/libpurple/lib`) — physically
-  nested under `com.palm.app.teams`'s own app directory
-  (`.../applications/com.palm.app.teams/backend/`) for historical reasons: `imwrap.sh` and every
-  messaging connector's own `deploy-*.sh` hardcode that exact path. Relocating it would be a real,
-  device-risking behavior change, so it's kept as-is. **Generic owns only the `backend/` subtree**;
-  each messaging connector's own package owns `com.palm.app.teams`'s *top-level* setup-app files
-  only when it *is* Teams, and every other connector's package just *adds* its plugin `.so` into
-  `backend/lib/purple-2/` (new filename each time — no two packages ever own the same file, which
-  is exactly how ipkg's shared-directory semantics are meant to be used).
+- **The shared libpurple 2.14 + ssl-openssl engine** (`messaging/libpurple/lib`) — installed to the
+  **real `/usr/lib` + `/usr/lib/purple-2`**, overwriting whatever stock `com.palm.imlibpurple`
+  shipped there. Earlier packaging nested this under `com.palm.app.teams`'s own app directory, but
+  that was never correct: `libpurple.so.0.14.13` has its plugin-search/sysconfdir/datadir paths
+  **compiled in** (autoconf `--libdir`/`--sysconfdir`/`--datadir` at its own build time — confirmed
+  via `strings`), so *where the file physically sits* was never what determined its plugin search
+  path anyway, and Teams' app has nothing to do with the shared backend. The vendored `.so` here
+  has those 3 compiled-in paths **binary-patched** (same technique as the existing
+  `device-setup/webkit-webm-mime` fix — each string appears exactly once, patched to a
+  shorter real path, NUL-padded) to `/usr/lib/purple-2`, `/etc`, `/usr/share`.
+
+  Because this **overwrites real stock files** (not a private add-on), `generic/postinst` backs up
+  whatever's already at each destination to `/var/synergy-stock-backup/...` *once* (idempotent —
+  an upgrade doesn't re-clobber the backup with our own previous version) before copying ours in;
+  `prerm` restores the stock file if a backup exists, or removes the file cleanly if it doesn't
+  (meaning we added it fresh, no stock predecessor) — the same non-destructive pattern already
+  used by `device-setup/skype-disable` and `bt-hfg-call-patch`. The replacement files are staged at
+  a neutral `/opt/synergy-revival/rootfs-overwrite/...` path in the `.ipk` (not directly at
+  `/usr/lib/...`) precisely so postinst gets a chance to back up stock **before** anything is
+  overwritten — `data.tar.gz` unpacks before `postinst` runs, so placing the new files directly at
+  their final path would clobber stock with no way back.
+
+  Third-party runtime `.so` deps unique to one plugin (`libgcrypt`/`libpng16`/`libwebp`/`libopus`/
+  `libstdc++`/...) are a different case: they're incidental link-time dependencies, not "the same
+  component being modernized", so overwriting a system-wide file of the same name risks breaking
+  unrelated apps that load the stock version. Those go in a **private, non-colliding**
+  `/usr/lib/synergy-runtime/` instead (added to `imwrap.sh`'s `LD_PRELOAD`/`LD_LIBRARY_PATH`) —
+  connector packages only ever *add* new files there. Connector **prpl plugins themselves**
+  (`libteams.so`, `libwhatsmeow.so`, ...) go directly in `/usr/lib/purple-2/` — brand new
+  filenames with zero stock-collision risk, no backup needed.
+
+  **Done:** `com.palm.app.teams` is renamed to `org.webosports.app.teams` (matching the
+  `org.webosports` vendor namespace used elsewhere) — the app directory, `appinfo.json` `id`, and
+  every `customUI.appId`/`readPermissions`/`writePermissions` reference in the account template
+  (`com.palm.teams.json`) were updated together, plus every `deploy-*.sh` across all 7 messaging
+  connectors and `teams_calling.c`'s two compiled-in `LD_PRELOAD` paths (binary-patched in the
+  already-built `libteams-personal(.stripped).so`, same technique as the libpurple.so fix above —
+  verified via `readelf -d`/`strings` that each patched string is unique and the source `.c` was
+  fixed too so a future rebuild doesn't need re-patching). Cross-checking `readelf -d` against every
+  plugin while doing this also caught two real packaging bugs, now fixed: Google Chat's
+  `libprotobuf-c.so` was missing its required `.so.1` suffix (dynamic linker matches `NEEDED` by
+  exact name — wrong name silently fails plugin load), and Telegram was shipping
+  `libgcrypt`/`libpng16`/`libwebp`/`libsharpyuv` left over from the **retired tgl-based**
+  `telegram-purple` — the active `tdlib-purple` plugin's only third-party `NEEDED` is
+  `libopus.so.0` (now the only thing staged for it).
+
+  **Resolved by cross-checking `StockRootfs` + the attached device**: `readelf -d` showed Telegram
+  (tdlib-purple), the combined WhatsApp/Facebook plugin, and Teams all have a hard `NEEDED
+  libpalmgstskype.so` **and** an RPATH of exactly `/usr/lib/gstreamer-0.10` baked in — and
+  `device-setup/skype-disable` used to move that exact file away. Confirmed on the attached device:
+  a backup at `/var/skype-disabled-backup/usr/lib/gstreamer-0.10/libpalmgstskype.so` (byte-identical
+  to `StockRootfs`'s copy, `md5 3c73c35d...`) proved skype-disable really had removed it at some
+  point, and the live copy back in place (same md5) proved someone had already manually restored it
+  by hand to stop it breaking those three connectors. `skype-disable` no longer touches this file
+  (fixed in both `device-setup/skype-disable/remove-skype.sh` and this package's `postinst`).
+
+  **Also found and fixed by the same cross-check** (`StockRootfs` vs. the repo vs. the attached
+  device):
+  - `com.palm.imlibpurple.service` (the on-demand LS2/D-Bus activation file) ships in stock pointed
+    straight at the raw `Exec=/usr/bin/imlibpurpletransport`, bypassing `imwrap.sh` entirely — no
+    wpe-glibc loader patch, SSL override, PmLog semaphore self-heal, or ALSA preload. The attached
+    device had already been hand-patched to `Exec=/var/imwrap.sh ...`, but that fix had never been
+    captured anywhere in this repo. Now shipped as a real file
+    (`messaging/imlibpurpleservice/imlibpurpleservice/files/dbus-1/system-services/com.palm.imlibpurple.service`)
+    and installed the same backup-then-overwrite way as `libpurple.so`.
+  - The four calling `.service` files (`com.palm.{whatsapp,teams,signal,telegram}.call.service`) —
+    needed so `ls-hubd` knows the bus name exists for *inbound* call routing, even though the
+    resident transport registers it in-plugin — existed on the attached device and in three of the
+    four connectors' own source trees, but were never staged by packaging at all, and Telegram's
+    didn't exist anywhere in the repo (recovered from the attached device and added). Now each
+    lands in its own connector's package (new filenames, no stock predecessor, no backup needed).
+  - Cross-checked `com.palm.person`'s index count (18 vs. 18) and the three shared `com.palm.im*`
+    activity files against `StockRootfs` — byte-identical (aside from a trailing-comma/EOF-newline
+    diff) and no gaps.
+  - Confirmed `imtransport` is a pure addition (stock has no upstart job by that name — the stock
+    transport is on-demand-only), and every db8 kind/permission this repo adds beyond stock
+    (`com.palm.imchannel`, `com.palm.imserver`, `com.palm.imretaineddata`, `com.palm.config.libpurple`)
+    is additive, never replacing a stock kind.
 - **`_cloudcore`** (`/usr/palm/services/_cloudcore`) and **`com.palm.app.cloud-auth`** — every cloud
   connector's `sources.json` loads cloudcore code via a relative `../_cloudcore/...` path, so it
   must land as a sibling of every `/usr/palm/services/com.palm.service.<x>/` dir; the OAuth webview
@@ -110,6 +179,11 @@ packaging/
 ## Not yet exercised
 
 Every package here has been built and its `.ipk` structure verified (`ar t` / `tar -tzf` /
-`control` contents), but **not installed on a real device** in this pass — no device was attached.
-Installing via Preware/WebOS Quick Install and confirming `imtransport`/each service comes up is
-the remaining verification step.
+`control` contents), and the generic package's backup-then-overwrite / restore-or-remove logic was
+verified in an isolated shell simulation (backup made once, survives a second/upgrade install,
+`prerm` restores it or removes cleanly if there was none) — but **nothing has been installed on a
+real device** in this pass, no device was attached. Given `generic` now **overwrites real stock
+`/usr/lib/libpurple.so*` + `/usr/lib/purple-2/*`**, the on-device install is the important
+remaining check: confirm `imtransport` actually starts and loads a plugin against the patched
+`libpurple.so.0.14.13` (`status imtransport`, `imstdout.log`), and that `prerm` genuinely restores
+the stock files if you ever remove the package.

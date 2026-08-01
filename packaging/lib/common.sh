@@ -8,9 +8,16 @@ set -euo pipefail
 APP_ROOT="media/cryptofs/apps/usr/palm/applications"
 ACCOUNTS_ROOT="usr/palm/public/accounts"
 SERVICES_ROOT="usr/palm/services"
-BACKEND_APP_ID="com.palm.app.teams"
-BACKEND_PURPLE2="$APP_ROOT/$BACKEND_APP_ID/backend/lib/purple-2"
-BACKEND_LIB="$APP_ROOT/$BACKEND_APP_ID/backend/lib"
+# libpurple.so's own compiled-in plugin search path (patched, see generic/stage.sh) is the real
+# rootfs /usr/lib/purple-2 -- it never belonged under com.palm.app.teams (renamed org.webosports.app.teams; that app dir had nothing
+# to do with the shared backend; it was just where an earlier pass happened to stash it).
+BACKEND_PURPLE2="usr/lib/purple-2"
+# Private, non-stock-colliding location for third-party runtime .so deps unique to specific prpls
+# (libgcrypt/libpng16/libwebp/libopus/libstdc++/...). Deliberately NOT /usr/lib: overwriting a
+# system-wide lib of the same name with our specific cross-built version could break unrelated
+# apps that also load it. libpurple.so + purple-2/ itself is the one exception that DOES overwrite
+# the real /usr/lib (see generic/stage.sh + postinst's backup-before-overwrite).
+BACKEND_LIB="usr/lib/synergy-runtime"
 
 # stage_account <src-dir> <template-id>
 # Copies an account-template directory (json + images) to /usr/palm/public/accounts/<template-id>/
@@ -41,7 +48,7 @@ stage_app() {
 
 # stage_app_files <src-dir> <app-id> <file>...
 # Copies only the named files (relative to src-dir, preserving subdirs) into the app bundle —
-# for connectors that share com.palm.app.teams's app dir and must not clobber its backend/ tree.
+# (historical -- no longer used now that the shared engine lives at /usr/lib, not nested in any app dir).
 stage_app_files() {
   local src="$1" id="$2"; shift 2
   local dest="$STAGE/$APP_ROOT/$id"
@@ -54,10 +61,10 @@ stage_app_files() {
 }
 
 # stage_backend_plugin <so-file> [runtime-lib]...
-# Drops a libpurple prpl plugin (renamed to $2-basename or as-is) into the shared backend's
-# purple-2 plugin dir, and any extra runtime .so deps into backend/lib/ alongside it. This
-# directory belongs to the generic package (imlibpurpleservice + libpurple engine); connector
-# packages only ADD files here, never touch what's already there.
+# Drops a libpurple prpl plugin into the real /usr/lib/purple-2 (libpurple's own compiled-in
+# plugin search path), and any extra runtime .so deps into the private synergy-runtime dir
+# alongside it. Connector packages only ADD new filenames here (their plugin has never existed on
+# stock) — never touch/overwrite what's already there; that's generic's job for libpurple.so itself.
 stage_backend_plugin() {
   local so="$1"; shift
   [ -f "$so" ] || { echo "!! stage_backend_plugin: $so missing" >&2; return 1; }

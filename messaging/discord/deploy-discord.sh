@@ -7,15 +7,14 @@
 #   1. the account template  -> /usr/palm/public/accounts/com.palm.discord
 #   2. the prpl plugin        -> the LIVE imlibpurple backend's purple-2/ dir
 #
-# The modern libpurple 2.14 + ssl-openssl backend is ALREADY on the device from
-# the teams-port work (see TEAMS-SYNERGY-PORT-PLAN.md); Discord reuses it verbatim.
-# Point BACKEND_PURPLE2 at that same on-device plugin dir.
+# The modern libpurple 2.14 + ssl-openssl engine lives at the real /usr/lib (installed by the
+# generic package); Discord reuses it verbatim, just adding its own plugin there.
 set -e
 PKG="$(cd "$(dirname "$0")" && pwd)"
 NR="novacom run file://bin/sh"
 
-# on-device plugin dir of the LIVE (modern) imlibpurple backend bundle.
-BACKEND_PURPLE2="${BACKEND_PURPLE2:-/media/cryptofs/apps/usr/palm/applications/com.palm.app.teams/backend/lib/purple-2}"
+# on-device plugin dir: libpurple's own compiled-in plugin search path.
+BACKEND_PURPLE2="${BACKEND_PURPLE2:-/usr/lib/purple-2}"
 PRPL="$PKG/src/purple-discord/libdiscord.so"
 
 echo "== 1. install account template (rootfs rw) =="
@@ -41,10 +40,11 @@ for f in appinfo.json validator.html depends.js framework_config.json source/val
   novacom put "file://$APP/$f" < "$f"
 done
 
-echo "== 2. drop libdiscord.so into the live backend plugin dir =="
+echo "== 2. drop libdiscord.so into /usr/lib/purple-2 (rootfs rw) =="
 if [ -f "$PRPL" ]; then
-  $NR -- -c "mkdir -p $BACKEND_PURPLE2"
+  $NR -- -c "mount -o remount,rw / ; mkdir -p $BACKEND_PURPLE2"
   novacom put "file://$BACKEND_PURPLE2/libdiscord.so" < "$PRPL"
+  $NR -- -c "mount -o remount,ro / || true"
 else
   echo "   !! $PRPL not built yet — run the build first (see README.md)"
 fi
