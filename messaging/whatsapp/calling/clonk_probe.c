@@ -113,7 +113,7 @@ static gboolean do_quit(gpointer data) {
 // construction (if stop tears the pipeline down) *after* ClonkState already has the cached
 // resolution from the first call's setVideoPlaybackSettings — fixing the ordering as a
 // workaround. Untested until this run.
-static int g_player_retry_count = 1;
+static int g_player_retry_count = 0;
 
 static gboolean do_try_player_start(gpointer data);
 
@@ -168,7 +168,7 @@ static bool on_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	// the call itself. Extended to 90s to leave a much wider safe window to inject data
 	// into well before any teardown begins.
 	fprintf(stderr, "(waiting 90s before checking player status — watching for RunVideoHost)\n");
-	g_timeout_add(90000, do_check_player_status, NULL);
+	g_timeout_add(20000, do_check_player_status, NULL);
 	return true;
 }
 

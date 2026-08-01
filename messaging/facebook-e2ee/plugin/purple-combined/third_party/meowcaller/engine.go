@@ -907,6 +907,7 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 	disableSender := false
 	enableSender := false
 	announceEnabled := false
+	acceptUpgrade := false
 	switch state {
 	case signaling.VideoStateEnabled:
 		m.remoteVideo = true
@@ -917,6 +918,14 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 		}
 	case signaling.VideoStateDisabled, signaling.VideoStateStopped:
 		m.remoteVideo = false
+	case signaling.VideoStateUpgradeRequest, signaling.VideoStateUpgradeRequestV2:
+		// The peer is asking to turn video on. Without an explicit <video state=4>
+		// (UpgradeAccept) reply, the real WhatsApp client times out the request after
+		// ~5s, reports it back to itself as failed/disabled, and the user's retry just
+		// repeats the cycle (state 11 -> 0 -> 11 -> 0 ...) -- ackVideoStanza's bare
+		// stanza ack satisfies transport delivery but not this protocol-level accept.
+		m.remoteVideo = true
+		acceptUpgrade = true
 	case signaling.VideoStateUpgradeAccept:
 		m.localVideo = true
 		m.videoGate = false
@@ -927,6 +936,22 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 		disableSender = true
 	}
 	e.mu.Unlock()
+	if acceptUpgrade {
+		node := signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
+			CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),
+			State: signaling.VideoStateUpgradeAccept,
+		})
+		if err := e.transmitCallNode(context.Background(), node); err != nil {
+			e.mu.Lock()
+			if current := e.calls[callID]; current == m {
+				current.remoteVideo = false
+			}
+			e.mu.Unlock()
+			if e.c != nil {
+				e.c.log.Warn().Err(err).Str("call_id", callID).Msg("video upgrade accept failed")
+			}
+		}
+	}
 	if announceEnabled {
 		node := signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
 			CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),

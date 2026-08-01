@@ -56,7 +56,7 @@ func (e *engine) maybeStartMedia(callID string) {
 // the channel and the allocate bytes (re-sent by the keepalive).
 //
 // NOT VALIDATED: live-relay only.
-func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSsrcs [9]uint32) (*relay.RelayMediaChannel, []byte, error) {
+func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, peerSubscriptions [][]byte) (*relay.RelayMediaChannel, []byte, error) {
 	log := e.c.log
 	ep := getMediaRelayEndpoint(rd)
 	if ep == nil || len(ep.addresses) == 0 {
@@ -112,7 +112,7 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
 	}
 	var tx [12]byte
 	_, _ = rand.Read(tx[:])
-	allocate := stun.BuildWasmStunAllocateRequestWithStreamSsrcs(tx, rd.relayTokens[ep.tokenID], endpointXor, streamSsrcs, rd.relayKeyASCII, log)
+	allocate := stun.BuildWasmStunAllocateRequestWithSubscriptions(tx, rd.relayTokens[ep.tokenID], endpointXor, streamSsrcs, peerSubscriptions, rd.relayKeyASCII, log)
 	if _, err := ch.Send(allocate); err != nil {
 		ch.Close()
 		return nil, nil, fmt.Errorf("allocate send: %w", err)
@@ -149,11 +149,27 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	if err != nil {
 		return err
 	}
+	// The peer's video SSRC is derivable the same deterministic way as our own (SSRCs are
+	// a function of call ID + participant, never negotiated) -- known before a single byte
+	// of their video has arrived, which lets us target an initial PLI at it below.
+	peerParticipantID := rtp.FormatE2ESrtpParticipantID(peerLID)
+	peerVideoSsrc, err := rtp.DeriveWasmParticipantSsrc(callID, peerParticipantID, rtp.VideoSlotWord, log)
+	if err != nil {
+		return err
+	}
 	streamSsrcs, err := rtp.DeriveWasmRelayStreamSsrcs(callID, selfParticipantID, log)
 	if err != nil {
 		return err
 	}
-	ch, allocate, err := e.connectAndAllocate(ctx, rd, streamSsrcs)
+	// Peer sender-subscriptions were tried here (attr 0x4000, repeated alongside the relay
+	// token) on the theory that the allocate needs to explicitly declare which of the peer's
+	// streams we want bridged to us. REVERTED: confirmed live via the ALLOCATE-ERROR
+	// diagnostic below -- adding them made the relay actively reject the allocate
+	// (stun_error_code=456), a regression from the previous clean ALLOCATE-SUCCESS. The
+	// encoding (attr type, or the protobuf field layout for a non-audio layer) is wrong in a
+	// way the relay validates and rejects, unlike the KAT-proven stream-descriptor shape.
+	// peerVideoSsrc above is still used for the outbound PLI target.
+	ch, allocate, err := e.connectAndAllocate(ctx, rd, streamSsrcs, nil)
 	if err != nil {
 		return err
 	}
@@ -437,10 +453,19 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// WhatsApp associates the RTP streams with an SRTCP session. Periodic compound
 	// SR+SDES packets are required for the caller's video to start flowing to the
 	// answerer, and give the peer a target for PLI/FIR recovery feedback.
+	//
+	// gotPeerVideo is set once the receive loop below sees a first video frame from the
+	// peer; until then this ticker also sends a PLI at peerVideoSsrc every tick. Real
+	// video encoders commonly gate their first frame on receiving PLI/FIR feedback (this
+	// codebase's own videoSender does the same thing in the other direction --
+	// keyframeRequired/sendGated) — without an explicit request, the peer's encoder can
+	// sit idle indefinitely even after signaling state=Enabled.
+	var gotPeerVideo atomic.Bool
 	go func() {
 		ticker := time.NewTicker(1500 * time.Millisecond)
 		defer ticker.Stop()
 		var sent uint64
+		var firSeqNr uint8
 		for {
 			select {
 			case <-ctx.Done():
@@ -463,9 +488,28 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 						return
 					}
 				}
+				if !gotPeerVideo.Load() {
+					pliPacket, err := videoRtcp.pli(peerVideoSsrc)
+					if err == nil {
+						_, _ = ch.Send(pliPacket)
+						e.c.diag.Emit("rtcp", map[string]any{
+							"event": "pli_sent", "peer_video_ssrc": peerVideoSsrc,
+						})
+					}
+					firSeqNr++
+					firPacket, ferr := videoRtcp.fir(peerVideoSsrc, firSeqNr)
+					if ferr == nil {
+						_, _ = ch.Send(firPacket)
+					}
+					if sent%4 == 0 {
+						log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Uint8("fir_seq", firSeqNr).
+							Bool("pli_ok", err == nil).Bool("fir_ok", ferr == nil).
+							Msg("still no peer video -- sent PLI+FIR keyframe request")
+					}
+				}
 				sent++
 				if sent == 1 {
-					log.Info().Msg("started periodic SRTCP sender reports")
+					log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Msg("started periodic SRTCP sender reports")
 				}
 				e.c.diag.Emit("rtcp", map[string]any{
 					"event": "sender_reports", "tick": sent,
@@ -477,7 +521,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	}()
 
 	buf := make([]byte, 1500)
-	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail uint64
+	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, allocOK, allocErr, pongIn uint64
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -540,6 +584,27 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 						"event":     "binding_request_answered",
 						"tx_id_hex": hex.EncodeToString(tx[:]), "resp_hex": hex.EncodeToString(resp),
 					})
+				}
+			}
+			// The relay's own Allocate/Pong responses were previously absorbed here silently --
+			// IsAllocateOrBindingSuccess/IsAllocateError/IsWhatsappPong/ParseStunErrorCode
+			// already existed but were never called from the receive path, so a rejected
+			// allocate (wrong token, malformed stream descriptor, anything) looked identical
+			// to "working fine, just no peer media yet" in every log we had.
+			if mt == stun.MsgAllocateSuccess {
+				if allocOK++; allocOK == 1 {
+					log.Info().Msg("relay ALLOCATE-SUCCESS received")
+				}
+			}
+			if stun.IsAllocateError(pkt) {
+				code, _ := stun.ParseStunErrorCode(pkt, log)
+				if allocErr++; allocErr == 1 {
+					log.Warn().Uint16("stun_error_code", code).Msg("relay ALLOCATE-ERROR received -- this is why nothing bridges")
+				}
+			}
+			if stun.IsWhatsappPong(pkt, nil) {
+				if pongIn++; pongIn == 1 {
+					log.Info().Msg("relay consent PONG received, ping/pong consent established")
 				}
 			}
 			continue
@@ -607,6 +672,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		// Demux H.264 (PT 97) to video and emit Annex-B access units on the marker bit.
 		// Source of truth: https://github.com/JotaDev66/WaCalls/blob/2d6a1f666426049a89ef9541414e771acdcf8a16/internal/voip/call/callmanager_video.go#L86-L126
 		if kind == mediaPayloadVideo {
+			// Any video RTP at all, unprotected or not, means the peer's encoder is
+			// running -- stop sending PLIs once that's established.
+			gotPeerVideo.Store(true)
 			_, vpayload, vunok := rxVideoPipe.UnprotectAudio(pkt)
 			if !vunok {
 				if videoUnprotectFail++; videoUnprotectFail == 1 {
@@ -802,6 +870,36 @@ func (s *mediaSrtcpSender) senderReport(stats rtp.RtcpSenderStats, nowMs uint64)
 	defer s.mu.Unlock()
 	plain := rtp.BuildSenderReportWithSdes(s.ssrc, &stats, nowMs, &s.cname, s.profile)
 	packet, err := srtp.ProtectSrtcp(&s.keys, s.ssrc, s.index, plain)
+	if err == nil {
+		s.index++
+	}
+	return packet, err
+}
+
+// pli builds and protects a Picture Loss Indication requesting a keyframe from
+// mediaSsrc (the peer's video SSRC). s must be the sender's own video RTCP context
+// (SSRC identifies us as the PLI's sender).
+func (s *mediaSrtcpSender) pli(mediaSsrc uint32) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	plain := rtp.BuildRtcpPli(s.ssrc, mediaSsrc)
+	packet, err := srtp.ProtectSrtcp(&s.keys, s.ssrc, s.index, plain[:])
+	if err == nil {
+		s.index++
+	}
+	return packet, err
+}
+
+// fir builds and protects a Full Intra Request (RFC 5104) requesting a keyframe from
+// mediaSsrc -- an alternative to pli() above that some real clients require instead of
+// (or alongside) PLI before their encoder will start sending video at all. seqNr must
+// increment across calls for the same target (RFC 5104 4.3.1.1) so the receiver can tell
+// a fresh request apart from a stale retransmit.
+func (s *mediaSrtcpSender) fir(mediaSsrc uint32, seqNr uint8) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	plain := rtp.BuildRtcpFir(s.ssrc, mediaSsrc, seqNr)
+	packet, err := srtp.ProtectSrtcp(&s.keys, s.ssrc, s.index, plain[:])
 	if err == nil {
 		s.index++
 	}

@@ -103,6 +103,11 @@ static char *g_last_callstate_json = NULL; // most recent raw JSON from Go, pre-
 
 static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
 static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
+// Forward declarations: g_audio_on/audiod_status_idle are defined further down (near the
+// rest of the ALSA/audiod bridge) but clonk_video_player_start_reply above needs to
+// re-assert the audiod phone scenario once clonk's video pipeline is up.
+static gboolean audiod_status_idle(gpointer d);
+static volatile int g_audio_on;
 
 // clonk_uri_call — fires "<g_clonk_uri><method>" with the given JSON payload. Every clonk
 // action method needs the {"args":[...]} wrapper even for zero-arg calls (see
@@ -144,6 +149,24 @@ static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *
 static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk videoPlayerStart: %s\n", LSMessageGetPayload(msg));
+	// NOTE: a videoPlayerStop+videoPlayerStart retry workaround was tried here (theorized
+	// from ClonkPipeline::initializeVPlayPipeline's "resolution not set on capsfilter"
+	// ordering bug) but was never actually confirmed against a peer that was sending real
+	// video, and reintroducing the pipeline teardown mid-call is a plausible way to disrupt
+	// the skypekit socket bridge's own session state. Reverted to the simple single-call
+	// flow, which is what was in place during the one confirmed live test where real
+	// incoming H.264 RTP did arrive and reach skypekit's Thread B.
+	//
+	// Re-assert the audiod phone scenario here: video calls have never had working audio in
+	// either direction, while audio-only calls (which never touch clonk at all) are fine.
+	// mediaserver's clonk pipeline construction (confirmed via a --gst-debug=4 capture to
+	// include its own skypeaudiosrc/skypeaudiosink elements, part of the same skypekit
+	// plugin family as the video capture/sink) runs fully AFTER gowhatsapp_call_audio_active()
+	// already set our own "voip"/"voipsource" ALSA route via audiod's phone scenario at call
+	// start -- if clonk's own pipeline construction resets/steals that routing, re-sending the
+	// SAME scenario call now (once clonk is fully up) should win it back without needing to
+	// touch mediaserver/clonk itself.
+	if (g_audio_on) g_idle_add(audiod_status_idle, GINT_TO_POINTER(1));
 	return true;
 }
 
@@ -165,8 +188,24 @@ static bool clonk_keyframe_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 // Called from Go (Call.OnVideoKeyframeRequest) when the peer sends authenticated PLI/FIR
 // feedback asking for a fresh keyframe. See the call.go comment for why this is a
 // stop/restart rather than a direct request -- no LS2-exposed keyframe trigger exists.
+//
+// The stop/restart itself briefly interrupts the stream, which can make a struggling peer
+// send ANOTHER PLI/FIR almost immediately -- a self-inflicted restart storm (confirmed live:
+// several requests per second, each one killing/reopening capture, producing the "stalled
+// after a few frames" symptom). Debounce: a restart already in flight, or one that completed
+// within the last KEYFRAME_COOLDOWN_US, absorbs further requests instead of stacking more
+// restarts on top - the fresh IDR from the most recent restart is still on its way regardless.
+#define KEYFRAME_COOLDOWN_US (5000 * 1000)
+static gint64 g_last_keyframe_restart_us = 0;
 void gowhatsapp_call_request_keyframe(void) {
+	gint64 now;
 	if (!g_clonk_uri[0]) return;
+	now = g_get_monotonic_time();
+	if (now - g_last_keyframe_restart_us < KEYFRAME_COOLDOWN_US) {
+		fprintf(stderr, "wa-call: keyframe requested, within cooldown - absorbing\n");
+		return;
+	}
+	g_last_keyframe_restart_us = now;
 	fprintf(stderr, "wa-call: keyframe requested, restarting capture\n");
 	clonk_uri_call("videoCaptureStop", "{\"args\":[]}", clonk_keyframe_stop_reply);
 }

@@ -161,6 +161,38 @@ func BuildSenderReportWithSdes(localSsrc uint32, stats *RtcpSenderStats, nowMs u
 	return out
 }
 
+// BuildRtcpPli builds a 12-byte Picture Loss Indication (RTCP PT 206, FMT 1) — the
+// receiver-side counterpart to RtcpRequestsKeyframe below. senderSsrc identifies us (the
+// PLI sender); mediaSsrc is the peer's video SSRC we want a keyframe from.
+func BuildRtcpPli(senderSsrc, mediaSsrc uint32) [12]byte {
+	var buf [12]byte
+	buf[0] = 0x81 // V=2, P=0, FMT=1 (PLI)
+	buf[1] = RtcpPtPsfb
+	buf[3] = 2 // (2+1)*4 = 12 bytes
+	binary.BigEndian.PutUint32(buf[4:8], senderSsrc)
+	binary.BigEndian.PutUint32(buf[8:12], mediaSsrc)
+	return buf
+}
+
+// BuildRtcpFir builds a 20-byte Full Intra Request (RTCP PT 206, FMT 4, RFC 5104 4.3.1) --
+// an alternative keyframe-request mechanism some clients require instead of (or alongside)
+// PLI. senderSsrc identifies us; mediaSsrc is the peer's video SSRC; seqNr is FIR's own
+// per-target sequence number (must increment across repeated FIR requests for the same
+// target per RFC 5104 4.3.1.1, so the receiver can distinguish a fresh request from a
+// duplicate/retransmit).
+func BuildRtcpFir(senderSsrc, mediaSsrc uint32, seqNr uint8) [20]byte {
+	var buf [20]byte
+	buf[0] = 0x84 // V=2, P=0, FMT=4 (FIR)
+	buf[1] = RtcpPtPsfb
+	buf[3] = 4 // (4+1)*4 = 20 bytes
+	binary.BigEndian.PutUint32(buf[4:8], senderSsrc)
+	// bytes 8:12 (media source SSRC) stay 0 for FIR -- the real target lives in the FCI below.
+	binary.BigEndian.PutUint32(buf[12:16], mediaSsrc)
+	buf[16] = seqNr
+	// buf[17:20] reserved, must be 0 (already zero from var declaration)
+	return buf
+}
+
 // RtcpRequestsKeyframe reports whether a compound RTCP packet contains PLI/FIR
 // feedback for localVideoSsrc.
 func RtcpRequestsKeyframe(data []byte, localVideoSsrc uint32) bool {

@@ -48,6 +48,7 @@ import (
 	"unsafe"
 
 	"github.com/purpshell/meowcaller"
+	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -104,7 +105,12 @@ func (handler *Handler) startCalling() {
 	if runtime.GOMAXPROCS(0) < 2 {
 		runtime.GOMAXPROCS(2)
 	}
-	mcClient = meowcaller.NewClient(handler.client)
+	// meowcaller's own log.Info/Warn calls (video RTP demux, SRTP unprotect, sink writes --
+	// see engine_media.go) are a silent no-op (zerolog.Nop()) unless a logger is supplied here.
+	// Route to os.Stderr like every other log in this process, so it lands in imstdout.log.
+	mcLogger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.Kitchen}).
+		With().Timestamp().Logger()
+	mcClient = meowcaller.NewClient(handler.client, meowcaller.WithLogger(mcLogger))
 	mcClient.OnIncomingCall(handleIncoming)
 	fmt.Fprintln(os.Stderr, "wacall: calling engine attached to messaging session")
 }
@@ -141,6 +147,9 @@ func emitCallState() {
 	var cjs []callJSON
 	lineState := ""
 	cause := ""
+	lineIncomingVid := false
+	lineOutgoingVid := false
+	lineIVS := "unavailable"
 	for _, ci := range calls {
 		lineState = ci.state // single call per line: the line state IS the call state
 		cause = ci.cause
@@ -154,6 +163,12 @@ func emitCallState() {
 			IncomingVideo: ci.incomingVid, OutgoingVideo: ci.outgoingVid,
 			IncomingVideoState: ivs,
 		})
+		// ActiveCall.js reads outgoingVideo/incomingVideo/incomingVideoState directly on
+		// the LINE object (activeLines[0].outgoingVideo etc.), not nested under calls[] -
+		// single call per line here, so just mirror this call's values up.
+		lineIncomingVid = ci.incomingVid
+		lineOutgoingVid = ci.outgoingVid
+		lineIVS = ivs
 	}
 	callMu.Unlock()
 
@@ -161,7 +176,11 @@ func emitCallState() {
 	// Disconnected) — NOT the call-level state — and logs disconnected lines.
 	lines := []map[string]any{}
 	if len(cjs) > 0 {
-		line := map[string]any{"state": lineState, "calls": cjs}
+		line := map[string]any{
+			"state": lineState, "calls": cjs,
+			"incomingVideo": lineIncomingVid, "outgoingVideo": lineOutgoingVid,
+			"incomingVideoState": lineIVS,
+		}
 		if lineState == "disconnected" {
 			line["disconnectDetails"] = map[string]any{"cause": cause}
 		}
@@ -230,6 +249,7 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 	// camera/rendering, not the WhatsApp-level signaling this reflects).
 	mcCall.OnVideoState(func(vs meowcaller.VideoState) {
 		callMu.Lock()
+		var anyVideo bool
 		if c, ok := calls[ci.id]; ok {
 			c.incomingVid = vs.Active
 			switch {
@@ -240,8 +260,18 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 			default:
 				c.incomingVideoState = "unavailable"
 			}
+			anyVideo = c.outgoingVid || c.incomingVid || c.c.IsVideo()
 		}
 		callMu.Unlock()
+		// Same fix as gowhatsapp_go_call_dial/answer: the peer's video turning on (or
+		// being active from the initial offer, before changeMedia is ever called) must
+		// also open the local clonk session, or skypekit_video_receive_frame silently
+		// drops every frame because Thread B never started.
+		on := 0
+		if anyVideo {
+			on = 1
+		}
+		C.gowhatsapp_call_video_active(C.int(on))
 		emitCallState()
 	})
 	// The peer's authenticated PLI/FIR feedback (packet loss recovery): our encoder should
@@ -390,8 +420,8 @@ func gowhatsapp_go_call_dial(cAddr *C.char, video C.int) *C.char {
 			dialing = false
 			callMu.Unlock()
 		}()
-		fmt.Fprintln(os.Stderr, "wacall: dialing", addr)
-		mcCall, err := mcClient.Call(callCtx, addr)
+		fmt.Fprintln(os.Stderr, "wacall: dialing", addr, "video:", v)
+		mcCall, err := mcClient.CallWithOptions(callCtx, addr, meowcaller.CallOptions{Video: v})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "wacall: dial error:", err)
 			return
@@ -400,7 +430,24 @@ func gowhatsapp_go_call_dial(cAddr *C.char, video C.int) *C.char {
 		ci.outgoingVid = v
 		attachMedia(ci)
 		if v {
-			_ = mcCall.StartVideo()
+			// NOT mcCall.StartVideo(): that sends a VideoStateUpgradeRequestV2 stanza,
+			// meant for upgrading an already-connected audio call to video mid-call. Our
+			// offer already declares Video:true (CallWithOptions above), and placeCall
+			// itself already sets localVideo/remoteVideo from opts.Video -- sending an
+			// "upgrade request" on top of that, before the peer has even answered, is a
+			// second, unvalidated signal that the examples/videoloop validated recipe
+			// never sends (it dials with CallOptions{Video:true} and nothing else).
+			// Confirmed live: this extra stanza correlated with the peer's real client
+			// never starting its video encoder despite the user turning their camera on.
+			//
+			// gowhatsapp_call_video_active(1) is what actually opens the local clonk
+			// session (videoCaptureStart/videoPlayerStart/skypekit_video_start) -- without
+			// it Thread B never starts, so the peer's video would be silently dropped by
+			// skypekit_video_receive_frame's own g_running guard even though signaling and
+			// the relay bridge work fine. Previously only changeMedia (the Phone app's
+			// mid-call video toggle) called this, so a call placed with video from the
+			// start never displayed anything locally.
+			C.gowhatsapp_call_video_active(C.int(1))
 		}
 		emitCallState()
 		fmt.Fprintln(os.Stderr, "wacall: call placed id", ci.id)
@@ -424,7 +471,20 @@ func gowhatsapp_go_call_answer(cID *C.char, video C.int) C.int {
 			return
 		}
 		if v {
-			_ = ci.c.AcceptVideo()
+			// NOT ci.c.AcceptVideo(): that sends a VideoStateUpgradeAccept stanza, meant
+			// for accepting a peer's mid-call video upgrade request. engine.go's onOffer
+			// (the incoming-offer handler) already sets m.localVideo/m.remoteVideo from the
+			// offer's own Video flag (mirroring placeCall on the dial side), and sendAccept
+			// already derives the <accept> stanza's Video field from m.localVideo||m.remoteVideo.
+			// So Answer() alone already communicates video correctly; AcceptVideo() on top of
+			// that is the same redundant/premature extra signal as StartVideo() was in dial().
+			ci.outgoingVid = true
+			// gowhatsapp_call_video_active(1) is what actually opens the local clonk session
+			// (videoCaptureStart/videoPlayerStart/skypekit_video_start) -- without it Thread B
+			// never starts, so the peer's video would be silently dropped by
+			// skypekit_video_receive_frame's own g_running guard even though signaling and the
+			// relay bridge work fine.
+			C.gowhatsapp_call_video_active(C.int(1))
 		}
 		setCallState(id, "active", "")
 	}()

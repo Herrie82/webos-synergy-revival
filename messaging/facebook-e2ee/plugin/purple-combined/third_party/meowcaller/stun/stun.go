@@ -177,25 +177,46 @@ func createWasmRelayEndpointAttr(endpointXor [6]byte) [8]byte {
 // BuildWasmStunAllocateRequest builds the WASM/Web DataChannel Allocate: 0x4000
 // token + 0x4024 stream desc + 0x0016 endpoint + MI, no FP.
 func BuildWasmStunAllocateRequest(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, integrityKey []byte, log ...zerolog.Logger) []byte {
-	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, wasmStreamDescriptorsTemplate, integrityKey, log...)
+	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, wasmStreamDescriptorsTemplate, nil, integrityKey, log...)
 }
 
 // BuildWasmStunAllocateRequestWithStreamSsrcs builds the WASM/Web allocate with
 // per-call stream descriptors. The static KAT template only proves the wire shape; live
 // calls must carry the SSRCs derived from the current call ID and participant LID.
 func BuildWasmStunAllocateRequestWithStreamSsrcs(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, streamSsrcs [9]uint32, integrityKey []byte, log ...zerolog.Logger) []byte {
-	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, CreateWasmStreamDescriptors(streamSsrcs), integrityKey, log...)
+	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, CreateWasmStreamDescriptors(streamSsrcs), nil, integrityKey, log...)
 }
 
-func buildWasmStunAllocateRequest(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, streamDescriptors []byte, integrityKey []byte, log ...zerolog.Logger) []byte {
+// BuildWasmStunAllocateRequestWithSubscriptions is BuildWasmStunAllocateRequestWithStreamSsrcs
+// plus explicit peer sender-subscriptions (attr 0x4025, repeated: one per remote stream we
+// want the relay to bridge to us). CreateVoipSenderSubscription/attrSenderSubscriptionsV2
+// already existed in this file but were never called from the live allocate path -- the
+// allocate only ever declared OUR OWN outbound streams, never which of the PEER's streams we
+// want to receive. That is consistent with every symptom seen live: the relay confirms
+// ALLOCATE-SUCCESS and consent PONG (both proven via direct log evidence), yet the peer's
+// media never arrives -- a relay with no subscription record for us has no reason to forward
+// anything the peer sends, regardless of how healthy our own side of the handshake is.
+func BuildWasmStunAllocateRequestWithSubscriptions(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, streamSsrcs [9]uint32, peerSubscriptions [][]byte, integrityKey []byte, log ...zerolog.Logger) []byte {
+	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, CreateWasmStreamDescriptors(streamSsrcs), peerSubscriptions, integrityKey, log...)
+}
+
+func buildWasmStunAllocateRequest(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, streamDescriptors []byte, peerSubscriptions [][]byte, integrityKey []byte, log ...zerolog.Logger) []byte {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/stun.rs#L155-L177
 	lg := pickLog(log)
 	lg.Debug().
 		Int("relay_token_bytes", len(relayToken)).
 		Int("stream_descriptor_bytes", len(streamDescriptors)).
+		Int("subscription_count", len(peerSubscriptions)).
 		Bool("message_integrity", integrityKey != nil).
 		Msg("building wasm allocate request")
 	attrs := stunAttr(attrRelayToken, relayToken)
+	// CreateVoipSenderSubscriptions/CreateVoipSenderSubscriptionForLayer's own citation says
+	// these are attr 0x4000 (attrRelayToken's own value) for the WASM/Web variant, repeated
+	// alongside the token itself -- NOT attrSenderSubscriptionsV2 (0x4025), which is the APK
+	// variant's distinct attribute. STUN allows repeated attributes of the same type.
+	for _, sub := range peerSubscriptions {
+		attrs = append(attrs, stunAttr(attrRelayToken, sub)...)
+	}
 	attrs = append(attrs, stunAttr(attrStreamDescriptors, streamDescriptors)...)
 	wep := createWasmRelayEndpointAttr(endpointXor)
 	attrs = append(attrs, stunAttr(attrWasmRelayEndpoint, wep[:])...)
@@ -399,14 +420,28 @@ func pbLenDelim(out []byte, field uint32, b []byte) []byte {
 	return append(out, b...)
 }
 
-// CreateVoipSenderSubscriptions builds voip.SenderSubscriptions (WASM, attr 0x4000).
+// CreateVoipSenderSubscriptions builds voip.SenderSubscriptions (WASM, attr 0x4000) for the
+// AUDIO layer (kept for compatibility with the KAT-shape reference); see
+// CreateVoipSenderSubscriptionForLayer for a specific stream_layer (e.g. video).
 func CreateVoipSenderSubscriptions(ssrc uint32) []byte {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/stun.rs#L299-L310
+	return CreateVoipSenderSubscriptionForLayer(ssrc, 0)
+}
+
+// CreateVoipSenderSubscriptionForLayer builds one voip.SenderSubscriptions entry (WASM,
+// repeated attr 0x4025) subscribing to a remote SSRC on the given stream_layer -- this is
+// how we tell the relay which of the PEER's streams to bridge to us; the relay's own
+// ALLOCATE-SUCCESS only ever covers OUR declared outbound streams (see
+// BuildWasmStunAllocateRequestWithSubscriptions). layer follows this session's own 0/1/2
+// per-participant slot grouping (0=audio, matching CreateVoipSenderSubscriptions above;
+// 1=video is the next untested layer value -- NOT KAT-validated, best inference from the
+// only real reference shape we have).
+func CreateVoipSenderSubscriptionForLayer(ssrc uint32, layer uint64) []byte {
 	var sender []byte
 	sender = pbTag(sender, 3, 0) // ssrc
 	sender = binary.AppendUvarint(sender, uint64(ssrc))
-	sender = pbTag(sender, 5, 0) // stream_layer = AUDIO(0)
-	sender = binary.AppendUvarint(sender, 0)
+	sender = pbTag(sender, 5, 0) // stream_layer
+	sender = binary.AppendUvarint(sender, layer)
 	sender = pbTag(sender, 6, 0) // payload_type = MEDIA(0)
 	sender = binary.AppendUvarint(sender, 0)
 	return pbLenDelim(nil, 1, sender)

@@ -214,12 +214,27 @@ static void *thread_a_main(void *) {
 // ---------------- Thread B: peer -> display ----------------
 
 struct SendCtx {
-	void *binclient;
 	uint16_t seq;
 	uint32_t ts;
 	uint32_t ssrc;
+	void *binclient; // persistent connection, opened once by thread_b_main
 };
 
+// wr_call_lst's 3rd/4th params (declared here as "cmdId"/"cmdName") are NOT an integer + a
+// debug string -- vtable+0x14 inside wr_preencoded_lst (called as (ci, *cmdIdParam,
+// cmdNameParam)) is really AVTransportWrapper::bl_write_bytes(CommandInitiator*, unsigned int
+// length, char const* data), confirmed by mapping AVTransportWrapper's real vtable. So passing
+// (&cmdId, "RtpPacketReceived") wrote 19 raw bytes starting from that debug string onto the
+// wire -- never a real protocol header at all. The real header BinServer::rd_command/rd_call
+// expect is: ['Z'=0x5a]['R'=0x52][3 LEB128 varints], read in this order: ->(unused)
+// ->(ProcessCall's dispatch cmdId) ->(echoed back as a request id). wr_preencoded_lst's own
+// wr_value(&responseId) call automatically supplies that 3rd varint right after this 4-byte
+// buffer, so we only construct the first two varints ourselves.
+//
+// Also: RtpPacketReceived is fire-and-forget (ProcessCall's case for it returns without ever
+// calling wr_response), so rd_response_id must never be called after it -- it blocks for a
+// real read timeout (~57s) waiting for an ACK that will never arrive, which (before this was
+// understood) silently made every multi-packet test look like a one-shot connection.
 static void send_one_packet(void *vctx, const unsigned char *payload, size_t len, int marker) {
 	SendCtx *ctx = (SendCtx *)vctx;
 	unsigned char pkt[12 + kRtpMtu];
@@ -232,9 +247,14 @@ static void send_one_packet(void *vctx, const unsigned char *payload, size_t len
 	sebinary_init(sebinary);
 	sebinary_set(sebinary, pkt, (unsigned)(12 + len));
 
-	unsigned int cmdId = kRtpPacketReceivedCmdId;
+	unsigned char header[4];
+	header[0] = 0x5a;
+	header[1] = 0x52;
+	header[2] = 0x00;
+	header[3] = (unsigned char)kRtpPacketReceivedCmdId;
+	unsigned int headerLen = sizeof(header);
 	unsigned int responseId = 0;
-	binclient_wr_call_lst(ctx->binclient, /*ci=*/nullptr, &cmdId, "RtpPacketReceived",
+	binclient_wr_call_lst(ctx->binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
 	                        &responseId, M_SkypeVideoRTPInterface_fields,
 	                        kRtpPacketReceivedFieldIndex, sebinary);
 }
@@ -274,8 +294,7 @@ static void *thread_b_main(void *) {
 		ctx.ts = (uint32_t)time(nullptr);
 		ctx.ssrc = ((uint32_t)rand() << 16) ^ (uint32_t)rand();
 
-		int broken = 0;
-		while (!broken && g_running) {
+		while (g_running) {
 			// Wait for a frame with a bounded timeout and an explicit g_running check,
 			// rather than an unconditional pthread_cond_wait. This is deliberate: thread B is
 			// never pthread_cancel'd (unlike thread A) precisely because cancelling a thread
@@ -294,7 +313,6 @@ static void *thread_b_main(void *) {
 			}
 			if (!g_running) {
 				pthread_mutex_unlock(&g_pending_mx);
-				broken = 1;
 				break;
 			}
 			unsigned char *data = g_pending_data;
@@ -309,7 +327,6 @@ static void *thread_b_main(void *) {
 			ctx.ts += 3000; // 90kHz clock / 30fps, matching the clonk pipeline's fixed framerate
 		}
 
-		fprintf(stderr, "wa-call: skypekit thread B disconnected, retrying\n");
 		avtw_dtor(transport);
 		if (!g_running) break;
 	}
