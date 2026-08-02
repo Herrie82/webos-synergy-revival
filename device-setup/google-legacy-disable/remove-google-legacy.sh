@@ -37,7 +37,7 @@
 # are left in the store but are inert; a re-flash of an image built with this patch applied never
 # registers them.
 
-BAK=/var/google-legacy-disabled-backup
+BAK=/media/cryptofs/google-legacy-disabled-backup
 
 # move <absolute path> -> mirror it under $BAK (creating parent dirs). No-op if it doesn't exist.
 move() {

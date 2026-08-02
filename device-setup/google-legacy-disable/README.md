@@ -18,7 +18,7 @@ The stock 2011-era `com.palm.google` Synergy account offers five capabilities, a
 `remove-google-legacy.sh` strips it out, same non-destructive pattern as `../skype-disable` and
 `../legacy-im-disable`.
 
-## What it removes (moves to `/var/google-legacy-disabled-backup`, reversible)
+## What it removes (moves to `/media/cryptofs/google-legacy-disabled-backup`, reversible)
 
 - **Contacts sync** — the `com.palm.service.contacts.google` service dir, its LS2 roles + D-Bus
   service, and its db8 kinds/permissions (`com.palm.contact.google`,
@@ -34,7 +34,7 @@ The stock 2011-era `com.palm.google` Synergy account offers five capabilities, a
   template gone (this script), they're genuinely orphaned, same "dead by construction" reasoning
   (libpurple's `plugin.c` version-gates them anyway) as the AIM/ICQ/oscar cleanup.
 
-Nothing is deleted; it is moved under `/var/google-legacy-disabled-backup`. `rm -rf` that once
+Nothing is deleted; it is moved under `/media/cryptofs/google-legacy-disabled-backup`. `rm -rf` that once
 you're sure.
 
 **Deliberately NOT touched:**

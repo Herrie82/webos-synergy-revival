@@ -33,7 +33,7 @@
 # deregisters the (now file-less) imyahoo activity. The registered db8 kinds are left in the store
 # but are inert; a re-flash of an image built with this patch applied never registers them.
 
-BAK=/var/legacy-im-disabled-backup
+BAK=/media/cryptofs/legacy-im-disabled-backup
 
 # move <absolute path> -> mirror it under $BAK (creating parent dirs). No-op if it doesn't exist.
 move() {

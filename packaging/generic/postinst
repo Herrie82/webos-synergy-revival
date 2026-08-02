@@ -7,7 +7,7 @@
 set +e
 DS=/opt/synergy-revival/device-setup
 OV=/opt/synergy-revival/rootfs-overwrite
-BAK=/var/synergy-stock-backup
+BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
@@ -190,7 +190,7 @@ fi
 # ---------------------------------------------------------------- device-setup: skype-disable
 # Non-destructive: moves the defunct Skype stack out of the way (reversible from prerm's backup).
 log "skype-disable: retiring the defunct Skype stack..."
-SKYBAK=/var/skype-disabled-backup
+SKYBAK=/media/cryptofs/skype-disabled-backup
 ds_move() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$SKYBAK$1")"
@@ -225,7 +225,7 @@ done
 # Non-destructive: moves the defunct AOL/AIM + Yahoo! stacks out of the way (same pattern as
 # skype-disable above; reversible from prerm's backup).
 log "legacy-im-disable: retiring the defunct AOL/AIM + Yahoo! stacks..."
-LEGBAK=/var/legacy-im-disabled-backup
+LEGBAK=/media/cryptofs/legacy-im-disabled-backup
 leg_move() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$LEGBAK$1")"
@@ -297,7 +297,7 @@ done
 # Calendar sync + the account template; MAIL rides the shared com.palm.imap, untouched). Same
 # pattern as skype-disable/legacy-im-disable above; reversible from prerm's backup.
 log "google-legacy-disable: retiring the defunct stock Google account (Contacts/Calendar/Talk)..."
-GOOGBAK=/var/google-legacy-disabled-backup
+GOOGBAK=/media/cryptofs/google-legacy-disabled-backup
 goog_move() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$GOOGBAK$1")"

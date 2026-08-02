@@ -4,7 +4,7 @@ Skype's backend shut down years ago, but the stock TouchPad image still ships an
 mediator (`skypem`) + SkypeKit engine on demand, plus Skype db8 kinds, an account template and the
 `com.palm.app.skype` app. All dead weight. `remove-skype.sh` strips it out.
 
-## What it removes (moves to `/var/skype-disabled-backup`, reversible)
+## What it removes (moves to `/media/cryptofs/skype-disabled-backup`, reversible)
 
 - **Launch path** — `com.palm.skype`/`com.palm.skypevalidator` D-Bus services, the `com.palm.skype*`
   db8-watch activities, the `skypekit`/`skypekit-offport` upstart jobs, the LS2 role files.
@@ -13,7 +13,7 @@ mediator (`skypem`) + SkypeKit engine on demand, plus Skype db8 kinds, an accoun
 - **Account + app** — the `com.palm.skype` account template and `com.palm.app.skype`.
 - **Binaries** — `skypem`, `skypevalidator`, the SkypeKit engine, `/var/skypekit`.
 
-Nothing is deleted; it is moved under `/var/skype-disabled-backup`. `rm -rf` that once you're sure.
+Nothing is deleted; it is moved under `/media/cryptofs/skype-disabled-backup`. `rm -rf` that once you're sure.
 
 **NOT removed despite the name: `/usr/lib/gstreamer-0.10/libpalmgstskype.so`.** Teams, Telegram
 (tdlib-purple) and the combined WhatsApp/Facebook plugin all hard-`NEEDED` it (confirmed via

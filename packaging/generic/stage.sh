@@ -17,7 +17,7 @@ source "$REPO/packaging/lib/common.sh"
 
 DS_OUT="$STAGE/opt/synergy-revival/device-setup"
 # Neutral staging area for files that OVERWRITE real stock rootfs paths: postinst backs up
-# whatever's already at the real destination (to /var/synergy-stock-backup/...) before copying
+# whatever's already at the real destination (to /media/cryptofs/synergy-stock-backup/...) before copying
 # these into place -- ipkg's own data.tar.gz unpack happens BEFORE postinst runs, so anything
 # placed directly at its final path here would silently clobber stock with no chance to back it
 # up first. See generic/postinst.

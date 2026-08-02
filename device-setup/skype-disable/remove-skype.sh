@@ -21,7 +21,7 @@
 # are inert (no Skype service, template or data references them); a re-flash of an image built with
 # this patch applied never registers them in the first place.
 
-BAK=/var/skype-disabled-backup
+BAK=/media/cryptofs/skype-disabled-backup
 
 # move <absolute path> -> mirror it under $BAK (creating parent dirs). No-op if it doesn't exist.
 move() {

@@ -41,7 +41,7 @@ for f in /usr/palm/frameworks/mediastream/submission/24mediastream.js \
 done
 
 log "restoring the retired Skype stack (non-destructive move, reversible)..."
-SKYBAK=/var/skype-disabled-backup
+SKYBAK=/media/cryptofs/skype-disabled-backup
 if [ -d "$SKYBAK" ]; then
   ( cd "$SKYBAK" && find . \( -type f -o -type l \) | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
@@ -50,7 +50,7 @@ if [ -d "$SKYBAK" ]; then
 fi
 
 log "restoring the retired AOL/AIM + Yahoo! stacks (non-destructive move, reversible)..."
-LEGBAK=/var/legacy-im-disabled-backup
+LEGBAK=/media/cryptofs/legacy-im-disabled-backup
 if [ -d "$LEGBAK" ]; then
   ( cd "$LEGBAK" && find . \( -type f -o -type l \) | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
@@ -59,7 +59,7 @@ if [ -d "$LEGBAK" ]; then
 fi
 
 log "restoring the retired stock Google account (non-destructive move, reversible)..."
-GOOGBAK=/var/google-legacy-disabled-backup
+GOOGBAK=/media/cryptofs/google-legacy-disabled-backup
 if [ -d "$GOOGBAK" ]; then
   ( cd "$GOOGBAK" && find . \( -type f -o -type l \) | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
@@ -68,7 +68,7 @@ if [ -d "$GOOGBAK" ]; then
 fi
 
 log "restoring stock libpurple engine (or removing what we added if there was no stock file)..."
-STOCKBAK=/var/synergy-stock-backup
+STOCKBAK=/media/cryptofs/synergy-stock-backup
 OV=/opt/synergy-revival/rootfs-overwrite
 restore_or_remove() {  # $1 = real absolute path we may have overwritten in postinst
   local dst="$1"

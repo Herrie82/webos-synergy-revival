@@ -7,7 +7,7 @@ shut down in 2018. The stock TouchPad image still ships and wakes both full Syne
 Calendar sync services — none of it libpurple-based). All dead weight. `remove-legacy-im.sh`
 strips it out, same non-destructive pattern as `../skype-disable`.
 
-## What it removes (moves to `/var/legacy-im-disabled-backup`, reversible)
+## What it removes (moves to `/media/cryptofs/legacy-im-disabled-backup`, reversible)
 
 - **AOL/AIM** — the `com.palm.aol` account template, and `imaccountvalidator` (binary + LS2 role +
   D-Bus service). `imaccountvalidator` is the generic username/password validator for legacy
@@ -34,7 +34,7 @@ strips it out, same non-destructive pattern as `../skype-disable`.
   scan even if left in place. `ssl-gnutls.so`/`ssl-nss.so` are likewise orphaned: nothing in this
   repo uses anything but `ssl-openssl.so` (confirmed by grep).
 
-Nothing is deleted; it is moved under `/var/legacy-im-disabled-backup`. `rm -rf` that once you're sure.
+Nothing is deleted; it is moved under `/media/cryptofs/legacy-im-disabled-backup`. `rm -rf` that once you're sure.
 
 **Deliberately NOT touched** (out of scope, low value, some risk):
 - AOL/Yahoo trusted root CA certs under `/etc/ssl/certs/trustedcerts/` — harmless unused trust

@@ -77,7 +77,7 @@ packaging/
   shorter real path, NUL-padded) to `/usr/lib/purple-2`, `/etc`, `/usr/share`.
 
   Because this **overwrites real stock files** (not a private add-on), `generic/postinst` backs up
-  whatever's already at each destination to `/var/synergy-stock-backup/...` *once* (idempotent —
+  whatever's already at each destination to `/media/cryptofs/synergy-stock-backup/...` *once* (idempotent —
   an upgrade doesn't re-clobber the backup with our own previous version) before copying ours in;
   `prerm` restores the stock file if a backup exists, or removes the file cleanly if it doesn't
   (meaning we added it fresh, no stock predecessor) — the same non-destructive pattern already
@@ -115,7 +115,7 @@ packaging/
   (tdlib-purple), the combined WhatsApp/Facebook plugin, and Teams all have a hard `NEEDED
   libpalmgstskype.so` **and** an RPATH of exactly `/usr/lib/gstreamer-0.10` baked in — and
   `device-setup/skype-disable` used to move that exact file away. Confirmed on the attached device:
-  a backup at `/var/skype-disabled-backup/usr/lib/gstreamer-0.10/libpalmgstskype.so` (byte-identical
+  a backup at `/media/cryptofs/skype-disabled-backup/usr/lib/gstreamer-0.10/libpalmgstskype.so` (byte-identical
   to `StockRootfs`'s copy, `md5 3c73c35d...`) proved skype-disable really had removed it at some
   point, and the live copy back in place (same md5) proved someone had already manually restored it
   by hand to stop it breaking those three connectors. `skype-disable` no longer touches this file
