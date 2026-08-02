@@ -10,6 +10,88 @@ OV=/opt/synergy-revival/rootfs-overwrite
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
+# find_byte_offset <file> <literal-string> -- print the byte offset of the first occurrence of
+# <literal-string> in <file> (exit 1, no output, if not found). BusyBox's grep has no -b (byte
+# offset) at all (confirmed: "grep: invalid option -- 'b'"), this device's BusyBox has no `od`
+# applet at all ("od: not found" -- confirmed live; only `hexdump` is built in), and BusyBox
+# `strings -o` (decimal offset) has a real off-by bug whenever a run of NUL bytes as long as the
+# -n minimum precedes a match -- confirmed empirically (offset drifted from 7 bytes off on a small
+# test file to tens of millions of bytes off on the real 12.8MB libWebKitLuna.so, whose reported
+# offset came back larger than the file itself).
+#
+# So: two linear coarse scans (outer in 2MB steps, inner in 64KB steps, each step overlapping the
+# next by len(target)-1 bytes so a match straddling a step boundary is never missed) use dd
+# (block-aligned reads -- fast, binary-safe) + grep -ac (binary-safe, C-fast) to narrow down to a
+# small window; a fine phase then does an exact hexdump-as-text + awk byte-array scan (NUL-safe
+# because hexdump's output is plain ASCII hex text, unlike the raw binary content) on just that
+# window. Full-file hexdump+awk alone was verified correct but timed out (>2min) on the 12.8MB
+# library. Critical gotcha: BusyBox dd's count= is in whole bs-sized blocks, so a requested
+# length that isn't an exact multiple of bs gets silently rounded UP -- every boundary this
+# function narrows to MUST use that true rounded-up length (not the originally-requested one), or
+# a match sitting in the overshoot region produces a false "found" that then wrongly excludes the
+# real match from the narrowed window (confirmed: this exact bug produced an empty final result
+# against the real library on an earlier version of this function).
+chunk_has() {  # $1=file $2=start $3=length $4=target $5=blocksize -> prints match count (0/1+)
+  local file="$1" start="$2" length="$3" target="$4" bs="$5" skipb countb
+  skipb=$(( start / bs ))
+  countb=$(( (length + bs - 1) / bs ))
+  dd if="$file" bs=$bs skip="$skipb" count="$countb" 2>/dev/null | grep -ac -- "$target"
+}
+
+find_byte_offset() {
+  local file="$1" target="$2"
+  local tlen filelen overlap OUTER INNER pos end has winlen relOff target_hex countb newend
+
+  tlen=$(printf '%s' "$target" | wc -c)
+  filelen=$(wc -c < "$file")
+  overlap=$(( tlen - 1 ))
+  OUTER=2097152
+  INNER=65536
+
+  pos=0
+  while [ "$pos" -lt "$filelen" ]; do
+    has=$(chunk_has "$file" "$pos" $((OUTER + overlap)) "$target" "$INNER")
+    if [ "${has:-0}" -ge 1 ]; then
+      countb=$(( (OUTER + overlap + INNER - 1) / INNER ))
+      end=$(( pos + countb * INNER ))
+      [ "$end" -gt "$filelen" ] && end=$filelen
+      break
+    fi
+    pos=$(( pos + OUTER ))
+  done
+  [ "$pos" -ge "$filelen" ] && return 1
+
+  while [ $(( pos + INNER )) -lt "$end" ]; do
+    has=$(chunk_has "$file" "$pos" $((INNER + overlap)) "$target" "$INNER")
+    if [ "${has:-0}" -ge 1 ]; then
+      countb=$(( (INNER + overlap + INNER - 1) / INNER ))
+      newend=$(( pos + countb * INNER ))
+      [ "$newend" -lt "$end" ] && end=$newend
+      break
+    fi
+    pos=$(( pos + INNER ))
+  done
+
+  winlen=$(( end - pos ))
+  [ "$winlen" -le 0 ] && return 1
+  target_hex="$(printf '%s' "$target" | hexdump -v -e '1/1 "%02x "')"
+  target_hex="$(printf '%s' "$target_hex" | sed 's/^ *//; s/ *$//')"
+  relOff=$(dd if="$file" bs=1 skip="$pos" count="$winlen" 2>/dev/null | hexdump -v -e '16/1 "%02x " "\n"' | awk -v target="$target_hex" '
+    BEGIN { n = split(target, want, " ") }
+    { for (i = 1; i <= NF; i++) bytes[++count] = $i }
+    END {
+      for (start = 1; start <= count - n + 1; start++) {
+        matched = 1
+        for (i = 1; i <= n; i++) { if (bytes[start + i - 1] != want[i]) { matched = 0; break } }
+        if (matched) { print start - 1; exit 0 }
+      }
+      exit 1
+    }
+  ')
+  [ -n "$relOff" ] || return 1
+  echo $(( pos + relOff ))
+}
+
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
@@ -381,7 +463,9 @@ if [ -d "$DS/videoplayer-webm/src" ]; then
       log "  already patched: $f"; continue
     fi
     [ -f "$f.orig" ] || cp "$f" "$f.orig"
-    python3 "$DS/videoplayer-webm/src/patch-mediastream.py" "$f" 2>/dev/null && log "  patched: $f" || log "  !! failed: $f"
+    # Pure sh/awk (patch-mediastream.sh), not python3 -- confirmed on a real device that python3
+    # isn't installed at all, which made this silently fail on every file, every time.
+    sh "$DS/videoplayer-webm/src/patch-mediastream.sh" "$f" && log "  patched: $f" || log "  !! failed: $f"
   done
   # The autoplug shim (libmp-autoplug.so) is intentionally NOT installed here: it fixes WebM in the
   # stock Video player but BREAKS mp4/H.264 playback. Apply it manually per
@@ -391,17 +475,28 @@ fi
 
 # ---------------------------------------------------------------- device-setup: webkit-webm-mime
 # Binary string patch of libWebKitLuna.so (video/x-ms-wmv -> video/webm); no payload file.
+# libWebKitLuna.so is a core, actively-mmap'd OS library (the running WebKit engine) -- patch a
+# COPY on the same filesystem, verify it, then atomically `mv` it over the original. A process
+# with the old file already open/mapped keeps using that inode until it reopens; writing bytes
+# directly into the live inode in place risks a torn read by whatever has it mapped right now.
 log "webkit-webm-mime: patching libWebKitLuna.so MIME table..."
 LIB=$(ls /usr/lib/libWebKitLuna.so /usr/palm/lib/libWebKitLuna.so 2>/dev/null | head -1)
 if [ -n "$LIB" ]; then
   if strings "$LIB" 2>/dev/null | grep -q "^video/webm$"; then
     log "  already patched"
   else
-    OFF=$(grep -abo "video/x-ms-wmv" "$LIB" | head -1 | cut -d: -f1)
+    OFF=$(find_byte_offset "$LIB" "video/x-ms-wmv")
     if [ -n "$OFF" ]; then
       cp "$LIB" /media/internal/libWebKitLuna.so.prewebm 2>/dev/null
-      printf 'video/webm\000\000\000\000' | dd of="$LIB" bs=1 seek="$OFF" count=14 conv=notrunc 2>/dev/null
-      strings "$LIB" 2>/dev/null | grep -q "^video/webm$" && log "  patched OK" || { log "  !! patch verify failed, restoring"; cp /media/internal/libWebKitLuna.so.prewebm "$LIB"; }
+      TMP="$LIB.webmpatch.$$"
+      cp -a "$LIB" "$TMP"
+      printf 'video/webm\000\000\000\000' | dd of="$TMP" bs=1 seek="$OFF" count=14 conv=notrunc 2>/dev/null
+      if strings "$TMP" 2>/dev/null | grep -q "^video/webm$"; then
+        mv -f "$TMP" "$LIB" && log "  patched OK"
+      else
+        log "  !! patch verify failed on copy, leaving original untouched"
+        rm -f "$TMP"
+      fi
     else
       log "  !! target string not found, skipping (unexpected libWebKitLuna build)"
     fi
@@ -425,6 +520,15 @@ if [ -f "$DS/whatsapp-e164-normalization/messaging.library-utils.js" ]; then
   for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
 fi
 
+# patch_in <dir> <patch-file> -- BusyBox's `patch` does NOT support `-d` at all (confirmed on a
+# real device: "patch: invalid option -- 'd'"), unlike GNU patch. `patch -p1 -d DIR < file` was
+# silently failing on EVERY call below (the 2>/dev/null hid the busybox usage-error output),
+# misreported in the log as "already applied?" when the patches were never applied at all. cd in
+# a subshell instead, which works with any patch implementation.
+patch_in() {
+  ( cd "$1" && patch -p1 ) < "$2"
+}
+
 # ---------------------------------------------------------------- quickoffice-integration
 if [ -d "$DS/quickoffice-integration" ]; then
   log "quickoffice-integration: rerouting QuickOffice remote-file support..."
@@ -434,8 +538,8 @@ if [ -d "$DS/quickoffice-integration" ]; then
     [ -d "$d" ] || continue
     cp "$Q/source/RemoteFileService.js" "$d/source/" 2>/dev/null
     cp "$Q/source/FileStore.js" "$d/source/" 2>/dev/null
-    patch -p1 -d "$d" < "$Q/patches/FolderContentsList.js.patch" 2>/dev/null || log "  !! FolderContentsList.js patch failed for $app (already applied?)"
-    patch -p1 -d "$d" < "$Q/patches/FolderContentsPane.js.patch" 2>/dev/null || log "  !! FolderContentsPane.js patch failed for $app (already applied?)"
+    patch_in "$d" "$Q/patches/FolderContentsList.js.patch" 2>/dev/null || log "  !! FolderContentsList.js patch failed for $app (already applied?)"
+    patch_in "$d" "$Q/patches/FolderContentsPane.js.patch" 2>/dev/null || log "  !! FolderContentsPane.js patch failed for $app (already applied?)"
     cp "$Q/assets/toolbar-icon-refresh.png" "$d/images/" 2>/dev/null
   done
 fi
@@ -447,16 +551,16 @@ if [ -d "$DS/photos-integration" ]; then
   DAPP=/media/cryptofs/apps/usr/palm/applications/com.palm.app.photos
   DSVC=/usr/palm/services/com.palm.service.photos
   if [ -d "$DAPP" ]; then
-    patch -p1 -d "$DAPP" < "$P/patches/LibraryNavigationPanel.css.patch" 2>/dev/null || log "  !! LibraryNavigationPanel.css patch failed (already applied?)"
+    patch_in "$DAPP" "$P/patches/LibraryNavigationPanel.css.patch" 2>/dev/null || log "  !! LibraryNavigationPanel.css patch failed (already applied?)"
     cp "$P"/assets/syn-*.png "$DAPP/images/" 2>/dev/null
     # Best-effort: exact subpath for these two app-side patches isn't confirmed against a pristine
     # IPK (see packaging/README.md) — log failure instead of aborting.
-    patch -p1 -d "$DAPP" < "$P/patches/PictureMode.js.patch" 2>/dev/null || log "  !! PictureMode.js patch not applied — apply manually per photos-integration/README.md"
-    patch -p1 -d "$DAPP" < "$P/patches/AlbumModeMultiselectControls.js.patch" 2>/dev/null || log "  !! AlbumModeMultiselectControls.js patch not applied — apply manually"
+    patch_in "$DAPP" "$P/patches/PictureMode.js.patch" 2>/dev/null || log "  !! PictureMode.js patch not applied — apply manually per photos-integration/README.md"
+    patch_in "$DAPP" "$P/patches/AlbumModeMultiselectControls.js.patch" 2>/dev/null || log "  !! AlbumModeMultiselectControls.js patch not applied — apply manually"
   fi
   if [ -d "$DSVC" ]; then
-    patch -p1 -d "$DSVC" < "$P/patches/Utils.js.patch" 2>/dev/null || log "  !! Utils.js patch not applied — apply manually per photos-integration/README.md"
-    patch -p1 -d "$DSVC" < "$P/patches/Sync-Manager.js.patch" 2>/dev/null || log "  !! Sync-Manager.js patch not applied — apply manually"
+    patch_in "$DSVC" "$P/patches/Utils.js.patch" 2>/dev/null || log "  !! Utils.js patch not applied — apply manually per photos-integration/README.md"
+    patch_in "$DSVC" "$P/patches/Sync-Manager.js.patch" 2>/dev/null || log "  !! Sync-Manager.js patch not applied — apply manually"
   fi
 fi
 
