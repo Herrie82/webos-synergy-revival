@@ -8,33 +8,95 @@ set -euo pipefail
 APP_ROOT="media/cryptofs/apps/usr/palm/applications"
 ACCOUNTS_ROOT="usr/palm/public/accounts"
 SERVICES_ROOT="usr/palm/services"
-# libpurple.so's own compiled-in plugin search path (patched, see generic/stage.sh) is the real
-# rootfs /usr/lib/purple-2 -- it never belonged under com.palm.app.teams (renamed org.webosports.app.teams; that app dir had nothing
-# to do with the shared backend; it was just where an earlier pass happened to stash it).
-BACKEND_PURPLE2="usr/lib/purple-2"
-# Private, non-stock-colliding location for third-party runtime .so deps unique to specific prpls
-# (libgcrypt/libpng16/libwebp/libopus/libstdc++/...). Deliberately NOT /usr/lib: overwriting a
-# system-wide lib of the same name with our specific cross-built version could break unrelated
-# apps that also load it. libpurple.so + purple-2/ itself is the one exception that DOES overwrite
-# the real /usr/lib (see generic/stage.sh + postinst's backup-before-overwrite).
-BACKEND_LIB="usr/lib/synergy-runtime"
+# Neutral cryptofs staging area for anything destined for a real ROOT-FS path (as opposed to
+# APP_ROOT/BACKEND_LIB/BACKEND_PURPLE2 above, which are already on cryptofs). Never write such a
+# file directly under $STAGE/<real-path>: ipkg extracts data.tar.gz itself, BEFORE postinst ever
+# runs and gets a chance to remount root read-write, so anything landing at a literal root-fs path
+# in data.tar.gz fails outright on stock webOS's read-only-by-default root ("Read-only file
+# system", confirmed live via Preware/WebOS Quick Install). /media/cryptofs is a separate,
+# always-writable fuse mount regardless of root's state; the shared apply_rootfs_overwrite()
+# postinst function (duplicated into each package family's postinst) copies everything staged
+# here to its real destination, backing up whatever's already there first.
+#
+# Scoped per-package (via $NAME, which every caller must set before staging anything -- messaging/
+# cloud's stage.sh already receive it as $1; generic/carddav set it to a fixed string) rather than
+# one shared path: ipkg's file-ownership tracking is by exact path REGARDLESS of whether the file
+# still physically exists after postinst deletes it (confirmed live: installing dropbox after
+# generic failed with "wants to install .../rootfs-overwrite/.symlinks, but that file is already
+# provided by package org.webosports.synergy.generic", even though generic's own postinst had
+# already deleted its copy of that same literal path).
+overwrite_rel() {
+  : "${NAME:?NAME must be set before staging anything through OVERWRITE (stage_root_file/stage_root_dir/stage_account/stage_service)}"
+  printf 'media/cryptofs/synergy-revival/rootfs-overwrite/%s' "$NAME"
+}
+# libpurple.so's own compiled-in plugin search path is /usr/lib/purple-2, and the shared runtime
+# deps dir is /usr/lib/synergy-runtime -- but root (/dev/mapper/store-root) is a FIXED, TINY 559MB
+# partition, and the connector plugins here are large (WhatsApp/Telegram ~29MB each, Signal
+# ~19.5MB): confirmed live that installing all of teams+telegram+signal+whatsapp together filled
+# root to 0 bytes free and broke further installs (one mid-install segfault, one corrupted package
+# record). /media/cryptofs has 20+GB free on the same device. So the REAL storage for both lives
+# on cryptofs, staged here under media/cryptofs/synergy-purple-plugins and
+# media/cryptofs/synergy-runtime; generic's postinst + imwrap.sh bind-mount them onto the real
+# /usr/lib/purple-2 and /usr/lib/synergy-runtime paths libpurple.so and imwrap.sh's
+# LD_LIBRARY_PATH actually expect (cryptofs can't hold symlinks, confirmed elsewhere in this repo,
+# so a bind mount -- re-applied every launch since it doesn't survive a reboot -- is the mechanism,
+# not a symlink). Every stage_backend_plugin* call below writes to the cryptofs-backed path; only
+# the mountpoint dirs themselves are ever created directly under /usr/lib on root.
+BACKEND_PURPLE2="media/cryptofs/synergy-purple-plugins"
+BACKEND_LIB="media/cryptofs/synergy-runtime"
+
+# stage_root_file <src-file> <dest-abs-path>
+# Stages a single file for postinst to copy to the real root-fs <dest-abs-path> (e.g.
+# /usr/share/dbus-1/system-services/com.palm.teams.call.service), backing up whatever's already
+# there first. See overwrite_rel() above for why this indirection (and its per-$NAME scoping)
+# exists at all.
+stage_root_file() {
+  local src="$1" dst="$2"
+  [ -f "$src" ] || { echo "!! stage_root_file: $src missing" >&2; return 1; }
+  local rel; rel="$(overwrite_rel)"
+  mkdir -p "$STAGE/$rel$(dirname "$dst")"
+  cp "$src" "$STAGE/$rel$dst"
+}
+
+# stage_root_dir <src-dir> <dest-abs-path>
+# Same as stage_root_file but for a whole directory (e.g. an account template, a Node service, the
+# _cloudcore dir). Symlinks inside src-dir can't be staged through cryptofs at all (rejects
+# symlink() outright, confirmed live packaging messaging.library/contacts.plugin.messaging in the
+# core-apps repo) -- recorded in a shared manifest instead; apply_rootfs_overwrite() recreates them
+# directly at the real destination with a real ln -s.
+stage_root_dir() {
+  local src="$1" dst="$2"
+  [ -d "$src" ] || { echo "!! stage_root_dir: $src missing" >&2; return 1; }
+  local rel; rel="$(overwrite_rel)"
+  local target="$STAGE/$rel$dst"
+  mkdir -p "$target"
+  local manifest="$STAGE/$rel/.symlinks"
+  mkdir -p "$(dirname "$manifest")"
+  touch "$manifest"
+  local excludes=()
+  local link relpath linktarget
+  while IFS= read -r -d '' link; do
+    relpath="${link#"$src"/}"
+    linktarget="$(readlink "$link")"
+    printf '%s\t%s\n' "$dst/$relpath" "$linktarget" >> "$manifest"
+    excludes+=(--exclude="$relpath")
+  done < <(find "$src" -type l -print0)
+  tar -C "$src" "${excludes[@]}" -cf - . \
+    | tar -C "$target" -xf -
+}
 
 # stage_account <src-dir> <template-id>
 # Copies an account-template directory (json + images) to /usr/palm/public/accounts/<template-id>/
 stage_account() {
   local src="$1" id="$2"
-  [ -d "$src" ] || { echo "!! stage_account: $src missing" >&2; return 1; }
-  mkdir -p "$STAGE/$ACCOUNTS_ROOT/$id"
-  cp -r "$src/." "$STAGE/$ACCOUNTS_ROOT/$id/"
+  stage_root_dir "$src" "/$ACCOUNTS_ROOT/$id"
 }
 
 # stage_service <src-dir> <service-id>
 # Copies a Node service directory to /usr/palm/services/<service-id>/
 stage_service() {
   local src="$1" id="$2"
-  [ -d "$src" ] || { echo "!! stage_service: $src missing" >&2; return 1; }
-  mkdir -p "$STAGE/$SERVICES_ROOT/$id"
-  cp -r "$src/." "$STAGE/$SERVICES_ROOT/$id/"
+  stage_root_dir "$src" "/$SERVICES_ROOT/$id"
 }
 
 # stage_app <src-dir> <app-id>
@@ -60,11 +122,18 @@ stage_app_files() {
   done
 }
 
-# stage_backend_plugin <so-file> [runtime-lib]...
-# Drops a libpurple prpl plugin into the real /usr/lib/purple-2 (libpurple's own compiled-in
-# plugin search path), and any extra runtime .so deps into the private synergy-runtime dir
-# alongside it. Connector packages only ADD new filenames here (their plugin has never existed on
-# stock) — never touch/overwrite what's already there; that's generic's job for libpurple.so itself.
+# Runtime .so deps: each connector's own stage_backend_plugin* call only ever lists a runtime lib
+# that's UNIQUE to that one connector (verified with `readelf -d` against every plugin .so + the
+# transport binary itself -- see BUILD-LOG.md / this repo's commit history for the full table).
+# Anything needed by 2+ packages (libopus/libogg/libtidy -- all three actually NEEDED by the
+# transport binary itself, so truly universal; libopusfile -- shared by WhatsApp+Facebook) is
+# staged ONCE by generic instead, since every connector already hard-depends on generic being
+# installed (PKG_DEPENDS) -- no connector needs to carry a defensive copy of something generic is
+# guaranteed to provide. This avoids ipkg's file-ownership conflict ("wants to install file X but
+# that file is already provided by package Y", confirmed live installing telegram then whatsapp
+# when both shipped their own libopus.so.0 copy) without needing a payload/copy-on-postinst
+# workaround -- with the shared libs owned solely by generic, no two packages ever claim the same
+# filename in the first place.
 stage_backend_plugin() {
   local so="$1"; shift
   [ -f "$so" ] || { echo "!! stage_backend_plugin: $so missing" >&2; return 1; }

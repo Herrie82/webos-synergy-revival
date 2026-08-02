@@ -8,43 +8,52 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 STAGE="$1"
+NAME=carddav
+# shellcheck source=/dev/null
+source "$REPO/packaging/lib/common.sh"
 ROOT="$REPO/carddav"
 DEPLOY="$ROOT/deploy"
 SVCID=org.webosports.service.cdav
 APPID=org.webosports.app.cdav
 
-P_SVC="$STAGE/usr/palm/services/$SVCID"
-P_PUB="$STAGE/usr/share/ls2/roles/pub"
-P_PRV="$STAGE/usr/share/ls2/roles/prv"
-P_DBUS="$STAGE/usr/share/dbus-1/system-services"
-P_DBUS_PUB="$STAGE/usr/share/dbus-1/services"
-P_KINDS="$STAGE/etc/palm/db/kinds"
-P_PERMS="$STAGE/etc/palm/db/permissions"
-P_ACCT="$STAGE/usr/palm/public/accounts"
-P_APP="$STAGE/media/cryptofs/apps/usr/palm/applications/$APPID"
-mkdir -p "$P_SVC" "$P_PUB" "$P_PRV" "$P_DBUS" "$P_DBUS_PUB" "$P_KINDS" "$P_PERMS" "$P_ACCT"
-
 echo "== carddav: service =="
-cp -r "$ROOT/service/services.json" "$ROOT/service/sources.json" "$ROOT/service/javascript" "$P_SVC/"
-cp "$DEPLOY/palm_bus_config.json" "$P_SVC/"
+# usr/palm/services/... is a root-fs path -- stock webOS boots root READ-ONLY, and ipkg extracts
+# data.tar.gz itself before postinst ever runs and gets a chance to remount root rw, so this can't
+# be staged directly under $STAGE/usr/... anymore (confirmed live: that made the whole extraction
+# fail outright). stage_root_dir/stage_root_file stage it on cryptofs instead; postinst copies it
+# into place.
+mkdir -p "$STAGE/.carddav-svc-src/$SVCID"
+cp -r "$ROOT/service/services.json" "$ROOT/service/sources.json" "$ROOT/service/javascript" \
+   "$STAGE/.carddav-svc-src/$SVCID/"
+cp "$DEPLOY/palm_bus_config.json" "$STAGE/.carddav-svc-src/$SVCID/"
+stage_root_dir "$STAGE/.carddav-svc-src/$SVCID" "/$SERVICES_ROOT/$SVCID"
+rm -rf "$STAGE/.carddav-svc-src"
 
 echo "== carddav: ls2 roles + dbus activation =="
-cp "$DEPLOY/ls2/pub/$SVCID.json" "$P_PUB/"
-cp "$DEPLOY/ls2/prv/$SVCID.json" "$P_PRV/"
-cp "$DEPLOY/dbus/$SVCID.service" "$P_DBUS/"
-cp "$DEPLOY/dbus/$SVCID.service" "$P_DBUS_PUB/"
+stage_root_file "$DEPLOY/ls2/pub/$SVCID.json" "/usr/share/ls2/roles/pub/$SVCID.json"
+stage_root_file "$DEPLOY/ls2/prv/$SVCID.json" "/usr/share/ls2/roles/prv/$SVCID.json"
+stage_root_file "$DEPLOY/dbus/$SVCID.service" "/usr/share/dbus-1/system-services/$SVCID.service"
+stage_root_file "$DEPLOY/dbus/$SVCID.service" "/usr/share/dbus-1/services/$SVCID.service"
 
 echo "== carddav: db8 kinds + permissions =="
-cp "$ROOT/service/configuration/db/kinds/"org.webosports.cdav.* "$P_KINDS/"
-cp "$ROOT/service/configuration/db/permissions/"org.webosports.cdav.* "$P_PERMS/"
+for f in "$ROOT/service/configuration/db/kinds/"org.webosports.cdav.*; do
+  stage_root_file "$f" "/etc/palm/db/kinds/$(basename "$f")"
+done
+for f in "$ROOT/service/configuration/db/permissions/"org.webosports.cdav.*; do
+  stage_root_file "$f" "/etc/palm/db/permissions/$(basename "$f")"
+done
 
 echo "== carddav: account templates =="
-cp -r "$DEPLOY/accounts/"org.webosports.cdav.account* "$P_ACCT/"
+for d in "$DEPLOY/accounts/"org.webosports.cdav.account*; do
+  [ -d "$d" ] || continue
+  stage_root_dir "$d" "/$ACCOUNTS_ROOT/$(basename "$d")"
+done
 
 if [ -d "$DEPLOY/app/$APPID" ]; then
   echo "== carddav: setup app =="
-  mkdir -p "$P_APP"
-  cp -r "$DEPLOY/app/$APPID/." "$P_APP/"
+  # Already on cryptofs (APP_ROOT) -- no OVERWRITE indirection needed for this one.
+  stage_app "$DEPLOY/app/$APPID" "$APPID"
+  APP_STAGED="$STAGE/$APP_ROOT/$APPID"
   # The Google OAuth client_secret is kept out of git (see GoogleSetup.js's GOCSPX_INJECTED_AT_DEPLOY
   # placeholder). Inject it at package-build time the same way deploy-cdav.sh does at deploy time.
   GSECRET="${CDAV_GOOGLE_CLIENT_SECRET:-}"
@@ -53,7 +62,7 @@ if [ -d "$DEPLOY/app/$APPID" ]; then
     [ -n "$GJSON" ] && GSECRET=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['web']['client_secret'])" "$GJSON" 2>/dev/null)
   fi
   if [ -n "$GSECRET" ]; then
-    sed -i "s/GOCSPX_INJECTED_AT_DEPLOY/$GSECRET/" "$P_APP/source/GoogleSetup.js"
+    sed -i "s/GOCSPX_INJECTED_AT_DEPLOY/$GSECRET/" "$APP_STAGED/source/GoogleSetup.js"
     echo "   injected Google client_secret into setup app"
   else
     echo "   !! no Google client_secret found — Google CardDAV setup will fail until GoogleSetup.js is patched (set CDAV_GOOGLE_CLIENT_SECRET)"
@@ -62,6 +71,9 @@ else
   echo "   (no setup app in deploy/app/$APPID -- skipping)"
 fi
 
+# /var is its own small (~60MB), always-writable partition (confirmed distinct from root even
+# when root is read-only) -- this tiny shell script stages directly here as before, no OVERWRITE
+# indirection needed.
 mkdir -p "$STAGE/var"
 cp "$DEPLOY/provision-cdav-db.sh" "$STAGE/var/provision-cdav-db.sh"
 

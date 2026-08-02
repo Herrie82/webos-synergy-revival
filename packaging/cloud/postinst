@@ -1,8 +1,69 @@
 #!/bin/sh
 # postinst — shared by every cloud connector package. The account template + legacy Mojo-style
-# service need nothing beyond being on disk (no ls2 role file, no db8 kind) — just nudge the
-# Accounts app and application manager to pick up the new template/app.
+# service land on real root-fs paths (/usr/palm/public/accounts/..., /usr/palm/services/...),
+# which stock webOS boots read-only -- ipkg extracts data.tar.gz itself, before this script ever
+# runs and gets a chance to remount root rw, so they're staged on cryptofs instead
+# (stage_account/stage_service in packaging/lib/common.sh) and copied into place here.
 set +e
+# $OV is scoped per-package at build time (packaging/lib/common.sh's overwrite_rel(), keyed by
+# $NAME) -- ipkg's file-ownership tracking is by exact path regardless of whether the file still
+# physically exists after postinst deletes it, so a shared literal path collides across packages
+# (confirmed live: dropbox failed with ".symlinks... already provided by package
+# org.webosports.synergy.generic" even though generic's own postinst had already deleted its
+# copy). Glob for whichever subdirectory THIS package's data.tar.gz actually populated -- ipkg
+# fully installs+configures one package before starting the next, so there's never a moment where
+# two packages' subdirectories coexist here.
+OV=""
+for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+  [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+done
+BAK=/media/cryptofs/synergy-stock-backup
+log() { echo "[synergy-cloud] $*"; }
+
+# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.postinst (confirmed live) -- derive our
+# own package id from it so APPLIED (a *persistent* manifest that outlives $OV, unlike $OV itself)
+# is scoped per-connector too (this same postinst file is shared verbatim across all 12 cloud
+# connectors) -- otherwise it would accumulate every OTHER connector's entries as well.
+PKGID="$(basename "$0" | sed 's/\.postinst$//')"
+APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
+
+mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
+mount -o remount,rw / 2>/dev/null
+
+# See generic/postinst's matching function for the full rationale (same mechanism, shared here
+# since each package's postinst is a standalone script with no way to source another package's
+# files at install time).
+apply_rootfs_overwrite() {
+  [ -d "$OV" ] || return 0
+  mkdir -p "$(dirname "$APPLIED")"
+  local f rel dst
+  find "$OV" -type f | while IFS= read -r f; do
+    rel="${f#"$OV"}"
+    [ "$rel" = "/.symlinks" ] && continue
+    dst="$rel"
+    if [ -e "$dst" ] && [ ! -e "$BAK$dst" ]; then
+      mkdir -p "$(dirname "$BAK$dst")"
+      cp -a "$dst" "$BAK$dst"
+      log "  backed up stock $dst"
+    fi
+    mkdir -p "$(dirname "$dst")"
+    rm -f "$dst"
+    cp -a "$f" "$dst"
+    echo "$dst" >> "$APPLIED"
+  done
+  if [ -s "$OV/.symlinks" ]; then
+    while IFS="$(printf '\t')" read -r dst target; do
+      [ -n "$dst" ] || continue
+      mkdir -p "$(dirname "$dst")"
+      rm -f "$dst"
+      ln -sf "$target" "$dst"
+      echo "$dst" >> "$APPLIED"
+    done < "$OV/.symlinks"
+  fi
+  rm -rf "$OV"
+}
+apply_rootfs_overwrite
+
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
 for p in $(pidof accounts.js 2>/dev/null); do kill "$p" 2>/dev/null; done
 echo "[synergy-cloud] installed. Settings > Accounts > Add Account to finish setup."

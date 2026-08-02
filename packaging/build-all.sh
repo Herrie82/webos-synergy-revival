@@ -36,12 +36,18 @@ FILTER=("$@")
 
 want generic && build_one generic "$HERE/generic" bash "$HERE/generic/stage.sh"
 
+# core-apps patches (Accounts/Phone/messaging.library/contacts.plugin.messaging/app-services/
+# luna-systemui/enyo accounts framework/chatthreader) are no longer built from here -- each now
+# has its own self-contained packaging/ tree in its own repo (core-apps, app-services,
+# luna-systemui, enyo-1.0, com.palm.messaging.chatthreader), building a whole-directory-replace
+# ipk instead of a per-file patch. Build those from their own repos' packaging/build-all.sh.
+
 for name in "${CLOUD_NAMES[@]}"; do
-  want "$name" && POSTINST="$HERE/cloud/postinst" build_one "cloud/$name" "$HERE/cloud/$name" bash "$HERE/cloud/stage.sh" "$name"
+  want "$name" && POSTINST="$HERE/cloud/postinst" PRERM="$HERE/cloud/prerm" build_one "cloud/$name" "$HERE/cloud/$name" bash "$HERE/cloud/stage.sh" "$name"
 done
 
 for name in "${MESSAGING_NAMES[@]}"; do
-  want "$name" && POSTINST="$HERE/messaging/postinst" build_one "messaging/$name" "$HERE/messaging/$name" bash "$HERE/messaging/stage.sh" "$name"
+  want "$name" && POSTINST="$HERE/messaging/postinst" PRERM="$HERE/messaging/prerm" build_one "messaging/$name" "$HERE/messaging/$name" bash "$HERE/messaging/stage.sh" "$name"
 done
 
 want carddav && build_one carddav "$HERE/carddav" bash "$HERE/carddav/stage.sh"

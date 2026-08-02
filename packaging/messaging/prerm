@@ -1,0 +1,31 @@
+#!/bin/sh
+# prerm — shared by every messaging (libpurple) connector package. Removes the account template +
+# calling dbus service file postinst copied out of cryptofs to their real root-fs destinations
+# (ipkg's own automatic per-file removal doesn't know about them: by the time postinst finished,
+# they were no longer part of this package's own tracked data.tar.gz contents).
+set +e
+BAK=/media/cryptofs/synergy-stock-backup
+log() { echo "[synergy-messaging] $*"; }
+
+mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
+mount -o remount,rw / 2>/dev/null
+
+# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.prerm -- see postinst's matching comment.
+PKGID="$(basename "$0" | sed 's/\.prerm$//')"
+APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
+
+if [ -f "$APPLIED" ]; then
+  while IFS= read -r dst; do
+    [ -n "$dst" ] || continue
+    if [ -e "$BAK$dst" ]; then
+      mv -f "$BAK$dst" "$dst" && log "  restored stock $dst"
+    else
+      rm -rf "$dst" && log "  removed $dst"
+    fi
+  done < "$APPLIED"
+  rm -f "$APPLIED"
+fi
+
+luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+log "removal complete."
+exit 0

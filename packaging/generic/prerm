@@ -4,6 +4,9 @@
 # db8 records) alone. Best-effort: every step logs and continues on failure.
 set +e
 log() { echo "[synergy-generic] $*"; }
+# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.prerm -- see postinst's matching
+# comment for why APPLIED needs this per-package scoping.
+PKGID="$(basename "$0" | sed 's/\.prerm$//')"
 
 log "stopping imtransport..."
 stop imtransport 2>/dev/null
@@ -15,25 +18,10 @@ mount -o remount,rw / 2>/dev/null
 log "restoring patched stock files from backups..."
 restore() { [ -f "$1" ] && cp "$1" "$2" && log "  restored $2"; }
 
-restore /usr/palm/services/com.palm.messaging.chatthreader/models/imchannel.js.b4jidguard \
-        /usr/palm/services/com.palm.messaging.chatthreader/models/imchannel.js
-restore /usr/palm/services/com.palm.messaging.chatthreader/models/dbmodels.js.b4jidguard \
-        /usr/palm/services/com.palm.messaging.chatthreader/models/dbmodels.js
-restore /usr/palm/services/com.palm.messaging.chatthreader/assistants/newmessageassistant.js.b4personlink \
-        /usr/palm/services/com.palm.messaging.chatthreader/assistants/newmessageassistant.js
-restore /usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript/personChanged.js.b4bighackguard \
-        /usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript/personChanged.js
-restore /usr/lib/luna/system/luna-systemui/app/FilePicker/AlbumGridView.js.orig \
-        /usr/lib/luna/system/luna-systemui/app/FilePicker/AlbumGridView.js
 restore /usr/share/fonts/HeiT_nb.ttf.orig /usr/share/fonts/HeiT_nb.ttf
-restore /usr/palm/services/com.palm.service.contacts.linker/autolinker.js.b4optb \
-        /usr/palm/services/com.palm.service.contacts.linker/autolinker.js
 restore /usr/bin/PmBtEngine.orig /usr/bin/PmBtEngine
 restore /media/internal/libWebKitLuna.so.prewebm /usr/lib/libWebKitLuna.so
 restore /media/internal/libWebKitLuna.so.prewebm /usr/palm/lib/libWebKitLuna.so
-M=/usr/palm/frameworks/messaging.library/submission/1.3
-restore "$M/javascript/utils.js.b4e164" "$M/javascript/utils.js"
-restore "$M/concatenated.js.b4e164" "$M/concatenated.js"
 for f in /usr/palm/frameworks/mediastream/submission/24mediastream.js \
          /usr/palm/frameworks/mediastream/submission/24/concatenated.js \
          /usr/palm/frameworks/mediastream/submission/24/javascript/StreamingPlayEngine.js; do
@@ -80,9 +68,9 @@ if [ -f /usr/lib/purple-2/libjabber.so.0.0.0 ]; then
   log "  restored libjabber.so/libjabber.so.0 symlinks"
 fi
 
-log "restoring stock libpurple engine (or removing what we added if there was no stock file)..."
+log "restoring stock files (or removing what we added if there was no stock file)..."
 STOCKBAK=/media/cryptofs/synergy-stock-backup
-OV=/opt/synergy-revival/rootfs-overwrite
+APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
 restore_or_remove() {  # $1 = real absolute path we may have overwritten in postinst
   local dst="$1"
   if [ -e "$STOCKBAK$dst" ]; then
@@ -91,38 +79,39 @@ restore_or_remove() {  # $1 = real absolute path we may have overwritten in post
     rm -f "$dst"
   fi
 }
-if [ -d "$OV/lib" ]; then
-  restore_or_remove /usr/lib/libpurple.so.0.14.13
-  # libpurple.so/libpurple.so.0 are symlinks -- postinst never backed them up (/media/cryptofs
-  # can't hold symlinks at all, and there's nothing to back up anyway: the real stock target file
-  # libpurple.so.0.5.1 was never touched). Just re-link back to it directly, confirmed the stock
-  # name/version on every real image checked (StockRootfs + two physical devices).
+# libpurple.so/libpurple.so.0 are symlinks -- postinst never backed them up (/media/cryptofs can't
+# hold symlinks at all, and there's nothing to back up anyway: the real stock target file
+# libpurple.so.0.5.1 was never touched). Just re-link back to it directly if libpurple.so.0.14.13
+# is about to be removed below, confirmed the stock name/version on every real image checked
+# (StockRootfs + two physical devices).
+if [ -f /media/cryptofs/synergy-stock-backup/usr/lib/libpurple.so.0.14.13 ] || [ -f /usr/lib/libpurple.so.0.14.13 ]; then
   rm -f /usr/lib/libpurple.so.0 /usr/lib/libpurple.so
   if [ -f /usr/lib/libpurple.so.0.5.1 ]; then
     ln -sf libpurple.so.0.5.1 /usr/lib/libpurple.so.0
     ln -sf libpurple.so.0.5.1 /usr/lib/libpurple.so
     log "  restored stock symlinks -> libpurple.so.0.5.1"
   fi
-  for so in "$OV/lib/purple-2/"*.so; do
-    [ -f "$so" ] || continue
-    restore_or_remove "/usr/lib/purple-2/$(basename "$so")"
-  done
 fi
-if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
-  restore_or_remove /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
+if [ -f "$APPLIED" ]; then
+  while IFS= read -r dst; do
+    [ -n "$dst" ] || continue
+    restore_or_remove "$dst"
+  done < "$APPLIED"
 fi
-if [ -f "$OV/etc/palm/db/kinds/com.palm.person" ]; then
-  restore_or_remove /etc/palm/db/kinds/com.palm.person
-fi
-rm -rf "$STOCKBAK"
+rm -rf "$STOCKBAK" "$APPLIED"
 
 log "removing imlibpurpleservice + backend files..."
 rm -f /usr/bin/imlibpurpletransport /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh \
       /var/provision-im-reactions.sh /var/provision-person-search.sh /etc/event.d/imtransport
 rm -f /usr/sbin/bt-a2dp-fix.sh /etc/event.d/bt-a2dp-fix /usr/local/bin/db8-clean.sh
-rm -rf /usr/lib/synergy-runtime
+# /usr/lib/purple-2 and /usr/lib/synergy-runtime are BIND MOUNTS onto /media/cryptofs (see
+# postinst/imwrap.sh) -- unmount FIRST, or `rm -rf` here would recurse through the mount and
+# delete the real cryptofs-backed content instead of just the (by-then-empty) mountpoint dir.
+umount /usr/lib/purple-2 2>/dev/null
+umount /usr/lib/synergy-runtime 2>/dev/null
+rmdir /usr/lib/purple-2 /usr/lib/synergy-runtime 2>/dev/null
 rm -rf /usr/palm/services/_cloudcore
-rm -rf /opt/synergy-revival
+rm -rf /media/cryptofs/synergy-revival
 
 # Deliberately NOT remounting root back to read-only here -- ipkg writes its own bookkeeping
 # after prerm returns, and that needs root writable too. See postinst's matching comment.

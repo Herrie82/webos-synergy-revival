@@ -28,7 +28,10 @@ SVC_ID="$(basename "$SVC_SRC")"
 
 echo "== cloud/$NAME: account ($TEMPLATE_ID) + service ($SVC_ID) =="
 stage_account "$ACC_SRC" "$TEMPLATE_ID"
-bump_version "$STAGE/$ACCOUNTS_ROOT/$TEMPLATE_ID/$TEMPLATE_ID.json" 2>/dev/null || true
+# stage_account now routes through the per-$NAME overwrite dir (cryptofs), not directly under
+# $STAGE/$ACCOUNTS_ROOT -- see packaging/lib/common.sh for why (ipkg extracts data.tar.gz before
+# postinst can remount root rw, so nothing can be staged at a literal root-fs path anymore).
+bump_version "$STAGE/$(overwrite_rel)/$ACCOUNTS_ROOT/$TEMPLATE_ID/$TEMPLATE_ID.json" 2>/dev/null || true
 stage_service "$SVC_SRC" "$SVC_ID"
 
 if [ -d "$D/apps" ]; then

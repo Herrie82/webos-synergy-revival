@@ -5,10 +5,69 @@
 # continues rather than aborting the whole install (best-effort, matches how these were
 # originally applied by hand over novacom).
 set +e
-DS=/opt/synergy-revival/device-setup
-OV=/opt/synergy-revival/rootfs-overwrite
+DS=/media/cryptofs/synergy-revival/device-setup
+# $OV is scoped per-package at build time (packaging/lib/common.sh's overwrite_rel(), keyed by
+# $NAME) -- ipkg's file-ownership tracking is by exact path regardless of whether the file still
+# physically exists after postinst deletes it, so a shared literal path collides across packages
+# (confirmed live: dropbox failed with ".symlinks... already provided by package
+# org.webosports.synergy.generic" even though generic's own postinst had already deleted its
+# copy). Glob for whichever subdirectory THIS package's data.tar.gz actually populated -- ipkg
+# fully installs+configures one package before starting the next, so there's never a moment where
+# two packages' subdirectories coexist here.
+OV=""
+for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+  [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+done
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
+
+# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.postinst (confirmed live: $0 is that
+# exact path) -- derive our own package id from it so APPLIED below is scoped per-package too:
+# it's a *persistent* manifest that outlives $OV (which gets wiped each run), so without this it
+# would accumulate every OTHER connector's entries as well, and every connector's prerm would see
+# (and try to remove) all of them.
+PKGID="$(basename "$0" | sed 's/\.postinst$//')"
+APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
+
+# Copies everything staged under $OV (by stage_root_file/stage_root_dir/stage_account/
+# stage_service in packaging/lib/common.sh) to its real root-fs destination, backing up whatever
+# is already there once. Must run before anything below assumes those files already exist --
+# ipkg's own data.tar.gz unpack never touches a root-fs path directly (nothing writes there
+# anymore), so if this step doesn't run, none of them are anywhere on the device yet.
+#
+# Also appends every destination path touched to APPLIED (a manifest that OUTLIVES $OV itself,
+# which this wipes clean at the end -- see the stale-leftover-subdir bug this exact pattern hit in
+# the core-apps repo's packaging). prerm reads APPLIED (not $OV, which won't exist by the time
+# prerm runs) to know what to restore-or-remove.
+apply_rootfs_overwrite() {
+  [ -d "$OV" ] || return 0
+  mkdir -p "$(dirname "$APPLIED")"
+  local f rel dst
+  find "$OV" -type f | while IFS= read -r f; do
+    rel="${f#"$OV"}"
+    [ "$rel" = "/.symlinks" ] && continue
+    dst="$rel"
+    if [ -e "$dst" ] && [ ! -e "$BAK$dst" ]; then
+      mkdir -p "$(dirname "$BAK$dst")"
+      cp -a "$dst" "$BAK$dst"
+      log "  backed up stock $dst"
+    fi
+    mkdir -p "$(dirname "$dst")"
+    rm -f "$dst"
+    cp -a "$f" "$dst"
+    echo "$dst" >> "$APPLIED"
+  done
+  if [ -s "$OV/.symlinks" ]; then
+    while IFS="$(printf '\t')" read -r dst target; do
+      [ -n "$dst" ] || continue
+      mkdir -p "$(dirname "$dst")"
+      rm -f "$dst"
+      ln -sf "$target" "$dst"
+      echo "$dst" >> "$APPLIED"
+    done < "$OV/.symlinks"
+  fi
+  rm -rf "$OV"
+}
 
 # find_byte_offset <file> <literal-string> -- print the byte offset of the first occurrence of
 # <literal-string> in <file> (exit 1, no output, if not found). BusyBox's grep has no -b (byte
@@ -95,64 +154,47 @@ find_byte_offset() {
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
-# ---------------------------------------------------------------- libpurple engine (overwrites
-# the real /usr/lib + /usr/lib/purple-2 -- genuine stock com.palm.imlibpurple infrastructure
-# being modernized in place, not a private add-on). Back up whatever's already at each
-# destination ONCE (idempotent: skip if a backup already exists from a prior install) so prerm
-# can restore it, matching the non-destructive move pattern already used by device-setup's
-# skype-disable / bt-hfg-call-patch / webkit-webm-mime fixes.
-overwrite_file() {  # $1 = staged source (under $OV), $2 = real absolute destination path
-  local src="$1" dst="$2"
-  [ -f "$src" ] || [ -L "$src" ] || return 0
-  if [ -L "$src" ]; then
-    # Symlinks: /media/cryptofs cannot hold them at all (confirmed on a real device: "cp: can't
-    # create symlink ... Operation not permitted") -- and there's nothing meaningful to back up
-    # anyway, since the ORIGINAL target file is never touched, only this link NAME changes.
-    # `cp -a` onto an existing symlink is also unreliable on this busybox (confirmed: one of two
-    # sibling symlinks silently failed to update with "File exists" while the other succeeded) --
-    # force-remove the destination first so relinking is unconditional.
-    mkdir -p "$(dirname "$dst")"
-    rm -f "$dst"
-    ln -sf "$(readlink "$src")" "$dst"
-    return
-  fi
-  if [ -e "$dst" ] && [ ! -e "$BAK$dst" ]; then
-    mkdir -p "$(dirname "$BAK$dst")"
-    cp -a "$dst" "$BAK$dst"
-    log "  backed up stock $dst"
-  fi
-  mkdir -p "$(dirname "$dst")"
-  rm -f "$dst"
-  cp -a "$src" "$dst"
-}
-if [ -d "$OV/lib" ]; then
-  log "installing libpurple 2.14 engine to /usr/lib (backing up any stock files first)..."
-  overwrite_file "$OV/lib/libpurple.so.0.14.13" /usr/lib/libpurple.so.0.14.13
-  overwrite_file "$OV/lib/libpurple.so.0" /usr/lib/libpurple.so.0
-  overwrite_file "$OV/lib/libpurple.so" /usr/lib/libpurple.so
-  for so in "$OV/lib/purple-2/"*.so; do
-    [ -f "$so" ] || continue
-    overwrite_file "$so" "/usr/lib/purple-2/$(basename "$so")"
-  done
-fi
+# Stop the transport BEFORE any of the overwrite/bind-mount work below touches libpurple.so,
+# purple-2/, or synergy-runtime -- confirmed live (see packaging/messaging/postinst's matching
+# comment): writing into a file the RUNNING transport already has mmap'd produced a 0-byte file on
+# this cryptofs FUSE filesystem, crash-looping the transport until fixed by hand. Only matters on
+# a reinstall/upgrade of an already-installed generic (a fresh install has nothing running yet);
+# restarted later once the real db8/ls2 provisioning below has also run.
+stop imtransport 2>/dev/null
+pkill -9 -f imlibpurpletransport 2>/dev/null
 
-# com.palm.imlibpurple.service: stock points straight at the raw transport binary, bypassing
-# imwrap.sh (no wpe-glibc loader patch / SSL override / PmLog self-heal / ALSA preload) -- overwrite
-# it with the version that execs /var/imwrap.sh instead, backing up stock first (see stage.sh).
-if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
-  log "installing com.palm.imlibpurple.service (routes through imwrap.sh)..."
-  overwrite_file "$OV/dbus-1/system-services/com.palm.imlibpurple.service" \
-    /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
-fi
+# ---------------------------------------------------------------- purple-2 / synergy-runtime
+# bind mounts: root (/dev/mapper/store-root) is a FIXED, TINY 559MB partition; connector plugins
+# are large enough (WhatsApp/Telegram ~29MB each, Signal ~19.5MB) that keeping them there fills it
+# -- confirmed live: installing teams+telegram+signal+whatsapp together left 0 bytes free and
+# broke further installs (one mid-install segfault, one corrupted ipkg package record).
+# /media/cryptofs has 20+GB free on the same device, so the real storage for both dirs lives there
+# (staged there by every package -- see BACKEND_PURPLE2/BACKEND_LIB in packaging/lib/common.sh);
+# this bind-mounts them onto the /usr/lib paths libpurple.so and imwrap.sh's LD_LIBRARY_PATH
+# actually expect. Not a symlink: /media/cryptofs cannot hold them (confirmed elsewhere in this
+# postinst). Bind mounts don't survive a reboot, so imwrap.sh re-establishes both on every
+# transport launch too (see its own copy of this same check) -- this postinst-time setup just
+# gets a freshly-installed device working immediately without requiring a reboot first.
+for PAIR in "synergy-purple-plugins:/usr/lib/purple-2" "synergy-runtime:/usr/lib/synergy-runtime"; do
+  CDIR="/media/cryptofs/${PAIR%%:*}"
+  MNT="${PAIR#*:}"
+  mkdir -p "$CDIR" "$MNT"
+  mount | grep -q " on $MNT type" || mount --bind "$CDIR" "$MNT"
+done
 
-# com.palm.person: stock-owned by com.palm.service.contacts.linker (confirmed via ipkg return 22
-# on a real device), so it can't ship as a normal data.tar.gz file -- overwrite it the same way,
-# backing up stock's copy first. Must happen BEFORE provision-person-search.sh below, which
-# refuses to register the kind unless the patched (ims.type-tokenizing) content is already there.
-if [ -f "$OV/etc/palm/db/kinds/com.palm.person" ]; then
-  log "installing patched com.palm.person kind (adds ims.type to searchProperty)..."
-  overwrite_file "$OV/etc/palm/db/kinds/com.palm.person" /etc/palm/db/kinds/com.palm.person
-fi
+# ---------------------------------------------------------------- rootfs-overwrite
+# Applies EVERYTHING staged under $OV in one pass: the libpurple 2.14 + ssl-openssl engine
+# (overwrites real /usr/lib + /usr/lib/purple-2 -- genuine stock com.palm.imlibpurple
+# infrastructure being modernized in place, not a private add-on), com.palm.imlibpurple.service,
+# the patched com.palm.person kind, imlibpurpletransport itself, db8 kinds/permissions, ls2
+# roles, activities, and _cloudcore -- every one of these is now a real root-fs path that ipkg's
+# own data.tar.gz unpack can't write directly (root boots read-only), so nothing at any of these
+# destinations exists yet until this runs. Backs up whatever's already at each destination ONCE
+# (idempotent: skip if a backup already exists from a prior install) so prerm can restore it,
+# matching the non-destructive move pattern already used by device-setup's skype-disable /
+# bt-hfg-call-patch / webkit-webm-mime fixes.
+log "applying staged root-fs files (libpurple engine, db8 kinds/permissions, ls2 roles, _cloudcore, imlibpurpletransport)..."
+apply_rootfs_overwrite
 
 # ---------------------------------------------------------------- imlibpurpleservice
 log "registering messaging db8 kinds/permissions..."
@@ -163,17 +205,10 @@ chmod 755 /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh /var/provision
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
 
 log "starting imtransport upstart job..."
-stop imtransport 2>/dev/null
 start imtransport 2>/dev/null
 
-# ---------------------------------------------------------------- device-setup: account-keepdata
-if [ -d "$DS/account-keepdata/handlers" ]; then
-  log "account-keepdata: patching com.palm.service.accounts handlers..."
-  D=/usr/palm/services/com.palm.service.accounts/handlers
-  cp "$DS/account-keepdata/handlers/delete.js" "$D/delete.js" 2>/dev/null
-  cp "$DS/account-keepdata/handlers/notify-deleted.js" "$D/notify-deleted.js" 2>/dev/null
-  for p in $(ps 2>/dev/null | grep 'com.palm.service.accounts.js' | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
-fi
+# account-keepdata patching moved to the core-apps package, which deploys the whole
+# com.palm.service.accounts from the app-services repo (now the single source of truth).
 
 # ---------------------------------------------------------------- device-setup: bt-a2dp-fix
 if [ -f "$DS/bt-a2dp-fix/bt-a2dp-fix.sh" ]; then
@@ -210,32 +245,13 @@ if [ -f "$BIN" ]; then
   rm -f /tmp/.hfg_before /tmp/.hfg_after /tmp/.hfg_got /tmp/.hfg_got2
 fi
 
-# ---------------------------------------------------------------- device-setup: chatthreader-groupname-guard
-if [ -f "$DS/chatthreader-groupname-guard/imchannel.js" ]; then
-  log "chatthreader-groupname-guard: patching chatthreader models..."
-  CT=/usr/palm/services/com.palm.messaging.chatthreader/models
-  [ -f "$CT/imchannel.js.b4jidguard" ] || cp "$CT/imchannel.js" "$CT/imchannel.js.b4jidguard" 2>/dev/null
-  cp "$DS/chatthreader-groupname-guard/imchannel.js" "$CT/imchannel.js" 2>/dev/null
-  [ -f "$CT/dbmodels.js.b4jidguard" ] || cp "$CT/dbmodels.js" "$CT/dbmodels.js.b4jidguard" 2>/dev/null
-  sed -i 's/if (channelRec \&\& channelRec.displayName \&\& results\[0\].displayName !== channelRec.displayName) {/if (channelRec \&\& channelRec.displayName \&\& !DBModels.ImChannel._isRawId(channelRec.displayName, channelAddr) \&\& results[0].displayName !== channelRec.displayName) {/' "$CT/dbmodels.js" 2>/dev/null
-fi
+# chatthreader patching (groupname-guard/person-link-fix) moved to the core-apps package, which
+# deploys the WHOLE service from the com.palm.messaging.chatthreader repo (now the single source of
+# truth -- these two fixes were merged into it as real commits instead of living only as device-setup
+# patches here, which left the repo's HEAD not matching actual device state).
 
-# ---------------------------------------------------------------- device-setup: chatthreader-person-link-fix
-if [ -f "$DS/chatthreader-person-link-fix/newmessageassistant.js" ]; then
-  log "chatthreader-person-link-fix: patching newmessageassistant.js..."
-  CT=/usr/palm/services/com.palm.messaging.chatthreader/assistants
-  [ -f "$CT/newmessageassistant.js.b4personlink" ] || cp "$CT/newmessageassistant.js" "$CT/newmessageassistant.js.b4personlink" 2>/dev/null
-  cp "$DS/chatthreader-person-link-fix/newmessageassistant.js" "$CT/newmessageassistant.js" 2>/dev/null
-fi
-
-# ---------------------------------------------------------------- device-setup: contacts-messaging-guard
-if [ -f "$DS/contacts-messaging-guard/personChanged.js" ]; then
-  log "contacts-messaging-guard: patching contacts.plugin.messaging..."
-  J=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
-  [ -f "$J/personChanged.js.b4bighackguard" ] || cp "$J/personChanged.js" "$J/personChanged.js.b4bighackguard" 2>/dev/null
-  cp "$DS/contacts-messaging-guard/personChanged.js" "$J/personChanged.js" 2>/dev/null
-  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
-fi
+# contacts-messaging-guard patching moved to the core-apps package, which deploys the whole
+# contacts.plugin.messaging from core-apps' own copy (now the single source of truth).
 
 # ---------------------------------------------------------------- device-setup: db8-maintenance
 if [ -f "$DS/db8-maintenance/db8-clean.sh" ]; then
@@ -245,14 +261,8 @@ if [ -f "$DS/db8-maintenance/db8-clean.sh" ]; then
   chmod 755 /usr/local/bin/db8-clean.sh
 fi
 
-# ---------------------------------------------------------------- device-setup: filepicker-sort
-if [ -f "$DS/filepicker-sort/AlbumGridView.js" ]; then
-  log "filepicker-sort: patching FilePicker AlbumGridView.js..."
-  FP=/usr/lib/luna/system/luna-systemui/app/FilePicker
-  [ -f "$FP/AlbumGridView.js.orig" ] || cp "$FP/AlbumGridView.js" "$FP/AlbumGridView.js.orig" 2>/dev/null
-  cp "$DS/filepicker-sort/AlbumGridView.js" "$FP/AlbumGridView.js" 2>/dev/null
-  chmod 644 "$FP/AlbumGridView.js" 2>/dev/null
-fi
+# filepicker-sort patching moved to the core-apps package, which deploys FilePicker from the
+# luna-systemui repo (now the single source of truth).
 
 # ---------------------------------------------------------------- device-setup: fonts (Thai fallback)
 if [ -f "$DS/fonts/NotoSansThai-Regular.ttf" ]; then
@@ -282,14 +292,8 @@ if [ -d "$DS/gst-video-codecs/prebuilt" ]; then
 fi
 rm -f ~/.gstreamer-0.10/registry.*.bin /home/root/.gstreamer-0.10/registry.*.bin 2>/dev/null
 
-# ---------------------------------------------------------------- device-setup: linker-parallel-reads
-if [ -f "$DS/linker-parallel-reads/autolinker.js" ]; then
-  log "linker-parallel-reads: patching contacts linker autolinker.js..."
-  L=/usr/palm/services/com.palm.service.contacts.linker
-  [ -f "$L/autolinker.js.b4optb" ] || cp "$L/autolinker.js" "$L/autolinker.js.b4optb" 2>/dev/null
-  cp "$DS/linker-parallel-reads/autolinker.js" "$L/autolinker.js" 2>/dev/null
-  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
-fi
+# linker-parallel-reads patching moved to the core-apps package, which deploys the whole
+# com.palm.service.contacts.linker from the app-services repo (now the single source of truth).
 
 # ---------------------------------------------------------------- device-setup: skype-disable
 # Non-destructive: moves the defunct Skype stack out of the way (reversible from prerm's backup).
@@ -504,16 +508,14 @@ if [ -n "$LIB" ]; then
 fi
 
 # ---------------------------------------------------------------- device-setup: whatsapp-e164-normalization
-if [ -f "$DS/whatsapp-e164-normalization/messaging.library-utils.js" ]; then
-  log "whatsapp-e164-normalization: migrating thread keys + patching messaging.library..."
+# The messaging.library code fix itself moved to the core-apps package (deployed from core-apps'
+# own messaging.library, now the single source of truth). What's left here is genuinely
+# device-side, not "source code to deploy": a one-time db8 thread-key migration, and reverting a
+# separate, now-obsolete band-aid file to stock -- neither belongs in a git repo.
+if [ -f "$DS/whatsapp-e164-normalization/migrate-ondevice.sh" ]; then
+  log "whatsapp-e164-normalization: migrating thread keys..."
   sh "$DS/whatsapp-e164-normalization/migrate-ondevice.sh" 2>&1 | grep -v "^undefined"
-  M=/usr/palm/frameworks/messaging.library/submission/1.3
   PLG=/usr/palm/frameworks/contacts.plugin.messaging/submission/12.1/javascript
-  for f in javascript/utils.js concatenated.js; do
-    [ -f "$M/$f.b4e164" ] || cp "$M/$f" "$M/$f.b4e164" 2>/dev/null
-  done
-  cp "$DS/whatsapp-e164-normalization/messaging.library-utils.js" "$M/javascript/utils.js" 2>/dev/null
-  cp "$DS/whatsapp-e164-normalization/messaging.library-concatenated.js" "$M/concatenated.js" 2>/dev/null
   if [ -f "$PLG/utils.js.b4whatsappnorm" ]; then
     cp "$PLG/utils.js.b4whatsappnorm" "$PLG/utils.js" 2>/dev/null
   fi
