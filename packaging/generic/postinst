@@ -292,6 +292,50 @@ for p in /usr/bin/imyahootransport /usr/bin/yahoo-service /usr/bin/imaccountvali
   pkill -TERM -f "$p" 2>/dev/null
 done
 
+# ---------------------------------------------------------------- device-setup: google-legacy-disable
+# Non-destructive: moves the defunct stock "Google" account stack out of the way (Contacts/
+# Calendar sync + the account template; MAIL rides the shared com.palm.imap, untouched). Same
+# pattern as skype-disable/legacy-im-disable above; reversible from prerm's backup.
+log "google-legacy-disable: retiring the defunct stock Google account (Contacts/Calendar/Talk)..."
+GOOGBAK=/var/google-legacy-disabled-backup
+goog_move() {
+  [ -e "$1" ] || return 0
+  mkdir -p "$(dirname "$GOOGBAK$1")"
+  mv -f "$1" "$GOOGBAK$1" 2>/dev/null && log "  moved $1"
+}
+# Contacts sync
+goog_move /usr/palm/services/com.palm.service.contacts.google
+goog_move /usr/share/ls2/roles/prv/com.palm.service.contacts.google.json
+goog_move /usr/share/ls2/roles/pub/com.palm.service.contacts.google.json
+goog_move /usr/share/dbus-1/system-services/com.palm.service.contacts.google.service
+goog_move /etc/palm/db/kinds/com.palm.contact.google
+goog_move /etc/palm/db/kinds/com.palm.contact.transport.google
+goog_move /etc/palm/db/kinds/com.palm.account.contacts.google
+goog_move /etc/palm/db/permissions/com.palm.contact.google
+goog_move /etc/palm/db/permissions/com.palm.contact.transport.google
+goog_move /etc/palm/db/permissions/com.palm.account.contacts.google
+# Calendar sync
+goog_move /usr/palm/services/com.palm.service.calendar.google
+goog_move /usr/share/ls2/roles/prv/com.palm.service.calendar.google.json
+goog_move /usr/share/ls2/roles/pub/com.palm.service.calendar.google.json
+goog_move /usr/share/dbus-1/system-services/com.palm.service.calendar.google.service
+goog_move /etc/palm/db/kinds/com.palm.calendar.google
+goog_move /etc/palm/db/kinds/com.palm.calendarevent.google
+goog_move /etc/palm/db/kinds/com.palm.calendar.transport.google
+goog_move /etc/palm/db/kinds/com.palm.calendarevent.transport.google
+goog_move /etc/palm/db/kinds/com.palm.account.calendar.google
+goog_move /etc/palm/db/permissions/com.palm.calendar.google
+goog_move /etc/palm/db/permissions/com.palm.calendarevent.google
+# Account template itself (MAIL rides the shared com.palm.imap, untouched; IM/DOCUMENTS have no
+# dedicated kind/service of their own)
+goog_move /usr/palm/public/accounts/com.palm.google
+# Now-orphaned Jabber/XMPP plugin -- com.palm.google's type_gtalk capability (just removed) was
+# the last consumer of prpl-jabber; see device-setup/legacy-im-disable/README.md for the trail.
+goog_move /usr/lib/purple-2/libjabber.so
+goog_move /usr/lib/purple-2/libjabber.so.0
+goog_move /usr/lib/purple-2/libjabber.so.0.0.0
+goog_move /usr/lib/purple-2/libxmpp.so
+
 # ---------------------------------------------------------------- device-setup: videoplayer-webm
 if [ -d "$DS/videoplayer-webm/src" ]; then
   log "videoplayer-webm: mislabeling webm/mkv in the mediastream framework..."

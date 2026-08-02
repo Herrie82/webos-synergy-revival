@@ -49,14 +49,14 @@ Nothing is deleted; it is moved under `/var/legacy-im-disabled-backup`. `rm -rf`
 - `/usr/palm/data/com.palm.service.contacts.yahoo` — possible user data; same "never touch data"
   principle `skype-disable` follows.
 
-## Left alone on purpose: `libjabber.so`/`libxmpp.so`
+## `libjabber.so`/`libxmpp.so` — moved to `../google-legacy-disable`
 
-Unlike AIM/ICQ, the Jabber/XMPP plugin (`prpl-jabber`) still has a live consumer:
-`com.palm.google`'s `MESSAGING` capability (`com.palm.google.talk`, not hidden) maps `type_gtalk` ->
-`prpl-jabber` (see `imlibpurpleservice`'s `LibpurpleAdapter.cpp`). Google's XMPP chat servers shut
-down years ago, so this capability can't actually connect any more — but the `com.palm.google`
-account template itself is very much alive (Mail/Contacts/Calendar/Documents), so removing its IM
-plugin risks a worse failure mode on an account type people still use every day. Left in place.
+Unlike AIM/ICQ, the Jabber/XMPP plugin (`prpl-jabber`) had one more live consumer when this script
+was first written: `com.palm.google`'s `MESSAGING` capability (`com.palm.google.talk`) maps
+`type_gtalk` -> `prpl-jabber` (see `imlibpurpleservice`'s `LibpurpleAdapter.cpp`). That whole
+account template (Mail/Contacts/Calendar/Documents, not just Talk) turned out to be equally dead —
+see `../google-legacy-disable`, which removes the account template *and* these plugin files
+together, now that nothing references `prpl-jabber` any more.
 
 ## Apply on a device
 

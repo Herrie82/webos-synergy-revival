@@ -43,7 +43,7 @@ done
 log "restoring the retired Skype stack (non-destructive move, reversible)..."
 SKYBAK=/var/skype-disabled-backup
 if [ -d "$SKYBAK" ]; then
-  ( cd "$SKYBAK" && find . -type f | while read -r f; do
+  ( cd "$SKYBAK" && find . \( -type f -o -type l \) | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
       mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
     done )
@@ -52,7 +52,16 @@ fi
 log "restoring the retired AOL/AIM + Yahoo! stacks (non-destructive move, reversible)..."
 LEGBAK=/var/legacy-im-disabled-backup
 if [ -d "$LEGBAK" ]; then
-  ( cd "$LEGBAK" && find . -type f | while read -r f; do
+  ( cd "$LEGBAK" && find . \( -type f -o -type l \) | while read -r f; do
+      mkdir -p "$(dirname "/${f#./}")"
+      mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
+    done )
+fi
+
+log "restoring the retired stock Google account (non-destructive move, reversible)..."
+GOOGBAK=/var/google-legacy-disabled-backup
+if [ -d "$GOOGBAK" ]; then
+  ( cd "$GOOGBAK" && find . \( -type f -o -type l \) | while read -r f; do
       mkdir -p "$(dirname "/${f#./}")"
       mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
     done )
