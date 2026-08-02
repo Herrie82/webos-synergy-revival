@@ -44,6 +44,15 @@ move() {
     mv -f "$src" "$dst" && echo "moved $src"
 }
 
+# move_symlink <absolute path> -> just delete it (confirmed on a real device: /media/cryptofs
+# cannot hold symlinks at all -- "mv: can't create symlink ... Operation not permitted", failing
+# safely with the source left in place). Nothing meaningful to back up anyway: the real target
+# file is moved separately under its own name. Idempotent.
+move_symlink() {
+    [ -L "$1" ] && rm -f "$1" && echo "removed symlink $1"
+    return 0
+}
+
 # 1. AOL/AIM -- rides the shared imlibpurple bridge; imaccountvalidator is the generic
 #    username/password validator whose ONLY stock consumer is com.palm.aol (every connector this
 #    repo ships uses its own customUI instead, confirmed by grep across every account template).
@@ -110,8 +119,8 @@ move /usr/palm/public/accounts/com.palm.yahoo
 #    uglier failure mode on an account type people still use daily. Left alone on purpose.
 move /usr/lib/purple-2/libaim.so
 move /usr/lib/purple-2/libicq.so
-move /usr/lib/purple-2/liboscar.so
-move /usr/lib/purple-2/liboscar.so.0
+move_symlink /usr/lib/purple-2/liboscar.so
+move_symlink /usr/lib/purple-2/liboscar.so.0
 move /usr/lib/purple-2/liboscar.so.0.0.0
 move /usr/lib/purple-2/ssl-gnutls.so
 move /usr/lib/purple-2/ssl-nss.so

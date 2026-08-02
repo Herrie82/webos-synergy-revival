@@ -33,6 +33,9 @@ for p in $(ps 2>/dev/null | grep "$SVCID" | grep -v grep | awk '{print $1}'); do
 luna-send -n 1 -f palm://$SVCID/checkStatus '{"accountId":"install-ping"}' >/dev/null 2>&1 &
 sleep 4
 
-mount -o remount,ro / 2>/dev/null
+# Deliberately NOT remounting root back to read-only here -- ipkg writes its own bookkeeping
+# after postinst returns, and that needs root writable too (confirmed on a real device: doing
+# this remount broke ipkg's own status/file-list write, failing the whole transaction even
+# though postinst itself had finished all its real work). See packaging/generic/postinst.
 echo "[cdav] install complete. If a template didn't appear in Accounts, restart LunaSysMgr or reboot."
 exit 0

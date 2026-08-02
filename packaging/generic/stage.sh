@@ -33,20 +33,41 @@ cp "$IM/files/var/imwrap.sh" "$IM/files/var/imdaemon.sh" \
    "$IM/files/var/provision-person-search.sh" "$STAGE/var/"
 cp "$IM/files/etc/event.d/imtransport" "$STAGE/etc/event.d/imtransport"
 mkdir -p "$STAGE/etc/palm/db/kinds" "$STAGE/etc/palm/db/permissions"
-cp "$IM/files/etc/palm/db/kinds/"* "$STAGE/etc/palm/db/kinds/"
-cp "$IM/files/etc/palm/db/permissions/"* "$STAGE/etc/palm/db/permissions/"
+# ONLY the genuinely-new kind/permission names -- confirmed live on a real device (ipkg return 22)
+# that com.palm.imcommand/imgroupchat/iminvitation/immessage/imloginstate (+ tempdb imbuddystatus)
+# are already owned by the STOCK com.palm.messaging.chatthreader package. Shipping them in
+# data.tar.gz makes ipkg refuse the ENTIRE install with "file already provided by package
+# com.palm.messaging.chatthreader" -- this isn't a private/app-nested file, ipkg polices real
+# system paths against its own install database. We don't need to ship them at all:
+# provision-im-db.sh (below) globs whatever's ALREADY on disk (stock's copy) and re-registers it
+# under its own declared "owner" field regardless of which package put it there.
+for k in com.palm.config.libpurple com.palm.contact.libpurple com.palm.imchannel \
+         com.palm.imcommand.libpurple com.palm.imloginstate.libpurple com.palm.immessage.libpurple \
+         com.palm.imretaineddata com.palm.imserver; do
+  cp "$IM/files/etc/palm/db/kinds/$k" "$STAGE/etc/palm/db/kinds/$k"
+done
+for p in com.palm.config.libpurple com.palm.contact.libpurple com.palm.imchannel \
+         com.palm.imcommand.libpurple com.palm.imloginstate.libpurple com.palm.immessage.libpurple \
+         com.palm.imretaineddata com.palm.imserver; do
+  cp "$IM/files/etc/palm/db/permissions/$p" "$STAGE/etc/palm/db/permissions/$p"
+done
 mkdir -p "$STAGE/etc/palm/tempdb/kinds" "$STAGE/etc/palm/tempdb/permissions"
-cp "$IM/files/etc/palm/tempdb/kinds/"* "$STAGE/etc/palm/tempdb/kinds/"
-cp "$IM/files/etc/palm/tempdb/permissions/"* "$STAGE/etc/palm/tempdb/permissions/"
+cp "$IM/files/etc/palm/tempdb/kinds/com.palm.imbuddystatus.libpurple" "$STAGE/etc/palm/tempdb/kinds/"
 mkdir -p "$STAGE/etc/palm/activities/com.palm.imlibpurple"
 cp "$IM/files/etc/palm/activities/com.palm.imlibpurple/"* "$STAGE/etc/palm/activities/com.palm.imlibpurple/"
 mkdir -p "$STAGE/usr/share/ls2/roles/prv" "$STAGE/usr/share/ls2/roles/pub"
 cp "$IM/files/ls2/roles/prv/com.palm.imlibpurple.json" "$STAGE/usr/share/ls2/roles/prv/"
 cp "$IM/files/ls2/roles/pub/com.palm.imlibpurple.json" "$STAGE/usr/share/ls2/roles/pub/"
-# contacts search-by-service: person kind index patch (etc/palm/db/kinds/com.palm.person above
-# already overrides the stock kind with the searchProperty patch; the app-side patches.js half
-# lives in the core-apps repo's com.palm.app.contacts checkout, not here — see
-# messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md)
+# contacts search-by-service, part 1: the patched com.palm.person kind (adds ims.type to
+# searchProperty). This one IS stock-owned (com.palm.service.contacts.linker) AND we genuinely
+# need our patched content in it -- same problem as libpurple.so, same fix: stage it in the
+# neutral overwrite dir so postinst backs up stock's copy before writing ours (a raw `cp` in a
+# postinst script is invisible to ipkg's ownership tracking; only data.tar.gz's own manifest is
+# policed). The app-side patches.js half (part 2) lives in the core-apps repo's
+# com.palm.app.contacts checkout, not here — see
+# messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md
+mkdir -p "$OVERWRITE/etc/palm/db/kinds"
+cp "$IM/files/etc/palm/db/kinds/com.palm.person" "$OVERWRITE/etc/palm/db/kinds/com.palm.person"
 
 # com.palm.imlibpurple.service: stock ships this pointed straight at the raw transport binary
 # (Exec=/usr/bin/imlibpurpletransport), which bypasses imwrap.sh entirely -- no wpe-glibc loader

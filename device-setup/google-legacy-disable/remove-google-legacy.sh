@@ -48,6 +48,14 @@ move() {
     mv -f "$src" "$dst" && echo "moved $src"
 }
 
+# move_symlink <absolute path> -> just delete it (confirmed on a real device: /media/cryptofs
+# cannot hold symlinks at all, failing safely with the source left in place). Nothing meaningful
+# to back up anyway: the real target file is moved separately under its own name. Idempotent.
+move_symlink() {
+    [ -L "$1" ] && rm -f "$1" && echo "removed symlink $1"
+    return 0
+}
+
 # 1. Contacts sync.
 move /usr/palm/services/com.palm.service.contacts.google
 move /usr/share/ls2/roles/prv/com.palm.service.contacts.google.json
@@ -80,8 +88,8 @@ move /usr/palm/public/accounts/com.palm.google
 # 4. Now-orphaned Jabber/XMPP libpurple plugin (prpl-jabber). This account template's
 #    type_gtalk/com.palm.google.talk capability (step 3) was the last remaining consumer -- see
 #    device-setup/legacy-im-disable/README.md for the full trail of why it was kept until now.
-move /usr/lib/purple-2/libjabber.so
-move /usr/lib/purple-2/libjabber.so.0
+move_symlink /usr/lib/purple-2/libjabber.so
+move_symlink /usr/lib/purple-2/libjabber.so.0
 move /usr/lib/purple-2/libjabber.so.0.0.0
 move /usr/lib/purple-2/libxmpp.so
 

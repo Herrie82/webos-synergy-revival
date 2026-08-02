@@ -16,7 +16,7 @@ rm -f /usr/share/dbus-1/system-services/$SVCID.service /usr/share/dbus-1/service
 rm -rf /usr/palm/public/accounts/org.webosports.cdav.account*
 rm -rf /media/cryptofs/apps/usr/palm/applications/$APPID
 rm -f /var/provision-cdav-db.sh
-mount -o remount,ro / 2>/dev/null
+# Deliberately NOT remounting root back to read-only here -- see packaging/generic/prerm.
 
 ls-control scan-services 2>/dev/null
 luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1

@@ -57,6 +57,13 @@ if [ -d "$LEGBAK" ]; then
       mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
     done )
 fi
+# liboscar.so/liboscar.so.0 were deleted outright, not backed up (/media/cryptofs can't hold
+# symlinks) -- recreate them if the real target came back above.
+if [ -f /usr/lib/purple-2/liboscar.so.0.0.0 ]; then
+  ln -sf liboscar.so.0.0.0 /usr/lib/purple-2/liboscar.so.0
+  ln -sf liboscar.so.0.0.0 /usr/lib/purple-2/liboscar.so
+  log "  restored liboscar.so/liboscar.so.0 symlinks"
+fi
 
 log "restoring the retired stock Google account (non-destructive move, reversible)..."
 GOOGBAK=/media/cryptofs/google-legacy-disabled-backup
@@ -65,6 +72,12 @@ if [ -d "$GOOGBAK" ]; then
       mkdir -p "$(dirname "/${f#./}")"
       mv -f "$f" "/${f#./}" && log "  restored /${f#./}"
     done )
+fi
+# libjabber.so/libjabber.so.0 were deleted outright, not backed up (same reason as oscar above).
+if [ -f /usr/lib/purple-2/libjabber.so.0.0.0 ]; then
+  ln -sf libjabber.so.0.0.0 /usr/lib/purple-2/libjabber.so.0
+  ln -sf libjabber.so.0.0.0 /usr/lib/purple-2/libjabber.so
+  log "  restored libjabber.so/libjabber.so.0 symlinks"
 fi
 
 log "restoring stock libpurple engine (or removing what we added if there was no stock file)..."
@@ -80,8 +93,16 @@ restore_or_remove() {  # $1 = real absolute path we may have overwritten in post
 }
 if [ -d "$OV/lib" ]; then
   restore_or_remove /usr/lib/libpurple.so.0.14.13
-  restore_or_remove /usr/lib/libpurple.so.0
-  restore_or_remove /usr/lib/libpurple.so
+  # libpurple.so/libpurple.so.0 are symlinks -- postinst never backed them up (/media/cryptofs
+  # can't hold symlinks at all, and there's nothing to back up anyway: the real stock target file
+  # libpurple.so.0.5.1 was never touched). Just re-link back to it directly, confirmed the stock
+  # name/version on every real image checked (StockRootfs + two physical devices).
+  rm -f /usr/lib/libpurple.so.0 /usr/lib/libpurple.so
+  if [ -f /usr/lib/libpurple.so.0.5.1 ]; then
+    ln -sf libpurple.so.0.5.1 /usr/lib/libpurple.so.0
+    ln -sf libpurple.so.0.5.1 /usr/lib/libpurple.so
+    log "  restored stock symlinks -> libpurple.so.0.5.1"
+  fi
   for so in "$OV/lib/purple-2/"*.so; do
     [ -f "$so" ] || continue
     restore_or_remove "/usr/lib/purple-2/$(basename "$so")"
@@ -89,6 +110,9 @@ if [ -d "$OV/lib" ]; then
 fi
 if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
   restore_or_remove /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
+fi
+if [ -f "$OV/etc/palm/db/kinds/com.palm.person" ]; then
+  restore_or_remove /etc/palm/db/kinds/com.palm.person
 fi
 rm -rf "$STOCKBAK"
 
@@ -100,8 +124,8 @@ rm -rf /usr/lib/synergy-runtime
 rm -rf /usr/palm/services/_cloudcore
 rm -rf /opt/synergy-revival
 
-mount -o remount,ro /dev/mapper/store-root / 2>/dev/null
-mount -o remount,ro / 2>/dev/null
+# Deliberately NOT remounting root back to read-only here -- ipkg writes its own bookkeeping
+# after prerm returns, and that needs root writable too. See postinst's matching comment.
 
 log "removal complete. NOTE: db8 kinds/permissions and the retired Skype db8 kinds are left"
 log "registered (inert, harmless) — only a reflash fully clears those."

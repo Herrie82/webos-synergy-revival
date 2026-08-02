@@ -8,7 +8,7 @@
 #
 # Usage: make-ipk.sh <package-dir> <stage-dir> <output-dir>
 #   <package-dir>/control.env   required: PKG_ID, PKG_VERSION, PKG_DESC; optional PKG_DEPENDS,
-#                                PKG_MAINTAINER (defaults below)
+#                                PKG_REPLACES, PKG_CONFLICTS, PKG_MAINTAINER (defaults below)
 #   <package-dir>/postinst      optional: copied in as control.tar.gz's postinst (chmod 755)
 #   <package-dir>/prerm         optional: same, as prerm
 #
@@ -47,6 +47,8 @@ mkdir -p "$WORK/ctrl"
   echo "Architecture: $PKG_ARCH"
   echo "Maintainer: $PKG_MAINTAINER"
   [ -n "${PKG_DEPENDS:-}" ] && echo "Depends: $PKG_DEPENDS"
+  [ -n "${PKG_REPLACES:-}" ] && echo "Replaces: $PKG_REPLACES"
+  [ -n "${PKG_CONFLICTS:-}" ] && echo "Conflicts: $PKG_CONFLICTS"
   echo "Description: $PKG_DESC"
 } > "$WORK/ctrl/control"
 

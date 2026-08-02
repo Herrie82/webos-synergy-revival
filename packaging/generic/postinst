@@ -22,12 +22,25 @@ mount -o remount,rw / 2>/dev/null
 overwrite_file() {  # $1 = staged source (under $OV), $2 = real absolute destination path
   local src="$1" dst="$2"
   [ -f "$src" ] || [ -L "$src" ] || return 0
+  if [ -L "$src" ]; then
+    # Symlinks: /media/cryptofs cannot hold them at all (confirmed on a real device: "cp: can't
+    # create symlink ... Operation not permitted") -- and there's nothing meaningful to back up
+    # anyway, since the ORIGINAL target file is never touched, only this link NAME changes.
+    # `cp -a` onto an existing symlink is also unreliable on this busybox (confirmed: one of two
+    # sibling symlinks silently failed to update with "File exists" while the other succeeded) --
+    # force-remove the destination first so relinking is unconditional.
+    mkdir -p "$(dirname "$dst")"
+    rm -f "$dst"
+    ln -sf "$(readlink "$src")" "$dst"
+    return
+  fi
   if [ -e "$dst" ] && [ ! -e "$BAK$dst" ]; then
     mkdir -p "$(dirname "$BAK$dst")"
     cp -a "$dst" "$BAK$dst"
     log "  backed up stock $dst"
   fi
   mkdir -p "$(dirname "$dst")"
+  rm -f "$dst"
   cp -a "$src" "$dst"
 }
 if [ -d "$OV/lib" ]; then
@@ -48,6 +61,15 @@ if [ -f "$OV/dbus-1/system-services/com.palm.imlibpurple.service" ]; then
   log "installing com.palm.imlibpurple.service (routes through imwrap.sh)..."
   overwrite_file "$OV/dbus-1/system-services/com.palm.imlibpurple.service" \
     /usr/share/dbus-1/system-services/com.palm.imlibpurple.service
+fi
+
+# com.palm.person: stock-owned by com.palm.service.contacts.linker (confirmed via ipkg return 22
+# on a real device), so it can't ship as a normal data.tar.gz file -- overwrite it the same way,
+# backing up stock's copy first. Must happen BEFORE provision-person-search.sh below, which
+# refuses to register the kind unless the patched (ims.type-tokenizing) content is already there.
+if [ -f "$OV/etc/palm/db/kinds/com.palm.person" ]; then
+  log "installing patched com.palm.person kind (adds ims.type to searchProperty)..."
+  overwrite_file "$OV/etc/palm/db/kinds/com.palm.person" /etc/palm/db/kinds/com.palm.person
 fi
 
 # ---------------------------------------------------------------- imlibpurpleservice
@@ -231,6 +253,12 @@ leg_move() {
   mkdir -p "$(dirname "$LEGBAK$1")"
   mv -f "$1" "$LEGBAK$1" 2>/dev/null && log "  moved $1"
 }
+# /media/cryptofs cannot hold symlinks at all (confirmed on a real device) -- just delete them;
+# nothing to back up anyway since the real target file is moved separately under its own name.
+leg_move_symlink() {
+  [ -L "$1" ] && rm -f "$1" && log "  removed symlink $1"
+  return 0
+}
 # AOL/AIM
 leg_move /usr/palm/public/accounts/com.palm.aol
 leg_move /usr/bin/imaccountvalidator
@@ -283,8 +311,8 @@ leg_move /usr/palm/public/accounts/com.palm.yahoo
 # device-setup/legacy-im-disable/README.md.
 leg_move /usr/lib/purple-2/libaim.so
 leg_move /usr/lib/purple-2/libicq.so
-leg_move /usr/lib/purple-2/liboscar.so
-leg_move /usr/lib/purple-2/liboscar.so.0
+leg_move_symlink /usr/lib/purple-2/liboscar.so
+leg_move_symlink /usr/lib/purple-2/liboscar.so.0
 leg_move /usr/lib/purple-2/liboscar.so.0.0.0
 leg_move /usr/lib/purple-2/ssl-gnutls.so
 leg_move /usr/lib/purple-2/ssl-nss.so
@@ -302,6 +330,12 @@ goog_move() {
   [ -e "$1" ] || return 0
   mkdir -p "$(dirname "$GOOGBAK$1")"
   mv -f "$1" "$GOOGBAK$1" 2>/dev/null && log "  moved $1"
+}
+# /media/cryptofs cannot hold symlinks at all (confirmed on a real device) -- just delete them;
+# nothing to back up anyway since the real target file is moved separately under its own name.
+goog_move_symlink() {
+  [ -L "$1" ] && rm -f "$1" && log "  removed symlink $1"
+  return 0
 }
 # Contacts sync
 goog_move /usr/palm/services/com.palm.service.contacts.google
@@ -331,8 +365,8 @@ goog_move /etc/palm/db/permissions/com.palm.calendarevent.google
 goog_move /usr/palm/public/accounts/com.palm.google
 # Now-orphaned Jabber/XMPP plugin -- com.palm.google's type_gtalk capability (just removed) was
 # the last consumer of prpl-jabber; see device-setup/legacy-im-disable/README.md for the trail.
-goog_move /usr/lib/purple-2/libjabber.so
-goog_move /usr/lib/purple-2/libjabber.so.0
+goog_move_symlink /usr/lib/purple-2/libjabber.so
+goog_move_symlink /usr/lib/purple-2/libjabber.so.0
 goog_move /usr/lib/purple-2/libjabber.so.0.0.0
 goog_move /usr/lib/purple-2/libxmpp.so
 
@@ -427,8 +461,13 @@ if [ -d "$DS/photos-integration" ]; then
 fi
 
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
-mount -o remount,ro /dev/mapper/store-root / 2>/dev/null
-mount -o remount,ro / 2>/dev/null
+# Deliberately NOT remounting root back to read-only here: ipkg writes ITS OWN bookkeeping
+# (status db, file lists under /usr/lib/ipkg/{status,info}) AFTER postinst returns, and that
+# write also needs root writable. Remounting ro from inside postinst races ipkg's own
+# finalization -- confirmed on a real device: ipkg failed with "Read-only file system" writing
+# its status/file-list right after this used to run, so the whole transaction reported failure
+# (return 29) even though postinst itself had already done all its real work correctly. Leave the
+# rw/ro decision to the system; don't force it from here.
 
 log "install complete. Restart the UI to pick up patched app/framework JS: stop LunaSysMgr; start LunaSysMgr"
 exit 0
