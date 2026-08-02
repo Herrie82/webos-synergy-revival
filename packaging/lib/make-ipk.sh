@@ -33,7 +33,7 @@ source "$PKGDIR/control.env"
 : "${PKG_ID:?PKG_ID not set in $PKGDIR/control.env}"
 : "${PKG_VERSION:?PKG_VERSION not set in $PKGDIR/control.env}"
 : "${PKG_DESC:?PKG_DESC not set in $PKGDIR/control.env}"
-PKG_MAINTAINER="${PKG_MAINTAINER:-Herman van Hazendonk <herrie82@gmail.com>}"
+PKG_MAINTAINER="${PKG_MAINTAINER:-Herman van Hazendonk <github.com@herrie.org>}"
 PKG_ARCH="${PKG_ARCH:-armv7}"
 
 WORK="$(mktemp -d)"

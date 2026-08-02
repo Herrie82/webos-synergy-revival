@@ -1,7 +1,8 @@
 {
     "id": "com.palm.app.googlechat",
     "version": "0.9.0",
-    "vendor": "webOS Ports",
+    "vendor": "WebOS Ports",
+    "maintainer": "Herman van Hazendonk <github.com@herrie.org>",
     "type": "web",
     "main": "validator.html",
     "title": "Google Chat",
