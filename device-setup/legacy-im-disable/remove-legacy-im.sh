@@ -95,7 +95,28 @@ move /usr/share/dbus-1/system-services/com.palm.yahoo.service
 move /etc/palm/db/kinds/com.palm.yahoo.authservice
 move /usr/palm/public/accounts/com.palm.yahoo
 
-# 6. Stop anything already running (graceful SIGTERM; safe to signal).
+# 6. Orphaned oscar/AIM/ICQ libpurple plugins + redundant SSL backends. Confirmed dead two ways:
+#    (a) with com.palm.aol gone (step 1), nothing anywhere references type_aim/type_icq or
+#        prpl-aim/prpl-icq any more (no other stock or shipped-connector account ever did); and
+#    (b) libpurple's own plugin.c rejects any plugin whose baked-in major_version doesn't match
+#        PURPLE_MAJOR_VERSION (2) of the engine that now owns /usr/lib -- these were built against
+#        webOS's ancient pre-2.0 libpurple, so they'd be silently skipped even if left in place.
+#    ssl-gnutls.so/ssl-nss.so are likewise orphaned: nothing in this repo uses anything but
+#    ssl-openssl.so, confirmed by grep.
+#    NOT touched: libjabber.so/libxmpp.so (prpl-jabber). com.palm.google's MESSAGING capability
+#    (com.palm.google.talk, not hidden) maps type_gtalk -> prpl-jabber (see imlibpurpleservice's
+#    LibpurpleAdapter.cpp) -- Google's XMPP chat servers are long dead, but that account template
+#    is very much alive (Mail/Contacts/Calendar/Documents), so removing its IM plugin risks an
+#    uglier failure mode on an account type people still use daily. Left alone on purpose.
+move /usr/lib/purple-2/libaim.so
+move /usr/lib/purple-2/libicq.so
+move /usr/lib/purple-2/liboscar.so
+move /usr/lib/purple-2/liboscar.so.0
+move /usr/lib/purple-2/liboscar.so.0.0.0
+move /usr/lib/purple-2/ssl-gnutls.so
+move /usr/lib/purple-2/ssl-nss.so
+
+# 7. Stop anything already running (graceful SIGTERM; safe to signal).
 for p in imyahootransport yahoo-service imaccountvalidator; do
     pkill -TERM -f "/usr/bin/$p" 2>/dev/null && echo "stopped: $p"
 done

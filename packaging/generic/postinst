@@ -275,6 +275,19 @@ leg_move /usr/share/ls2/roles/prv/com.palm.yahoo.json
 leg_move /usr/share/dbus-1/system-services/com.palm.yahoo.service
 leg_move /etc/palm/db/kinds/com.palm.yahoo.authservice
 leg_move /usr/palm/public/accounts/com.palm.yahoo
+# Orphaned oscar/AIM/ICQ libpurple plugins + redundant SSL backends -- dead the moment com.palm.aol
+# is gone above (nothing else ever referenced type_aim/type_icq), and ABI-incompatible with the
+# 2.14 engine anyway (libpurple's plugin.c rejects any plugin whose major_version doesn't match).
+# NOT touched: libjabber.so/libxmpp.so -- com.palm.google's IM capability (type_gtalk -> prpl-jabber)
+# still references it, and that account template is otherwise very much alive. See
+# device-setup/legacy-im-disable/README.md.
+leg_move /usr/lib/purple-2/libaim.so
+leg_move /usr/lib/purple-2/libicq.so
+leg_move /usr/lib/purple-2/liboscar.so
+leg_move /usr/lib/purple-2/liboscar.so.0
+leg_move /usr/lib/purple-2/liboscar.so.0.0.0
+leg_move /usr/lib/purple-2/ssl-gnutls.so
+leg_move /usr/lib/purple-2/ssl-nss.so
 for p in /usr/bin/imyahootransport /usr/bin/yahoo-service /usr/bin/imaccountvalidator; do
   pkill -TERM -f "$p" 2>/dev/null
 done

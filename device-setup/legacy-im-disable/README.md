@@ -25,6 +25,14 @@ strips it out, same non-destructive pattern as `../skype-disable`.
   `com.palm.calendarevent.transport.yahoo`, `com.palm.account.calendar.yahoo`).
 - **Yahoo! master/auth service** — `yahoo-service`, its LS2 role + D-Bus service, the
   `com.palm.yahoo.authservice` db8 kind, and the `com.palm.yahoo` account template itself.
+- **Orphaned oscar/AIM/ICQ libpurple plugins + redundant SSL backends** —
+  `/usr/lib/purple-2/{libaim.so,libicq.so,liboscar.so,liboscar.so.0,liboscar.so.0.0.0,ssl-gnutls.so,ssl-nss.so}`.
+  Confirmed dead two ways: with `com.palm.aol` gone, nothing anywhere references `type_aim`/
+  `type_icq` or `prpl-aim`/`prpl-icq` any more; and libpurple's own `plugin.c` rejects any plugin
+  whose baked-in `major_version` doesn't match the engine's `PURPLE_MAJOR_VERSION` (2) — these were
+  built against webOS's ancient pre-2.0 libpurple, so they'd be silently skipped at every plugin
+  scan even if left in place. `ssl-gnutls.so`/`ssl-nss.so` are likewise orphaned: nothing in this
+  repo uses anything but `ssl-openssl.so` (confirmed by grep).
 
 Nothing is deleted; it is moved under `/var/legacy-im-disabled-backup`. `rm -rf` that once you're sure.
 
@@ -41,15 +49,14 @@ Nothing is deleted; it is moved under `/var/legacy-im-disabled-backup`. `rm -rf`
 - `/usr/palm/data/com.palm.service.contacts.yahoo` — possible user data; same "never touch data"
   principle `skype-disable` follows.
 
-## Left alone entirely (not "legacy IM" in scope here)
+## Left alone on purpose: `libjabber.so`/`libxmpp.so`
 
-The old libpurple 0.5.1-era protocol plugins still sitting in `/usr/lib/purple-2`
-(`libaim.so`/`liboscar.so` for AIM+ICQ, `libjabber.so`/`libxmpp.so`, `ssl-gnutls.so`/`ssl-nss.so`)
-are a separate question from the *account/service* stack this script removes — they're plain `.so`
-files with no launch path, kind, or account template of their own; AOL's account template above is
-what actually wires oscar in. Whether they're even ABI-compatible with the 2.14 engine that now
-overwrites stock `libpurple.so` (see `packaging/README.md` "why /usr/lib now") hasn't been checked;
-if they're already effectively dead post-swap, that's a separate cleanup, not this one.
+Unlike AIM/ICQ, the Jabber/XMPP plugin (`prpl-jabber`) still has a live consumer:
+`com.palm.google`'s `MESSAGING` capability (`com.palm.google.talk`, not hidden) maps `type_gtalk` ->
+`prpl-jabber` (see `imlibpurpleservice`'s `LibpurpleAdapter.cpp`). Google's XMPP chat servers shut
+down years ago, so this capability can't actually connect any more — but the `com.palm.google`
+account template itself is very much alive (Mail/Contacts/Calendar/Documents), so removing its IM
+plugin risks a worse failure mode on an account type people still use every day. Left in place.
 
 ## Apply on a device
 
