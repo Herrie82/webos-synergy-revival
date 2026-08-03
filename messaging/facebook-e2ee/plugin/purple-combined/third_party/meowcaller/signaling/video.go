@@ -112,10 +112,19 @@ func BuildVideoAck(original *waBinary.Node) (waBinary.Node, bool) {
 // <audio> children, before <net>).
 func videoOfferNode() waBinary.Node {
 	return waBinary.Node{Tag: "video", Attrs: waBinary.Attrs{
-		"enc":                videoOfferEncH264,
-		"dec":                videoOfferDecH264,
-		"screen_width":       "1920",
-		"screen_height":      "1080",
+		"enc": videoOfferEncH264,
+		"dec": videoOfferDecH264,
+		// Copied from a captured iPhone offer, this claimed a screen size (1920x1080) that
+		// has nothing to do with what this device actually encodes and sends (320x240 --
+		// see glue/call.c's videoCaptureStart args). This is the one signaling field that
+		// differs between the offer (this, dial-only) and the accept/preaccept (which omit
+		// dimensions or send "0","0") -- and outgoing video reaching the peer only ever
+		// fails specifically on the dial path, never on answer. If the peer's client sizes
+		// its receive-side video surface off this signaled value rather than the actual
+		// decoded SPS dimensions, claiming 1920x1080 while sending a 320x240 stream is
+		// exactly the kind of mismatch that would make it reject every frame outright.
+		"screen_width":       "320",
+		"screen_height":      "240",
 		"device_orientation": "0",
 	}}
 }

@@ -86,6 +86,22 @@ func login(account *PurpleAccount, purple_user_dir string, username string, cred
 
 	// set our name (displayed in "linked devices")
 	store.DeviceProps.Os = proto.String(purple_get_device_name(account))
+	// whatsmeow's own default here is DeviceProps_UNKNOWN (store/clientpayload.go) -- this is
+	// the platformType a peer's client sees for us in call events (meowcaller's
+	// ev.RemotePlatform, populated the same way for the peer). Live testing this session:
+	// ADB logcat on a real Android phone during a webOS-dialed video call confirmed
+	// com.whatsapp NEVER instantiates an H.264/AVC decoder (only AAC/vorbis for
+	// ringtone/audio) even though it shows a video-capable call UI (a "video_container"
+	// element gets laid out) -- i.e. it decides not to commit to real video decode for this
+	// caller specifically, before ever touching MediaCodec. The same webOS device's video
+	// works fine in the other direction (Android dials, we answer) and our own outgoing
+	// video's bitstream/RTP/relay/signaling have all been separately verified correct this
+	// session -- an UNKNOWN platformType from the offering party is a plausible thing for a
+	// receiving client to gate reduced-trust capability (like real-time video) on, and
+	// nothing else examined this session (bitstream, SSRC, relay allocate, RTCP CNAME,
+	// caller-side sequencing vs. the reference implementation, offer/accept stanza content)
+	// explains a hard, deterministic, direction-specific difference like this.
+	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_ANDROID_PHONE.Enum()
 
 	// limit fetching history since we cannot even parse it
 	store.DeviceProps.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{

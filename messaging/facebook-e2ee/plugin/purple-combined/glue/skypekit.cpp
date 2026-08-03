@@ -19,8 +19,9 @@
 //     reassembles access units via h264_rtp.c, and hands complete ones to Go.
 //   Thread B ("peer->display"): connects as a client to /tmp/vidrtp_from_skypekit_key (its mere
 //     connection is what unlocks Thread A's dial per Part 17), and on each access unit Go hands
-//     it via skypekit_video_receive_frame, RTP-packetizes it (h264_rtp.c, with our own local
-//     seq/timestamp/SSRC state) and sends each resulting packet as a real RtpPacketReceived
+//     it via skypekit_video_receive_frame, sends it to mediaserver as-is (no RTP framing --
+//     RtpPacketReceived's real handler, despite the name, is a dumb pass-through straight into
+//     the H.264 decoder; see the comment on send_access_unit below) via a real RtpPacketReceived
 //     call, exactly as skypekit_send_test.cpp proved for one canned payload.
 
 #include <pthread.h>
@@ -76,8 +77,6 @@ extern "C" {
 static const unsigned kRtpPacketReceivedCmdId = 20;
 static const unsigned kRtpPacketReceivedFieldIndex = 91;
 static const unsigned kSendRTPPacketFieldIndex = 0;
-static const unsigned kRtpPayloadType = 96; // confirmed live, Part 15/18 (H.264 dynamic PT)
-static const size_t kRtpMtu = 1200;         // conservative local-IPC payload budget for FU-A
 
 // SEBinary's real layout (Part 14/18): +4 data ptr, +8 size, +12 "resizable" flag (nonzero =
 // normal/growable). Must be nonzero before the first set() or resize() silently no-ops.
@@ -86,23 +85,8 @@ static void sebinary_init(unsigned char *buf) {
 	*(uint32_t *)(buf + 12) = 1;
 }
 
-// ---------------- RTP header helpers ----------------
-
-static void rtp_build_header(unsigned char *hdr, uint16_t seq, uint32_t ts, uint32_t ssrc,
-                              int marker) {
-	hdr[0] = 0x80;
-	hdr[1] = (unsigned char)((marker ? 0x80 : 0) | (kRtpPayloadType & 0x7f));
-	hdr[2] = (unsigned char)(seq >> 8);
-	hdr[3] = (unsigned char)(seq & 0xff);
-	hdr[4] = (unsigned char)(ts >> 24);
-	hdr[5] = (unsigned char)(ts >> 16);
-	hdr[6] = (unsigned char)(ts >> 8);
-	hdr[7] = (unsigned char)(ts & 0xff);
-	hdr[8] = (unsigned char)(ssrc >> 24);
-	hdr[9] = (unsigned char)(ssrc >> 16);
-	hdr[10] = (unsigned char)(ssrc >> 8);
-	hdr[11] = (unsigned char)(ssrc & 0xff);
-}
+// ---------------- RTP header helper (Thread A only -- see send_access_unit for why Thread B
+// does not build one) ----------------
 
 static int rtp_parse_header(const unsigned char *pkt, size_t len, int *marker,
                              const unsigned char **payload, size_t *payload_len) {
@@ -118,6 +102,13 @@ static int rtp_parse_header(const unsigned char *pkt, size_t len, int *marker,
 static pthread_t g_thread_a, g_thread_b;
 static volatile int g_running = 0;
 static volatile int g_thread_a_started = 0; // set the moment thread A enters, before it blocks
+// Set once Thread B's own avtw_connect() to mediaserver's /tmp/vidrtp_from_skypekit_key
+// actually succeeds (not just once the thread starts -- Thread B must wait for Thread A to
+// already be listening, then complete its own connect-retry loop, which can take longer than
+// Thread A's own near-instant bind+listen). Reuses g_start_mx/g_start_cv rather than adding a
+// third mutex/condvar pair, since both signals are only ever waited on sequentially, never
+// concurrently, by the same caller (clonk_video_capture_start_reply in call.c).
+static volatile int g_thread_b_connected = 0;
 static pthread_mutex_t g_start_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_start_cv = PTHREAD_COND_INITIALIZER;
 
@@ -213,13 +204,6 @@ static void *thread_a_main(void *) {
 
 // ---------------- Thread B: peer -> display ----------------
 
-struct SendCtx {
-	uint16_t seq;
-	uint32_t ts;
-	uint32_t ssrc;
-	void *binclient; // persistent connection, opened once by thread_b_main
-};
-
 // wr_call_lst's 3rd/4th params (declared here as "cmdId"/"cmdName") are NOT an integer + a
 // debug string -- vtable+0x14 inside wr_preencoded_lst (called as (ci, *cmdIdParam,
 // cmdNameParam)) is really AVTransportWrapper::bl_write_bytes(CommandInitiator*, unsigned int
@@ -235,17 +219,24 @@ struct SendCtx {
 // calling wr_response), so rd_response_id must never be called after it -- it blocks for a
 // real read timeout (~57s) waiting for an ACK that will never arrive, which (before this was
 // understood) silently made every multi-packet test look like a one-shot connection.
-static void send_one_packet(void *vctx, const unsigned char *payload, size_t len, int marker) {
-	SendCtx *ctx = (SendCtx *)vctx;
-	unsigned char pkt[12 + kRtpMtu];
-	if (len > kRtpMtu) return; // h264_packetize already respects kRtpMtu; defensive only
-	rtp_build_header(pkt, ctx->seq, ctx->ts, ctx->ssrc, marker);
-	memcpy(pkt + 12, payload, len);
-	ctx->seq++;
-
+//
+// send_access_unit sends the RAW Annex-B access unit (exactly as skypekit_video_receive_frame
+// received it), with NO RTP header and NO RFC 6184 fragmentation. Decompiling the real 305
+// firmware end to end (VideoHost::RtpPacketReceived -> gst_skype_video_rtp_submit ->
+// gst_skype_rtp_src_write -> its internal queue -> gst_skype_rtp_src_create -> palm_video-
+// decoder_chain -> OmxProvideInputBuffer) shows every one of those functions passes the buffer
+// through completely unmodified -- none of them ever parses or strips an RTP header. The
+// previous code (still in git history) built a real 12-byte RTP header and RFC 6184 FU-A
+// fragments via h264_rtp.c's h264_packetize before calling this, which meant every access unit
+// reaching the Qualcomm hardware decoder had 12 bytes of RTP header (sequence number,
+// timestamp, SSRC bytes) corrupting the start of its H.264 bitstream -- consistent with the
+// live "flickering/icon instead of clean video" symptom (some frames survive the corruption,
+// most don't). RtpPacketReceived's real role, despite the name, is just "hand me one already-
+// reassembled access unit at a time" -- h264_packetize's RFC 6184 framing was never needed here.
+static void send_access_unit(void *binclient, const unsigned char *data, unsigned len) {
 	unsigned char sebinary[256];
 	sebinary_init(sebinary);
-	sebinary_set(sebinary, pkt, (unsigned)(12 + len));
+	sebinary_set(sebinary, data, len);
 
 	unsigned char header[4];
 	header[0] = 0x5a;
@@ -254,7 +245,7 @@ static void send_one_packet(void *vctx, const unsigned char *payload, size_t len
 	header[3] = (unsigned char)kRtpPacketReceivedCmdId;
 	unsigned int headerLen = sizeof(header);
 	unsigned int responseId = 0;
-	binclient_wr_call_lst(ctx->binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
+	binclient_wr_call_lst(binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
 	                        &responseId, M_SkypeVideoRTPInterface_fields,
 	                        kRtpPacketReceivedFieldIndex, sebinary);
 }
@@ -284,15 +275,13 @@ static void *thread_b_main(void *) {
 		}
 		if (!connected) { avtw_dtor(transport); continue; }
 		fprintf(stderr, "wa-call: skypekit thread B connected to mediaserver\n");
+		pthread_mutex_lock(&g_start_mx);
+		g_thread_b_connected = 1;
+		pthread_cond_broadcast(&g_start_cv);
+		pthread_mutex_unlock(&g_start_mx);
 
 		memset(binclient, 0, sizeof(binclient));
 		binclient_ctor(binclient, transport);
-
-		SendCtx ctx;
-		ctx.binclient = binclient;
-		ctx.seq = (uint16_t)(rand() & 0xffff);
-		ctx.ts = (uint32_t)time(nullptr);
-		ctx.ssrc = ((uint32_t)rand() << 16) ^ (uint32_t)rand();
 
 		while (g_running) {
 			// Wait for a frame with a bounded timeout and an explicit g_running check,
@@ -322,9 +311,8 @@ static void *thread_b_main(void *) {
 			pthread_mutex_unlock(&g_pending_mx);
 
 			fprintf(stderr, "wa-call: skypekit thread B sending access unit (%u bytes)\n", len);
-			h264_packetize(data, len, kRtpMtu, send_one_packet, &ctx);
+			send_access_unit(binclient, data, len);
 			free(data);
-			ctx.ts += 3000; // 90kHz clock / 30fps, matching the clonk pipeline's fixed framerate
 		}
 
 		avtw_dtor(transport);
@@ -339,6 +327,7 @@ void skypekit_video_start(void) {
 	if (g_running) return;
 	g_running = 1;
 	g_thread_a_started = 0;
+	g_thread_b_connected = 0;
 	pthread_create(&g_thread_a, nullptr, thread_a_main, nullptr);
 
 	// Best-effort ordering guarantee (Part 17): wait for thread A to at least start running
@@ -361,6 +350,27 @@ void skypekit_video_start(void) {
 	usleep(150000); // small additional margin, see comment above
 
 	pthread_create(&g_thread_b, nullptr, thread_b_main, nullptr);
+}
+
+// Blocks until Thread B's own connect to mediaserver's /tmp/vidrtp_from_skypekit_key actually
+// succeeds, up to timeoutMs. Returns nonzero if connected, zero on timeout (call.c logs and
+// proceeds anyway rather than hanging the mainloop indefinitely -- this is a best-effort
+// ordering guarantee, not a hard requirement, matching the existing Thread A wait's own
+// philosophy). See the comment on g_thread_b_connected for why this exists: unlike Thread A's
+// near-instant bind+listen, Thread B must wait for Thread A to already be listening and then
+// complete its own connect-retry loop (up to 500ms per attempt), which a fixed short delay
+// before videoPlayerStart cannot reliably outlast.
+int skypekit_video_wait_thread_b(int timeoutMs) {
+	struct timespec deadline;
+	deadline.tv_sec = time(nullptr) + (timeoutMs / 1000);
+	deadline.tv_nsec = (long)(timeoutMs % 1000) * 1000000L;
+	pthread_mutex_lock(&g_start_mx);
+	while (!g_thread_b_connected) {
+		if (pthread_cond_timedwait(&g_start_cv, &g_start_mx, &deadline) != 0) break;
+	}
+	int connected = g_thread_b_connected;
+	pthread_mutex_unlock(&g_start_mx);
+	return connected;
 }
 
 void skypekit_video_stop(void) {

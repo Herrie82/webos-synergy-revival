@@ -3,6 +3,7 @@ package relay
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/pion/datachannel"
 	"github.com/pion/dtls/v3"
@@ -123,10 +124,19 @@ func (c *RelayMediaChannel) Recv(buf []byte) (int, error) {
 	return n, nil
 }
 
-// ConnectRelayMedia connects the full media stack (UDP→DTLS→SCTP→DataChannel) to one
-// relay endpoint. Self-signed cert; server-cert verification skipped (media auth is
+// ConnectRelayMedia connects the full media stack (UDP→[ICE check]→DTLS→SCTP→DataChannel)
+// to one relay endpoint. Self-signed cert; server-cert verification skipped (media auth is
 // HBH SRTP, not DTLS). No vector — validated only against a live relay.
-func ConnectRelayMedia(relayAddr *net.UDPAddr, opts ...Option) (*RelayMediaChannel, error) {
+//
+// iceBindingRequest, if non-nil, is a pre-built STUN Binding Request (see
+// stun.BuildIceBindingRequest) sent on the SAME UDP socket BEFORE the DTLS handshake
+// starts, mirroring a real WhatsApp Web browser client's actual connectivity-check
+// ordering (confirmed live via chrome://webrtc-internals — see that function's doc
+// comment). This must happen on the identical local port DTLS subsequently uses, which is
+// why it lives here rather than as a separate connection attempt in the caller. Best
+// effort: a missing or unanswered response does not abort the connect, since neither the
+// real behavior on failure nor a strict retry/timeout budget has been validated live yet.
+func ConnectRelayMedia(relayAddr *net.UDPAddr, iceBindingRequest []byte, opts ...Option) (*RelayMediaChannel, error) {
 	// NOT VALIDATED: no vector exists for the live transport; exercised only against a real relay.
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/src/voip/transport.rs#L136-L195
 	cfg := resolveConfig(opts)
@@ -150,6 +160,12 @@ func ConnectRelayMedia(relayAddr *net.UDPAddr, opts ...Option) (*RelayMediaChann
 	}
 	cleanup = append(cleanup, udp.Close)
 	lg.Debug().Str("local_addr", udp.LocalAddr().String()).Msg("relay udp socket bound")
+
+	// 1b. Real ICE STUN Binding Request/Response connectivity check, on this same UDP
+	// socket, before DTLS starts -- see doc comment above.
+	if len(iceBindingRequest) > 0 {
+		performIceBindingCheck(udp, relayAddr, iceBindingRequest, lg)
+	}
 
 	// 2. DTLS client (self-signed cert; skip server-cert verification).
 	cert, err := selfsign.GenerateSelfSignedWithDNS("wa-voip")
@@ -187,4 +203,29 @@ func ConnectRelayMedia(relayAddr *net.UDPAddr, opts ...Option) (*RelayMediaChann
 	lg.Debug().Str("label", DataChannelLabel).Msg("relay datachannel open")
 
 	return &RelayMediaChannel{udp: udp, dtlsConn: dtlsConn, assoc: assoc, dc: dc, log: lg}, nil
+}
+
+// performIceBindingCheck sends pkt to relayAddr on udp and waits briefly for any reply, up
+// to 3 attempts. Best effort only (see ConnectRelayMedia's doc comment): logs the outcome
+// but never returns an error, since this is purely about getting the request onto the wire
+// in the right order before DTLS, not about strictly validating a real ICE-conformant
+// response here.
+func performIceBindingCheck(udp *net.UDPConn, relayAddr *net.UDPAddr, pkt []byte, lg zerolog.Logger) {
+	buf := make([]byte, 1500)
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := udp.WriteToUDP(pkt, relayAddr); err != nil {
+			lg.Debug().Err(err).Int("attempt", attempt).Msg("ICE binding check: send failed")
+			return
+		}
+		_ = udp.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		n, _, err := udp.ReadFromUDP(buf)
+		if err == nil {
+			lg.Debug().Int("attempt", attempt).Int("reply_bytes", n).Msg("ICE binding check: got a reply")
+			_ = udp.SetReadDeadline(time.Time{})
+			return
+		}
+		lg.Debug().Err(err).Int("attempt", attempt).Msg("ICE binding check: no reply yet")
+	}
+	_ = udp.SetReadDeadline(time.Time{})
+	lg.Debug().Msg("ICE binding check: no reply after 3 attempts, proceeding to DTLS anyway")
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,13 +70,41 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
 		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
 	})
 
+	if int(ep.tokenID) >= len(rd.relayTokens) || rd.relayTokens[ep.tokenID] == nil {
+		return nil, nil, fmt.Errorf("no relay token #%d", ep.tokenID)
+	}
+	if len(rd.relayKeyASCII) == 0 {
+		return nil, nil, fmt.Errorf("relay has no <key>")
+	}
+	e.c.diag.Emit("relay", map[string]any{
+		"event": "keying", "token_id": ep.tokenID, "token_count": len(rd.relayTokens),
+		"relay_key_hex": hex.EncodeToString(rd.relayKeyASCII),
+		"token_hex":     hex.EncodeToString(rd.relayTokens[ep.tokenID]),
+	})
+
+	// Real RFC 5389/8445 ICE Binding Request, carrying the relay token as the STUN
+	// USERNAME, sent on the relay's UDP socket BEFORE DTLS starts -- see
+	// stun.BuildIceBindingRequest's doc comment for how this was discovered (a live
+	// chrome://webrtc-internals capture of a real WhatsApp Web call) and why it's
+	// suspected to be the actual gate on the relay bridging the peer's media to us: every
+	// call all night reached ALLOCATE-SUCCESS + consent PONG via this codebase's own
+	// custom protocol without this step, and the peer's media never once arrived.
+	localUfrag := stun.GenerateIceUfrag()
+	var iceTx [12]byte
+	_, _ = rand.Read(iceTx[:])
+	iceBindingRequest := stun.BuildIceBindingRequest(iceTx, rd.relayTokens[ep.tokenID], localUfrag, rd.relayKeyASCII, log)
+	e.c.diag.Emit("stun", map[string]any{
+		"event": "ice_binding_request_built", "local_ufrag": localUfrag,
+		"tx_id_hex": hex.EncodeToString(iceTx[:]), "bytes": len(iceBindingRequest),
+	})
+
 	type result struct {
 		ch  *relay.RelayMediaChannel
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
-		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
+		ch, err := relay.ConnectRelayMedia(addr, iceBindingRequest, relay.WithLogger(log))
 		done <- result{ch, err}
 	}()
 	var ch *relay.RelayMediaChannel
@@ -92,19 +121,6 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
 	}
 	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
 
-	if int(ep.tokenID) >= len(rd.relayTokens) || rd.relayTokens[ep.tokenID] == nil {
-		ch.Close()
-		return nil, nil, fmt.Errorf("no relay token #%d", ep.tokenID)
-	}
-	if len(rd.relayKeyASCII) == 0 {
-		ch.Close()
-		return nil, nil, fmt.Errorf("relay has no <key>")
-	}
-	e.c.diag.Emit("relay", map[string]any{
-		"event": "keying", "token_id": ep.tokenID, "token_count": len(rd.relayTokens),
-		"relay_key_hex": hex.EncodeToString(rd.relayKeyASCII),
-		"token_hex":     hex.EncodeToString(rd.relayTokens[ep.tokenID]),
-	})
 	endpointXor, ok := stun.EncodeXorRelayEndpoint(ep.addresses[0].ipv4, ep.addresses[0].port, log)
 	if !ok {
 		ch.Close()
@@ -161,19 +177,39 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	if err != nil {
 		return err
 	}
-	// Peer sender-subscriptions were tried here (attr 0x4000, repeated alongside the relay
-	// token) on the theory that the allocate needs to explicitly declare which of the peer's
-	// streams we want bridged to us. REVERTED: confirmed live via the ALLOCATE-ERROR
-	// diagnostic below -- adding them made the relay actively reject the allocate
-	// (stun_error_code=456), a regression from the previous clean ALLOCATE-SUCCESS. The
-	// encoding (attr type, or the protobuf field layout for a non-audio layer) is wrong in a
-	// way the relay validates and rejects, unlike the KAT-proven stream-descriptor shape.
-	// peerVideoSsrc above is still used for the outbound PLI target.
+	// Peer sender-subscriptions (attr 0x4000, repeated alongside the relay token) have now
+	// been tried TWICE with two different payload encodings -- CreateVoipSenderSubscriptionForLayer's
+	// protobuf-style shape, and stun.CreateNativeSenderSubscription's simpler 1-byte-count +
+	// BE-SSRC shape cited from the real whatsapp-rust client (wacore/src/voip/stun.rs#L121-L126)
+	// -- and BOTH were rejected by the relay with the identical stun_error_code=456, confirmed
+	// live via the ALLOCATE-ERROR diagnostic below. Two different payload shapes failing
+	// identically points at the ATTRIBUTE ITSELF (repeating 0x4000, the same type as the
+	// token) being what this relay rejects, not either specific encoding -- the relay may
+	// simply not accept more than one 0x4000 attribute at all. Reverted again to nil: a
+	// rejected allocate (no ALLOCATE-SUCCESS at all) is strictly worse than the current
+	// baseline (ALLOCATE-SUCCESS + consent PONG, just no peer media bridged). Whatever the
+	// real mechanism for requesting the peer's streams is, it is not this attribute.
 	ch, allocate, err := e.connectAndAllocate(ctx, rd, streamSsrcs, nil)
 	if err != nil {
 		return err
 	}
 	defer ch.Close()
+
+	// Force-close the channel the instant the context is cancelled (call end), instead of
+	// relying solely on the deferred Close above. The receive loop below only checks
+	// ctx.Err() once per iteration, BEFORE calling the blocking ch.Recv() -- cancelling ctx
+	// does nothing to unblock a Recv() already in progress, so that goroutine (and its UDP
+	// socket) would otherwise sit blocked until the relay happens to send it another
+	// spontaneous packet, which may never come. Confirmed live: without this, every call's
+	// relay socket leaked indefinitely once the relay stopped responding on that channel --
+	// one real device had a dozen such abandoned sockets open after a single night of test
+	// calls, all still ticking their own 1Hz keepalive forever. Closing here makes the
+	// blocked Recv() return an error immediately, so the loop's ctx.Err() check (or the
+	// Recv error itself) ends the goroutine right away.
+	go func() {
+		<-ctx.Done()
+		ch.Close()
+	}()
 
 	// Send a consent ping (0x0801) immediately, together with the allocate and BEFORE any
 	// RTP. The relay won't forward the peer's media until consent (ping → pong) is
@@ -208,7 +244,15 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	if err != nil {
 		return err
 	}
-	audioRtcp, err := newMediaSrtcpSender(callKey, selfLID, ssrc, false)
+	// RTCP SDES CNAME identifies "the same participant" across streams -- audio and video
+	// MUST share one CNAME (generated once per call, not once per stream) for the peer to
+	// associate them, matching the "SR+SDES required for the caller's video to start
+	// flowing" comment on the sender-report ticker below. Two independently-randomized
+	// CNAMEs (the previous behavior) silently defeated that association on every call.
+	var rtcpCnameEntropy [12]byte
+	_, _ = rand.Read(rtcpCnameEntropy[:])
+	rtcpCname := rtp.BuildWhatsappRtcpCname(rtcpCnameEntropy)
+	audioRtcp, err := newMediaSrtcpSender(callKey, selfLID, ssrc, false, rtcpCname)
 	if err != nil {
 		return err
 	}
@@ -407,7 +451,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	if err != nil {
 		return err
 	}
-	videoRtcp, err := newMediaSrtcpSender(callKey, selfLID, videoSelfSsrc, true)
+	videoRtcp, err := newMediaSrtcpSender(callKey, selfLID, videoSelfSsrc, true, rtcpCname)
 	if err != nil {
 		return err
 	}
@@ -461,67 +505,97 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// keyframeRequired/sendGated) — without an explicit request, the peer's encoder can
 	// sit idle indefinitely even after signaling state=Enabled.
 	var gotPeerVideo atomic.Bool
+	// Signaled (non-blocking, capacity 1) the moment the receive loop below sees the relay's
+	// first ALLOCATE-SUCCESS. The reference client (whatsapp-rust's voip engine.rs) sends its
+	// first RTCP SR+SDES announcement immediately when allocation succeeds, not on a fixed
+	// ticker -- our own code previously wired the SR+SDES ticker independently of allocate
+	// state, so it could wait up to a full 1500ms after ALLOCATE-SUCCESS before this call's
+	// first self-announcement ever reaches the relay. Matching the reference's immediate
+	// announcement removes that gap.
+	allocated := make(chan struct{}, 1)
 	go func() {
 		ticker := time.NewTicker(1500 * time.Millisecond)
 		defer ticker.Stop()
 		var sent uint64
 		var firSeqNr uint8
+		doTick := func(now time.Time) bool {
+			audioPacket, err := audioRtcp.senderReport(txPipe.SenderStats(), uint64(now.UnixMilli()))
+			if err != nil {
+				return false
+			}
+			if _, err = ch.Send(audioPacket); err != nil {
+				return false
+			}
+			videoStats := txVideoPipe.SenderStats()
+			if videoStats.PacketsSent > 0 {
+				videoPacket, err := videoRtcp.senderReport(videoStats, uint64(now.UnixMilli()))
+				if err != nil {
+					return false
+				}
+				if _, err = ch.Send(videoPacket); err != nil {
+					return false
+				}
+			}
+			if !gotPeerVideo.Load() {
+				pliPacket, err := videoRtcp.pli(peerVideoSsrc)
+				if err == nil {
+					_, _ = ch.Send(pliPacket)
+					e.c.diag.Emit("rtcp", map[string]any{
+						"event": "pli_sent", "peer_video_ssrc": peerVideoSsrc,
+					})
+				}
+				firSeqNr++
+				firPacket, ferr := videoRtcp.fir(peerVideoSsrc, firSeqNr)
+				if ferr == nil {
+					_, _ = ch.Send(firPacket)
+				}
+				if sent%4 == 0 {
+					log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Uint8("fir_seq", firSeqNr).
+						Bool("pli_ok", err == nil).Bool("fir_ok", ferr == nil).
+						Msg("still no peer video -- sent PLI+FIR keyframe request")
+				}
+			}
+			sent++
+			if sent == 1 {
+				log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Msg("started periodic SRTCP sender reports")
+			}
+			e.c.diag.Emit("rtcp", map[string]any{
+				"event": "sender_reports", "tick": sent,
+				"audio_packets": txPipe.SenderStats().PacketsSent,
+				"video_packets": videoStats.PacketsSent,
+			})
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-allocated:
+			if !doTick(time.Now()) {
+				return
+			}
+		case now := <-ticker.C:
+			if !doTick(now) {
+				return
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				audioPacket, err := audioRtcp.senderReport(txPipe.SenderStats(), uint64(now.UnixMilli()))
-				if err != nil {
+				if !doTick(now) {
 					return
 				}
-				if _, err = ch.Send(audioPacket); err != nil {
-					return
-				}
-				videoStats := txVideoPipe.SenderStats()
-				if videoStats.PacketsSent > 0 {
-					videoPacket, err := videoRtcp.senderReport(videoStats, uint64(now.UnixMilli()))
-					if err != nil {
-						return
-					}
-					if _, err = ch.Send(videoPacket); err != nil {
-						return
-					}
-				}
-				if !gotPeerVideo.Load() {
-					pliPacket, err := videoRtcp.pli(peerVideoSsrc)
-					if err == nil {
-						_, _ = ch.Send(pliPacket)
-						e.c.diag.Emit("rtcp", map[string]any{
-							"event": "pli_sent", "peer_video_ssrc": peerVideoSsrc,
-						})
-					}
-					firSeqNr++
-					firPacket, ferr := videoRtcp.fir(peerVideoSsrc, firSeqNr)
-					if ferr == nil {
-						_, _ = ch.Send(firPacket)
-					}
-					if sent%4 == 0 {
-						log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Uint8("fir_seq", firSeqNr).
-							Bool("pli_ok", err == nil).Bool("fir_ok", ferr == nil).
-							Msg("still no peer video -- sent PLI+FIR keyframe request")
-					}
-				}
-				sent++
-				if sent == 1 {
-					log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Msg("started periodic SRTCP sender reports")
-				}
-				e.c.diag.Emit("rtcp", map[string]any{
-					"event": "sender_reports", "tick": sent,
-					"audio_packets": txPipe.SenderStats().PacketsSent,
-					"video_packets": videoStats.PacketsSent,
-				})
 			}
 		}
 	}()
 
 	buf := make([]byte, 1500)
 	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, allocOK, allocErr, pongIn uint64
+	var haveLastVideoSeq bool
+	var lastVideoSeq uint16
+	var lostSincePrevFrame uint32
+	var hexCaptured uint64
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -594,17 +668,26 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if mt == stun.MsgAllocateSuccess {
 				if allocOK++; allocOK == 1 {
 					log.Info().Msg("relay ALLOCATE-SUCCESS received")
+					e.c.diag.Emit("stun", map[string]any{"event": "allocate_success", "call_id": callID})
+					select {
+					case allocated <- struct{}{}:
+					default:
+					}
 				}
 			}
 			if stun.IsAllocateError(pkt) {
 				code, _ := stun.ParseStunErrorCode(pkt, log)
 				if allocErr++; allocErr == 1 {
 					log.Warn().Uint16("stun_error_code", code).Msg("relay ALLOCATE-ERROR received -- this is why nothing bridges")
+					e.c.diag.Emit("stun", map[string]any{
+						"event": "allocate_error", "call_id": callID, "stun_error_code": code,
+					})
 				}
 			}
 			if stun.IsWhatsappPong(pkt, nil) {
 				if pongIn++; pongIn == 1 {
 					log.Info().Msg("relay consent PONG received, ping/pong consent established")
+					e.c.diag.Emit("stun", map[string]any{"event": "pong_received", "call_id": callID})
 				}
 			}
 			continue
@@ -675,6 +758,22 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			// Any video RTP at all, unprotected or not, means the peer's encoder is
 			// running -- stop sending PLIs once that's established.
 			gotPeerVideo.Store(true)
+			// Track sequence-number continuity: a gap here means lost RTP packets, which
+			// (if they carried a reference frame) corrupts the decoder's reference buffer
+			// until the next IDR -- a real mechanism for self-correcting visual flicker,
+			// unlike anything in the depacketizer/wire-format itself (already verified clean).
+			if haveLastVideoSeq {
+				gap := vh.SequenceNumber - lastVideoSeq - 1 // wraps correctly for uint16
+				if gap != 0 && gap < 60000 {
+					lostSincePrevFrame += uint32(gap)
+					e.c.diag.Emit("video", map[string]any{
+						"event": "seq_gap", "ssrc": vh.Ssrc,
+						"expected": lastVideoSeq + 1, "got": vh.SequenceNumber, "lost": gap,
+					})
+				}
+			}
+			haveLastVideoSeq = true
+			lastVideoSeq = vh.SequenceNumber
 			_, vpayload, vunok := rxVideoPipe.UnprotectAudio(pkt)
 			if !vunok {
 				if videoUnprotectFail++; videoUnprotectFail == 1 {
@@ -693,7 +792,25 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if vh.Marker && len(videoAU) > 0 {
 				frame := videoAU
 				videoAU = nil
-				e.c.diag.Emit("video", map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame)})
+				fields := map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame)}
+				if lostSincePrevFrame > 0 {
+					fields["lost_pkts"] = lostSincePrevFrame
+				}
+				// Dump reassembled access units in full so a real corruption (bad NAL types,
+				// missing/garbled SPS-PPS, wrong start codes) can be inspected directly instead
+				// of inferred. Also captures any frame immediately following a detected RTP
+				// sequence gap: a dropped reference-frame packet corrupts the decoder's
+				// reference buffer until the next IDR, the leading hypothesis for flicker that
+				// shows up mid-call rather than at call start. Capped so a long call cannot
+				// blow up the log.
+				dueToGap := lostSincePrevFrame > 0
+				if (videoFrameIn < 8 || dueToGap) && hexCaptured < 60 {
+					fields["frame_hex"] = hex.EncodeToString(frame)
+					fields["nal_types"] = h264NalTypes(frame)
+					hexCaptured++
+				}
+				lostSincePrevFrame = 0
+				e.c.diag.Emit("video", fields)
 				if sink := callVideoSink(call); sink != nil {
 					if err := sink.WriteVideo(frame); err != nil {
 						log.Warn().Err(err).Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("failed to write WhatsApp video frame to sink")
@@ -713,6 +830,19 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if vidIn++; vidIn == 1 {
 				log.Info().Uint32("ssrc", vh.Ssrc).Msg("first video RTP demuxed from relay")
 				e.c.diag.Emit("meta", map[string]any{"event": "first_video_rtp_in", "call_id": callID, "ssrc": vh.Ssrc})
+				// The peer's <video state=1> stanza is only sent for a mid-call audio->video
+				// upgrade, never for video that was already present in the initial offer/accept
+				// (confirmed: zero OnVideoState firings across many real from-start video calls).
+				// Without this, OnVideoState's caller-side "streaming" flag never flips even
+				// though real decoded video is on its way, so a UI that shows a placeholder
+				// until "streaming" arrives would show nothing but that placeholder for the
+				// entire call. Real video RTP actually arriving is a stronger, always-true
+				// substitute signal for "the peer's video is live" than that stanza is.
+				if call != nil {
+					if fn := call.onVideoStateFn(); fn != nil {
+						fn(VideoState{Active: true, Raw: 1})
+					}
+				}
 			}
 			continue
 		}
@@ -852,15 +982,13 @@ func (r *mediaSrtcpReceiver) unprotect(senderSSRC uint32, packet []byte) ([]byte
 	return srtp.UnprotectSrtcp(&r.keys, senderSSRC, packet)
 }
 
-func newMediaSrtcpSender(callKey []byte, selfLID string, ssrc uint32, profile bool) (*mediaSrtcpSender, error) {
+func newMediaSrtcpSender(callKey []byte, selfLID string, ssrc uint32, profile bool, cname [rtp.WhatsappRtcpCnameLen]byte) (*mediaSrtcpSender, error) {
 	keys, err := srtp.DeriveE2eSrtcpKeys(callKey, rtp.FormatE2ESrtpParticipantID(selfLID))
 	if err != nil {
 		return nil, err
 	}
-	var entropy [12]byte
-	_, _ = rand.Read(entropy[:])
 	return &mediaSrtcpSender{
-		keys: keys, ssrc: ssrc, cname: rtp.BuildWhatsappRtcpCname(entropy),
+		keys: keys, ssrc: ssrc, cname: cname,
 		profile: profile, index: 1,
 	}, nil
 }
@@ -917,9 +1045,20 @@ func (vs *videoSender) protectAccessUnitLocked(au []byte, duration time.Duration
 		return nil
 	}
 	idr := rtp.AUHasIDR(au)
-	if vs.keyframeRequired && !idr {
-		return nil
-	}
+	// Previously dropped every non-IDR frame here while keyframeRequired was true, waiting for
+	// the next native-capture-restart-produced IDR (debounced to at most once per 5s -- see
+	// KEYFRAME_COOLDOWN_US in glue/call.c -- specifically to avoid a documented self-inflicted
+	// restart storm). That meant a single genuine peer PLI/FIR -- which arrives far more often
+	// than every 5s when the peer isn't decoding anything -- could silently starve the
+	// outgoing stream down to ~1-2 frames every 5 seconds for the entire call (confirmed live
+	// via diagnostics this session, on the one direction where the peer's real WhatsApp client
+	// never once instantiates a video decoder). A receiver that hasn't started decoding yet
+	// has no "wrong reference frame" state to corrupt by receiving P-frames -- sending it a
+	// continuous real stream, even one that occasionally references a keyframe it may have
+	// missed, gives its jitter buffer/decoder-setup logic actual data to reason about, instead
+	// of confirming its own suspicion that the stream is dead and never bothering to spin up a
+	// decoder at all. Keep tracking keyframeRequired (cleared below once an IDR gets through)
+	// purely for the mediaFrameInfo IDR/Delta marking -- just stop using it to withhold frames.
 	nalus := rtp.SplitAnnexB(au)
 	var payloads [][]byte
 	for _, n := range nalus {
@@ -1017,6 +1156,21 @@ func (vs *videoSender) send(au []byte, duration time.Duration) {
 			Uint32("ssrc", vs.ssrc).
 			Msg("first video RTP sent to relay, outbound video flowing")
 	}
+}
+
+// h264NalTypes lists each NAL unit's type byte (Annex-B, per SplitAnnexB) in an access
+// unit, e.g. "7,8,5" for SPS,PPS,IDR -- lets a diagnostic reader spot a malformed
+// reassembly (missing SPS/PPS before an IDR, an unexpected type) without decoding hex.
+func h264NalTypes(au []byte) string {
+	nalus := rtp.SplitAnnexB(au)
+	types := make([]string, 0, len(nalus))
+	for _, n := range nalus {
+		if len(n) == 0 {
+			continue
+		}
+		types = append(types, fmt.Sprintf("%d", n[0]&0x1f))
+	}
+	return strings.Join(types, ",")
 }
 
 // rmsFloat32 returns the root-mean-square level of a PCM frame, a cheap loudness

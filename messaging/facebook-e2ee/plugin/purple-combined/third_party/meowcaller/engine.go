@@ -113,6 +113,24 @@ func (e *engine) install() {
 		case *events.CallAccept:
 			e.onAccept(ev)
 		case *events.CallRelayLatency:
+			// Diagnostic: whatsmeow's own doc comment claims this event is only ever
+			// emitted for a call the user RECEIVES, and onRelayLatency (the responder)
+			// already only acts when direction==Incoming -- meaning there may be no
+			// analogous "please report your bandwidth" round trip for the caller role at
+			// all in this protocol (the callee's bandwidth instead arrives embedded in
+			// <accept>'s own <relaylatency> child, no probe/response needed). Confirming
+			// empirically whether this event ever fires for our own dial-out calls before
+			// assuming the direction-gate in onRelayLatency is a real gap rather than
+			// correct-by-protocol-design.
+			if m := e.lookup(ev.CallID); m != nil {
+				e.c.log.Info().Str("call_id", ev.CallID).Int("direction", int(m.direction)).
+					Str("raw_relaylatency", ev.Data.String()).
+					Msg("diag: CallRelayLatency event fired (direction: 0=outgoing/we-dialed, 1=incoming/we-answered)")
+				e.c.diag.Emit("relaylatency", map[string]any{
+					"event": "call_relay_latency_fired", "call_id": ev.CallID,
+					"direction": int(m.direction), "ts_ms": time.Now().UnixMilli(),
+				})
+			}
 			e.onRelay(ev.CallID, ev.Data)
 			e.onRelayLatency(ev)
 		case *events.CallTransport:
@@ -470,6 +488,13 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		"event": "offer_received", "call_id": ev.CallID,
 		"from": ev.From.String(), "peer": peer.String(),
 	})
+	// Diagnostic: dump the peer's real, self-authored <offer> (capability blob included) the
+	// next time Android calls US -- lets a real Android-outgoing offer's capability hex be
+	// diffed against our own outgoing offer's, to rule in/out a caller-specific capability bit
+	// Meta might now require that our own blob lacks (raised as a hypothesis after the
+	// dial-with-video regression: audio-then-changeMedia, byte-identical to the one historically
+	// working recipe, still doesn't make Android decode our outgoing video).
+	e.c.log.Info().Str("call_id", ev.CallID).Str("raw_offer", ev.Data.String()).Msg("diag: raw peer offer node")
 	call := &Call{eng: e, id: ev.CallID, peer: peer, phase: CallPhaseRinging}
 
 	e.mu.Lock()
@@ -616,16 +641,56 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 		e.mu.Unlock()
 		return
 	}
-	m.relay = parseRelayData(r)
+	rd := parseRelayData(r)
+	m.relay = rd
 	e.mu.Unlock()
+	// Durable diag: every endpoint this relay block offered, which one
+	// getMediaRelayEndpoint() will pick, and the raw address bytes of the FIRST te2 in
+	// document order specifically -- the wacrg.org spec (spec/relay/relay-candidates)
+	// claims a <relaylatency> response must echo back that exact first-te2 byte string
+	// before media routing occurs. Logged here (not just in onRelayLatency) so we can see
+	// whether it even matches what our probe responses actually send, and the exact
+	// ordering relative to CallRelayLatency/onRelayLatency and media start.
+	{
+		var eps []map[string]any
+		for _, ep := range rd.endpoints {
+			addr := ""
+			if len(ep.addresses) > 0 {
+				addr = fmt.Sprintf("%s:%d", ep.addresses[0].ipv4, ep.addresses[0].port)
+			}
+			eps = append(eps, map[string]any{
+				"relay_id": ep.relayID, "relay_name": ep.relayName, "token_id": ep.tokenID,
+				"auth_token_id": ep.authTokenID, "is_fna": ep.isFNA, "addr": addr,
+			})
+		}
+		selected := getMediaRelayEndpoint(rd)
+		selectedAddr := ""
+		if selected != nil && len(selected.addresses) > 0 {
+			selectedAddr = fmt.Sprintf("%s:%d", selected.addresses[0].ipv4, selected.addresses[0].port)
+		}
+		e.c.diag.Emit("relaylatency", map[string]any{
+			"event": "relay_recorded", "call_id": callID, "ts_ms": time.Now().UnixMilli(),
+			"endpoints": eps, "selected_addr": selectedAddr, "endpoint_count": len(rd.endpoints),
+		})
+	}
 	e.maybeStartMedia(callID)
 }
 
-// onRelayLatency answers the caller's relaylatency probes (the callee's half of the
-// relay election). It does NOT send the accept — that is deferred until <mute_v2>.
+// onRelayLatency answers relaylatency probes for the relay election. Confirmed live this
+// session: contrary to whatsmeow's own doc comment ("emitted slightly after the user
+// receives a call"), CallRelayLatency genuinely fires for calls WE place too (direction ==
+// CallDirectionOutgoing) -- caught two real probes, relay_name="bru2c01"/"dus1c01", on a
+// dial-out call. This handler used to only ever respond when direction==Incoming, silently
+// dropping every probe on the dial-out direction -- the one direction where the peer's real
+// WhatsApp client never ends up trusting/decoding our video. The response itself is
+// direction-agnostic (it just echoes the probe's latency token back so the PROBING side can
+// compute round-trip time by comparing its own send/receive timestamps -- nothing here is
+// calculated from "are we the callee"), so there's no protocol reason to gate it by
+// direction at all. It does NOT send the accept when we're the callee — that is still
+// deferred until <mute_v2>, unaffected by this change.
 func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	m := e.lookup(ev.CallID)
-	if m == nil || m.direction != CallDirectionIncoming {
+	if m == nil {
 		return
 	}
 	rl := findChild(ev.Data, "relaylatency")
@@ -645,6 +710,18 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 			addr:      nodeBytes(te),
 		})
 	}
+	{
+		var probeLog []map[string]any
+		for _, p := range probes {
+			probeLog = append(probeLog, map[string]any{
+				"relay_name": p.relayName, "latency_ms": p.latency, "addr_hex": hex.EncodeToString(p.addr),
+			})
+		}
+		e.c.diag.Emit("relaylatency", map[string]any{
+			"event": "probes_received", "call_id": ev.CallID, "ts_ms": time.Now().UnixMilli(),
+			"probe_count": len(probes), "probes": probeLog,
+		})
+	}
 	for _, p := range probes {
 		resp := signaling.BuildRelayLatency(&signaling.RelayLatencyParams{
 			CallID:       ev.CallID,
@@ -657,8 +734,16 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 		resp.Attrs["id"] = e.c.wa.GenerateMessageID()
 		if err := e.c.wa.DangerousInternals().SendNode(context.Background(), resp); err != nil {
 			e.c.log.Error().Err(err).Str("call_id", ev.CallID).Msg("send relaylatency failed")
+			e.c.diag.Emit("relaylatency", map[string]any{
+				"event": "probe_response_failed", "call_id": ev.CallID, "relay_name": p.relayName,
+				"error": err.Error(),
+			})
 			return
 		}
+		e.c.diag.Emit("relaylatency", map[string]any{
+			"event": "probe_answered", "call_id": ev.CallID, "ts_ms": time.Now().UnixMilli(),
+			"relay_name": p.relayName, "latency_ms": p.latency, "addr_hex": hex.EncodeToString(p.addr),
+		})
 	}
 }
 
@@ -680,6 +765,17 @@ func (e *engine) onPreAccept(ev *events.CallPreAccept) {
 		"event": "peer_preaccept", "call_id": ev.CallID,
 		"from": ev.From.String(), "platform": ev.RemotePlatform,
 	})
+	// Diagnostic: onOffer parses OfferHasVideo(ev.Data) and acts on it (localVideo/
+	// remoteVideo, sendPreaccept's own video decoder advertisement), but this handler --
+	// the caller-side mirror -- has never inspected ev.Data at all. Dumping the peer's raw
+	// preaccept node here to see whether it carries a <video> child (their decoder
+	// capability advertisement -- see sendPreaccept's comment) that we've been silently
+	// discarding, while investigating why the peer never decodes our video specifically
+	// when we're the caller (works fine in the other direction).
+	if ev.Data != nil {
+		e.c.log.Info().Str("call_id", ev.CallID).Str("raw_preaccept", ev.Data.String()).
+			Msg("diag: raw peer preaccept node")
+	}
 }
 
 // onAccept records that the peer answered an outgoing call. Media may already be running
@@ -729,6 +825,13 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 		"event": "peer_accept", "call_id": ev.CallID,
 		"from": ev.From.String(), "platform": ev.RemotePlatform, "video": m.localVideo || m.remoteVideo,
 	})
+	// Diagnostic: see onPreAccept's comment above -- onAccept only ever reads ev.Data for
+	// applyVoipSettingsCodec (audio codec), never for anything video-related. Dumping the
+	// raw accept node to see what Android's real accept actually declares about video.
+	if ev.Data != nil {
+		e.c.log.Info().Str("call_id", ev.CallID).Str("raw_accept", ev.Data.String()).
+			Msg("diag: raw peer accept node")
+	}
 	e.maybeStartMedia(ev.CallID)
 }
 

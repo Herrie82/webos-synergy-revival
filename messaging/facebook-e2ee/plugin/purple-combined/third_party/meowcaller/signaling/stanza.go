@@ -18,7 +18,17 @@ import (
 var CapabilityOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x13}
 
 // CapabilityVideoOffer is the capability blob observed in WhatsApp video offers.
-var CapabilityVideoOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x13}
+//
+// Last byte changed 0x13 -> 0x53 to match the real Android WhatsApp client's own
+// self-reported capability, captured verbatim from its <preaccept>/<accept> in every real
+// test call tonight (`<capability ver="1">0105f709e0fa53</capability>`, identical both times).
+// Speculative -- we don't have the bitmask semantics -- but it's a concrete, previously
+// unnoticed byte-level discrepancy between what we advertise as a video caller and what a real,
+// current client reports, raised as one of a caller-capability-bit hypothesis after the
+// dial-with-video regression persisted through an exact replay of the one historically-working
+// recipe (audio-then-changeMedia, byte-identical, still not decoded by Android). NOT YET
+// VALIDATED live.
+var CapabilityVideoOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x53}
 
 // CapabilityPreaccept is the capability blob for <preaccept> (ver=1).
 var CapabilityPreaccept = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x07}

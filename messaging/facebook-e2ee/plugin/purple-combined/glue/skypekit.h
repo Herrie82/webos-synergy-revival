@@ -22,6 +22,14 @@ extern "C" {
 // the inbound accept succeeds — the capture->peer listener must be up first so that dial lands).
 void skypekit_video_start(void);
 
+// Blocks until Thread B's own connect to mediaserver's peer->display socket actually succeeds
+// (not just started), up to timeoutMs milliseconds. Returns nonzero if connected, zero on
+// timeout. See glue/call.c's clonk_video_capture_start_reply for why this matters: mediaserver's
+// clonkvhsrc source element appears to fail its own state change (and tear the whole playback
+// pipeline down within ~300ms) if videoPlayerStart fires before Thread B has actually connected —
+// unlike the local camera preview, which has no such network dependency and always succeeds.
+int skypekit_video_wait_thread_b(int timeoutMs);
+
 // Signals both bridge threads to stop and joins them. Idempotent; safe to call even if
 // skypekit_video_start was never called or already stopped.
 void skypekit_video_stop(void);

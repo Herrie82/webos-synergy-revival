@@ -3,7 +3,9 @@ package stun
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
 	"strconv"
@@ -21,12 +23,16 @@ const (
 	stunFingerprintXor = 0x5354554e
 	stunXorPort        = 0x2112
 
+	attrUsername              = 0x0006
 	attrMessageIntegrity      = 0x0008
-	attrFingerprint           = 0x8028
 	attrErrorCode             = 0x0009
+	attrPriority              = 0x0024
+	attrUseCandidate          = 0x0025
 	attrRelayToken            = 0x4000
 	attrStreamDescriptors     = 0x4024
 	attrWasmRelayEndpoint     = 0x0016
+	attrIceControlling        = 0x802a
+	attrFingerprint           = 0x8028
 	attrSenderSubscriptionsV2 = 0x4025
 )
 
@@ -273,6 +279,74 @@ func BuildWhatsappPing(transactionID [12]byte, log ...zerolog.Logger) [20]byte {
 	binary.BigEndian.PutUint32(out[4:8], stunMagic)
 	copy(out[8:20], transactionID[:])
 	return out
+}
+
+// BuildIceBindingRequest builds a standards-compliant (RFC 5389/8445) ICE STUN Binding
+// Request carrying WhatsApp's relay token inside the USERNAME attribute, matching what
+// WhatsApp Web's real browser client sends before its DTLS handshake ever starts.
+//
+// Discovered from a live chrome://webrtc-internals capture of a real WhatsApp Web video
+// call (2026-08-03), not from the whatsapp-rust reference source cited elsewhere in this
+// file (that client is native/APK-oriented and doesn't use this browser-specific
+// ICE-credential trick). The browser's self-synthesized SDP "answer" sets the REMOTE
+// ice-ufrag to a huge base64 blob -- exactly base64(relay_token) by byte length -- and
+// ice-pwd to a short base64 string matching this codebase's own relayKeyASCII
+// MESSAGE-INTEGRITY key in both length and role. Chrome's native WebRTC stack then
+// performs a real ICE connectivity check against the relay using
+// USERNAME="{remote_ufrag}:{local_ufrag}" and MESSAGE-INTEGRITY keyed by the remote
+// ice-pwd, BEFORE DTLS ever starts -- a completely different, and until now never sent,
+// authentication step from this codebase's own custom MsgAllocateRequest (0x0003), which
+// every capture all night showed succeeding (ALLOCATE-SUCCESS + consent PONG) while the
+// relay still never bridged the peer's media.
+//
+// A first attempt at this (USERNAME + MESSAGE-INTEGRITY + FINGERPRINT only) shipped and
+// was tested live but made no difference. A real Wireshark capture of a genuine WhatsApp
+// Web call (2026-08-03, wavideo.pcapng) showed the actual attribute set a working client
+// sends, byte for byte, in order: USERNAME, a libwebrtc-proprietary NETWORK-INFO attribute
+// (0xC057, cosmetic -- carries interface id/cost for multipath ranking, safely omittable),
+// ICE-CONTROLLING (0x802A, 8-byte tie-breaker), USE-CANDIDATE (0x0025, zero-length),
+// PRIORITY (0x0024, 4 bytes), MESSAGE-INTEGRITY, FINGERPRINT. USE-CANDIDATE is the real
+// RFC 8445 ICE nomination signal -- without it, even a fully credential-valid Binding
+// Request is just a connectivity probe to an ICE-lite agent, never a nomination, and the
+// far side has no reason to ever commit this candidate pair as the one to bridge media on.
+// That gap, not the credentials themselves, is suspected to be why every prior attempt
+// tonight got a clean ALLOCATE-SUCCESS/consent-PONG-equivalent yet zero peer media.
+func BuildIceBindingRequest(transactionID [12]byte, relayToken []byte, localUfrag string, integrityKey []byte, log ...zerolog.Logger) []byte {
+	lg := pickLog(log)
+	username := base64.StdEncoding.EncodeToString(relayToken) + ":" + localUfrag
+	attrs := stunAttr(attrUsername, []byte(username))
+
+	// ICE-CONTROLLING: 8-byte tie-breaker signaling we are the controlling agent (we are
+	// always the one initiating checks against a server-side relay, never the other way
+	// round, so there is no real role-conflict scenario here -- any random value works).
+	var tieBreaker [8]byte
+	_, _ = rand.Read(tieBreaker[:])
+	attrs = append(attrs, stunAttr(attrIceControlling, tieBreaker[:])...)
+
+	// USE-CANDIDATE: zero-length, nominates this pair. See doc comment above -- this is
+	// the piece missing from the first attempt, and the leading suspect for why that
+	// attempt made no observable difference.
+	attrs = append(attrs, stunAttr(attrUseCandidate, nil)...)
+
+	// PRIORITY: real value observed live (0x6e7e1eff). The exact number only matters for
+	// ranking among multiple candidate pairs; with a single pair here there is nothing to
+	// rank, so the confirmed-real constant is reused rather than deriving one from the
+	// RFC 8445 formula from scratch.
+	var priority [4]byte
+	binary.BigEndian.PutUint32(priority[:], 0x6e7e1eff)
+	attrs = append(attrs, stunAttr(attrPriority, priority[:])...)
+
+	lg.Debug().Int("username_bytes", len(username)).Msg("building ICE STUN binding request")
+	return EncodeStunRequest(MsgBindingRequest, transactionID, attrs, integrityKey, true, lg)
+}
+
+// GenerateIceUfrag returns a short random ICE-style local ufrag: 3 random bytes,
+// base64-encoded to exactly 4 characters with no padding -- matching the length WhatsApp
+// Web's own browser client uses for its local side (observed live: "+KoB").
+func GenerateIceUfrag() string {
+	var b [3]byte
+	_, _ = rand.Read(b[:])
+	return base64.StdEncoding.EncodeToString(b[:])
 }
 
 // IsStunPacket reports whether data looks like a STUN packet (top two bits zero).

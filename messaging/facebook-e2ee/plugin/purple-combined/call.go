@@ -38,6 +38,7 @@ import "C"
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -48,6 +49,7 @@ import (
 	"unsafe"
 
 	"github.com/purpshell/meowcaller"
+	"github.com/purpshell/meowcaller/diag"
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow/types"
 )
@@ -88,6 +90,16 @@ var (
 	dialing bool                     // an outgoing dial is in flight (guards double-dial)
 
 	callPrevGCPercent = 100 // GC threshold saved on call start, restored on disconnect
+
+	// Same *diag.Recorder handed to meowcaller.WithDiagnostics below, kept here too so
+	// call.go's own events (which meowcaller's engine never sees, e.g. OnVideoState) can be
+	// written to the same durable /media/internal/meowcaller_diag/*.jsonl trail instead of
+	// only the ephemeral fprintf(stderr,...) one, which is lost once nothing is live-tailing
+	// imwrap.sh's stdout -- needed to see, after the fact, whether the peer's <video> state
+	// signaling flaps right after call start (each flap tears down/rebuilds the whole clonk
+	// session via gowhatsapp_call_video_active, which looks exactly like the reported
+	// incoming-video black-screen/instant-teardown symptom).
+	diagRec *diag.Recorder
 )
 
 // startCalling attaches meowcaller to the plugin's already-created whatsmeow client.
@@ -110,7 +122,19 @@ func (handler *Handler) startCalling() {
 	// Route to os.Stderr like every other log in this process, so it lands in imstdout.log.
 	mcLogger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.Kitchen}).
 		With().Timestamp().Logger()
-	mcClient = meowcaller.NewClient(handler.client, meowcaller.WithLogger(mcLogger))
+	opts := []meowcaller.Option{meowcaller.WithLogger(mcLogger)}
+	// Developer diagnostics: dumps every relay packet's raw hex (plus key schedule, RTCP, etc.)
+	// to <dir>/<stream>.jsonl -- needed to see WHAT a mystery non-RTP packet actually is instead
+	// of just its classification/length. Opt-in only (see diag.Recorder doc: can contain raw
+	// secrets/media); safe here since this is the user's own device/debugging session, not a
+	// shipped default. If the directory can't be created, calling still works without it.
+	if rec, err := diag.NewRecorder("/media/internal/meowcaller_diag"); err == nil {
+		opts = append(opts, meowcaller.WithDiagnostics(rec))
+		diagRec = rec
+	} else {
+		fmt.Fprintln(os.Stderr, "wacall: diag recorder unavailable:", err)
+	}
+	mcClient = meowcaller.NewClient(handler.client, opts...)
 	mcClient.OnIncomingCall(handleIncoming)
 	fmt.Fprintln(os.Stderr, "wacall: calling engine attached to messaging session")
 }
@@ -241,6 +265,9 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 	mcCall.OnPeerAccept(func() { setCallState(ci.id, "active", "") })
 	mcCall.OnReady(func() { setCallState(ci.id, "active", "") })
 	mcCall.OnEnd(func(reason string) {
+		if diagRec != nil {
+			diagRec.Emit("clonk", map[string]any{"event": "on_end", "call_id": ci.id, "reason": reason})
+		}
 		C.gowhatsapp_call_video_active(C.int(0))
 		setCallState(ci.id, "disconnected", reason)
 	})
@@ -270,6 +297,19 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 		on := 0
 		if anyVideo {
 			on = 1
+		}
+		// Diagnostic: correlate against video.jsonl's seq_gap/frame ts_ms to check whether
+		// the peer's <video> signaling genuinely flaps (real state transitions here would
+		// tear down/rebuild the local clonk pipeline via gowhatsapp_call_video_active, which
+		// would visually look exactly like the reported flicker) in lockstep with the
+		// measured frame-arrival stalls, or whether it fires once and stays put.
+		fmt.Fprintln(os.Stderr, "wacall: OnVideoState id=", ci.id, "active=", vs.Active,
+			"anyVideo=", anyVideo, "ts_ms=", time.Now().UnixMilli())
+		if diagRec != nil {
+			diagRec.Emit("clonk", map[string]any{
+				"event": "on_video_state", "call_id": ci.id, "peer_active": vs.Active,
+				"any_video": anyVideo, "video_active_arg": on,
+			})
 		}
 		C.gowhatsapp_call_video_active(C.int(on))
 		emitCallState()
@@ -378,10 +418,25 @@ func gowhatsapp_call_video_frame_out(data *C.char, length C.int) {
 		return
 	}
 	accessUnit := C.GoBytes(unsafe.Pointer(data), length)
+	// Diagnostic: dump the raw bytes of our OWN encoder's output, right at the native
+	// handoff point, before anything Go-side (SRTP protect, keyframeRequired gating) ever
+	// touches it. Outgoing video reaches Android fine when we ANSWER but not when we DIAL,
+	// even after fixing two confirmed real bugs on the dial path (a videoTx race and a
+	// clonk-session double-open race) -- this checks whether the encoder itself is even
+	// producing valid H.264 (correct start codes, SPS/PPS/IDR structure) specifically on
+	// the dial path, the one thing about the outgoing bitstream never directly inspected
+	// (the earlier hex-dump investigation this session only ever looked at INCOMING video).
+	if outgoingFrameDumped < 20 {
+		outgoingFrameDumped++
+		fmt.Fprintf(os.Stderr, "wacall: outgoing frame #%d (%d bytes) hex=%s\n",
+			outgoingFrameDumped, len(accessUnit), hex.EncodeToString(accessUnit))
+	}
 	if err := ci.c.SendVideoWithDuration(accessUnit, 0); err != nil {
 		fmt.Fprintln(os.Stderr, "wacall: SendVideo error:", err)
 	}
 }
+
+var outgoingFrameDumped int
 
 // ============================ exported C API ============================
 //
@@ -447,7 +502,59 @@ func gowhatsapp_go_call_dial(cAddr *C.char, video C.int) *C.char {
 			// the relay bridge work fine. Previously only changeMedia (the Phone app's
 			// mid-call video toggle) called this, so a call placed with video from the
 			// start never displayed anything locally.
-			C.gowhatsapp_call_video_active(C.int(1))
+			//
+			// Deferred rather than fired here immediately: dialing has no network
+			// round-trip before this point, so opening the encoder this early races
+			// ahead of the Go engine's own video-send registration (videoTx, wired up
+			// inside runMedia, which only starts once a relay endpoint is known via the
+			// call ack -- a later event). The encoder's first access unit -- and, per
+			// gowhatsapp_call_request_keyframe's cooldown-gated stop/restart, functionally
+			// the only reliably-produced IDR -- would be generated and silently dropped by
+			// sendVideoFrame before videoTx exists, and every later P-frame then gets
+			// gated shut by keyframeRequired until a peer PLI/FIR eventually forces a
+			// disruptive capture restart.
+			//
+			// PREVIOUSLY gated on OnReady (first inbound audio RTP actually decoded).
+			// Confirmed live this session to be the actual root cause of "peer never sees
+			// our video when we dial out": OnReady depends on the peer's mic producing a
+			// real, non-silence-suppressed packet -- a real test call was captured where
+			// our own audio/video sent fine the whole time, but the peer's device never
+			// emitted an early inbound RTP packet (silence, DTX, or timing), so OnReady
+			// never fired, so gowhatsapp_call_video_active(1) never ran, so the camera
+			// pipeline never opened and the peer's decoder never saw a single packet from
+			// us -- for the entire call. An earlier dial-out call happened to work only
+			// because inbound video/audio arrived early enough to win the race, which is
+			// not a fix. OnPeerAccept fires as soon as the peer's <accept> lands (well
+			// before any RTP -- runMedia/videoTx is already wired up by the earlier call
+			// ack, before preaccept even), giving the same "videoTx exists" guarantee
+			// without depending on anything the peer's mic does.
+			//
+			// ALSO now sends SetVideoEnabled(true) (a <video state="1" dec="H264"> stanza),
+			// which this path never sent before. Found by re-reading WHATSAPP_VIDEO_STATUS.md
+			// Part 20 -- the one and only human-confirmed "peer saw our real camera output"
+			// dial-out call: it was placed by dialing with video:true (native camera NOT
+			// opened automatically, exactly like today), then a SEPARATE manual
+			// `changeMedia{"outgoingVideo":true}` was sent via luna-send. changeMedia's Go
+			// handler, when the call is already IsVideo() (true here, since we dialed with
+			// video:true), takes the SetVideoEnabled(true) branch, not StartVideo -- so the
+			// historically-working recipe always included this explicit state=1 stanza on
+			// top of opening the local clonk session. This is NOT the state=11
+			// "VideoStateUpgradeRequestV2" stanza the comment above correctly avoids (that
+			// one means "please let me add video to this call" and confused the peer); state=1
+			// ("Enabled") just asserts our video is live now, and was apparently load-bearing
+			// even for a call that already declared video in the offer -- contradicts this
+			// codebase's own earlier assumption (engine_media.go's onVideoStanza comment) that
+			// it's mid-call-upgrade-only. Every fix this session automated the *local
+			// camera-open* half of what changeMedia used to do manually, but never the
+			// *signaling* half -- which is very likely why dial-with-video regressed
+			// somewhere after Part 20 even though the native bridge still works perfectly.
+			mcCall.OnPeerAccept(func() {
+				setCallState(ci.id, "active", "")
+				C.gowhatsapp_call_video_active(C.int(1))
+				if err := mcCall.SetVideoEnabled(true); err != nil {
+					fmt.Fprintln(os.Stderr, "wacall: dial SetVideoEnabled(true) error:", err)
+				}
+			})
 		}
 		emitCallState()
 		fmt.Fprintln(os.Stderr, "wacall: call placed id", ci.id)

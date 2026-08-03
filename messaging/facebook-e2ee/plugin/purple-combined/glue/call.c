@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -99,7 +100,41 @@ static void reply(LSHandle *sh, LSMessage *msg, const char *payload) {
  * implements. Session *creation* was always confirmed working; this deepens clonk_open/
  * clonk_close to actually bring up capture+playback and the skypekit.cpp socket bridge. */
 static char g_clonk_uri[256] = {0};
+// Set synchronously the moment clonk_open() issues its LSCallOneReply, cleared once the
+// reply lands (clonk_open_reply, success or failure) or clonk_close() tears the session
+// down. g_clonk_uri alone isn't enough to guard against a second clonk_open() call: it only
+// gets populated inside the ASYNC reply, so two calls close together (confirmed live: the
+// dial path's OnReady-triggered open and the incoming-video OnVideoState-triggered open
+// firing near-simultaneously) can both see g_clonk_uri still empty and both fire a real
+// LSCallOneReply -- observed live as the SAME session opened/started 3 times over, each
+// with its own videoCaptureStart/videoPlayerStart. Whether or not mediaserver's own
+// pipeline construction is safe against 3 overlapping start calls for one session was never
+// verified and isn't worth relying on.
+static volatile int g_clonk_opening = 0;
 static char *g_last_callstate_json = NULL; // most recent raw JSON from Go, pre-URI-injection
+// Keyframe-restart cooldown clock (see KEYFRAME_COOLDOWN_US / gowhatsapp_call_request_keyframe
+// below). Declared here, not next to its main use, so clonk_video_capture_start_reply can seed
+// it at call start -- that function runs earlier in this file than the keyframe-restart code.
+static gint64 g_last_keyframe_restart_us = 0;
+
+// Durable clonk-session-lifecycle log: every open/close/start/stop and every
+// gowhatsapp_call_video_active() flip, timestamped, appended to a plain file under
+// /media/internal. Needed because the fprintf(stderr,...) trail throughout this file only
+// survives while something is actively tailing imwrap.sh's stdout live -- reconstructing
+// what happened on a call after the fact (e.g. whether OnVideoState flapped and tore the
+// clonk session down/up repeatedly, moments after the incoming-video "black screen"/
+// instant-teardown symptom was captured) was otherwise impossible.
+static void clonk_diag_log(const char *fmt, ...) {
+	FILE *f = fopen("/media/internal/wacall_clonk.log", "a");
+	if (!f) return;
+	fprintf(f, "[%lld] ", (long long)(g_get_real_time() / 1000));
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(f, fmt, ap);
+	va_end(ap);
+	fprintf(f, "\n");
+	fclose(f);
+}
 
 static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
 static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx);
@@ -137,18 +172,60 @@ static void clonk_uri_call(const char *method, const char *payload, LSFilterFunc
 // putting our intended width in the h slot and our intended height in the fps slot lands the
 // CORRECT width/height in the actual applied caps once that bug reads them one field over.
 // Confirmed live: camsrc reaches PLAYING with zero GStreamer errors using exactly this shape.
+// Fires videoPlayerStart on the mainloop, once, a moment after videoCaptureStart's LS2
+// reply arrived. See clonk_video_capture_start_reply's comment for why this delay exists.
+static gboolean fire_video_player_start(gpointer data) {
+	(void)data;
+	clonk_diag_log("fire_video_player_start: issuing videoPlayerStart");
+	clonk_uri_call("videoPlayerStart", "{\"args\":[320,240]}", clonk_video_player_start_reply);
+	return FALSE; // one-shot
+}
+
 static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk videoCaptureStart: %s\n", LSMessageGetPayload(msg));
+	clonk_diag_log("clonk_video_capture_start_reply: %s", LSMessageGetPayload(msg));
 	// Thread A (capture->peer) must be bound+listening before videoPlayerStart triggers
 	// mediaserver's RunVideoHost() -- see WHATSAPP_VIDEO_STATUS.md Part 17 and skypekit.h.
 	skypekit_video_start();
-	clonk_uri_call("videoPlayerStart", "{\"args\":[320,240]}", clonk_video_player_start_reply);
+	// PREVIOUSLY just a blind 400ms g_timeout_add before firing videoPlayerStart, on the theory
+	// that the "resolution not set on capsfilter" WARN was benign and only needed the capture
+	// side's own state-change handling a moment to finish. Disproven by a real --gst-debug=6
+	// capture (GST_DEBUG_FILE, targeted at just the palmvideosink/basesink/GST_PADS/clonk
+	// categories to keep volume sane): the playback pipeline's palmvideosink genuinely FAILS its
+	// own READY->PAUSED state change (`PmMediaGstVideoSinkLib.c:621 "State change of parent
+	// element not a success"`) within ~100ms of entering PAUSED, and the whole clonk_video_play
+	// bin gets torn down to NULL within ~300ms of being built -- every single time, including on
+	// the very first videoPlayerStart of a call, with no restart/keyframe cycle involved at all.
+	// clonkvhsrc's own gst_skype_video_src_change_state fires the same WARN in the same window.
+	// Local camera preview (palmvideosink0/2/4, no network dependency) never fails this way; only
+	// the peer-video playback sink (which needs data flowing over the SkypeKit socket) does --
+	// pointing at Thread B specifically, not a fixed-delay-vs-capture-side race. Thread B must
+	// wait for Thread A to already be listening, then complete its OWN connect-retry loop (up to
+	// 500ms per attempt) before mediaserver's clonkvhsrc has anything to actually read -- a fixed
+	// 400ms delay could not reliably outlast that. Block here for a real "Thread B connected"
+	// signal instead of guessing a delay (see skypekit_video_wait_thread_b's own comment).
+	if (!skypekit_video_wait_thread_b(3000)) {
+		fprintf(stderr, "wa-call: skypekit thread B did not connect within 3s, "
+		                "firing videoPlayerStart anyway\n");
+	}
+	fire_video_player_start(NULL);
+	// Seed the keyframe-restart cooldown clock here, at call start, instead of leaving it at
+	// its zero-value default. Without this, the FIRST-ever gowhatsapp_call_request_keyframe()
+	// call always fires immediately regardless of KEYFRAME_COOLDOWN_US (now - 0 always exceeds
+	// any real cooldown), tearing down this freshly-built playback pipeline before it has any
+	// real chance to receive/decode/preroll a frame. Confirmed live: a real capture showed the
+	// H.264 decoder reaching PAUSED_TO_PLAYING, then the whole pipeline getting flushed only
+	// ~460ms later -- an early PLI from the peer (arriving within the first couple seconds,
+	// before it has ever decoded anything from us) killing the pipeline almost as soon as it's
+	// built, well before the 25s cooldown between LATER restarts ever gets a chance to help.
+	g_last_keyframe_restart_us = g_get_monotonic_time();
 	return true;
 }
 static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk videoPlayerStart: %s\n", LSMessageGetPayload(msg));
+	clonk_diag_log("clonk_video_player_start_reply: %s", LSMessageGetPayload(msg));
 	// NOTE: a videoPlayerStop+videoPlayerStart retry workaround was tried here (theorized
 	// from ClonkPipeline::initializeVPlayPipeline's "resolution not set on capsfilter"
 	// ordering bug) but was never actually confirmed against a peer that was sending real
@@ -173,14 +250,28 @@ static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *c
 static bool clonk_keyframe_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk keyframe-restart videoCaptureStart: %s\n", LSMessageGetPayload(msg));
+	clonk_diag_log("clonk_keyframe_start_reply: %s", LSMessageGetPayload(msg));
+	// PREVIOUSLY assumed (see clonk_keyframe_stop_reply's old comment) that videoCaptureStop
+	// only tears down the capture pipeline, leaving playback untouched. Disproven live via a
+	// real --gst-debug=4 capture of an actual call (GST_DEBUG_FILE, routed around the
+	// per-session mediaserver child that the upstart job's own stdout redirect never
+	// reached): the ENTIRE clonk_video_play bin -- palmvideosink1, video_decode_output_queue,
+	// clonk_vplay_h264dec, clonkvhsrc -- gets removed and gst_element_finalize'd roughly a
+	// second after the first videoPlayerStart, in lockstep with the first keyframe-restart
+	// cycle a real peer PLI triggers early in the call. initializeVPlayPipeline never runs
+	// again for the rest of the call. Since this handler previously only called
+	// videoCaptureStart and never videoPlayerStart again, incoming video rendering died
+	// permanently the moment the first real keyframe-restart happened -- exactly the reported
+	// "incoming video flickers/doesn't display" symptom. Rebuild playback the same way the
+	// first-time-open path does (clonk_video_capture_start_reply): give the capture side's own
+	// state-change handling a moment to finish, then fire videoPlayerStart.
+	g_timeout_add(400, fire_video_player_start, NULL);
 	return true;
 }
 static bool clonk_keyframe_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk keyframe-restart videoCaptureStop: %s\n", LSMessageGetPayload(msg));
-	// Thread A/B and the clonk session itself stay up throughout -- only the capture
-	// pipeline restarts, so no skypekit_video_start()/videoPlayerStart() here (unlike
-	// clonk_video_capture_start_reply's first-time-open sequence above).
+	clonk_diag_log("clonk_keyframe_stop_reply: %s", LSMessageGetPayload(msg));
 	clonk_uri_call("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonk_keyframe_start_reply);
 	return true;
 }
@@ -195,18 +286,33 @@ static bool clonk_keyframe_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 // after a few frames" symptom). Debounce: a restart already in flight, or one that completed
 // within the last KEYFRAME_COOLDOWN_US, absorbs further requests instead of stacking more
 // restarts on top - the fresh IDR from the most recent restart is still on its way regardless.
-#define KEYFRAME_COOLDOWN_US (5000 * 1000)
-static gint64 g_last_keyframe_restart_us = 0;
+//
+// Raised from 5s to 25s after a real --gst-debug=4 capture (GST_DEBUG_FILE, routed around the
+// per-session mediaserver child) showed every restart cycle in every real call landing almost
+// exactly 5-6s apart -- i.e. we were restarting the instant OUR OWN cooldown expired, not
+// because the peer's actual PLI rate demanded it. Confirmed the real cost of this: each restart
+// tears down BOTH pipelines the shared clonk session owns, not just capture (see
+// clonk_keyframe_start_reply's comment) -- the local self-preview PIP re-renders almost
+// instantly since it's fed straight from the camera, but the FULL-screen incoming-peer-video
+// pipeline depends on network-delivered, decoded data and never got a long enough uninterrupted
+// window to receive+decode+preroll a single frame before being torn down again for the next
+// cycle -- confirmed via the sink's own preroll/render calls: the PIP sink rendered every
+// cycle, the full-screen sink never once did, across an entire real call. A much longer cooldown
+// gives it a real chance.
+#define KEYFRAME_COOLDOWN_US (25000 * 1000)
 void gowhatsapp_call_request_keyframe(void) {
 	gint64 now;
 	if (!g_clonk_uri[0]) return;
 	now = g_get_monotonic_time();
 	if (now - g_last_keyframe_restart_us < KEYFRAME_COOLDOWN_US) {
 		fprintf(stderr, "wa-call: keyframe requested, within cooldown - absorbing\n");
+		clonk_diag_log("gowhatsapp_call_request_keyframe: absorbed (within cooldown, %lld us since last)",
+		               (long long)(now - g_last_keyframe_restart_us));
 		return;
 	}
 	g_last_keyframe_restart_us = now;
 	fprintf(stderr, "wa-call: keyframe requested, restarting capture\n");
+	clonk_diag_log("gowhatsapp_call_request_keyframe: restarting capture");
 	clonk_uri_call("videoCaptureStop", "{\"args\":[]}", clonk_keyframe_stop_reply);
 }
 
@@ -237,12 +343,14 @@ static void publish_callstate_locked(const char *json) {
 
 static bool clonk_open_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
+	g_clonk_opening = 0; // the open attempt this reply belongs to is no longer in flight
 	const char *p = LSMessageGetPayload(msg);
 	char uri[sizeof g_clonk_uri] = "";
 	if (p && json_str(p, "location", uri, sizeof uri)) {
 		strncpy(g_clonk_uri, uri, sizeof g_clonk_uri - 1);
 		g_clonk_uri[sizeof g_clonk_uri - 1] = 0;
 		fprintf(stderr, "wa-call: clonk session open: %s\n", g_clonk_uri);
+		clonk_diag_log("clonk_open_reply: session open %s", g_clonk_uri);
 		// Re-push immediately so subscribers get the real videoURI without waiting for
 		// the next unrelated call-state change.
 		if (g_last_callstate_json) publish_callstate_locked(g_last_callstate_json);
@@ -256,9 +364,19 @@ static bool clonk_open_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	return true;
 }
 
-// Opens a clonk session for the current call if one isn't already open. Idempotent.
+// Opens a clonk session for the current call if one isn't already open (or already being
+// opened). Idempotent -- g_clonk_opening is set here, synchronously, BEFORE the async LS2
+// call goes out, precisely so a second clonk_open() arriving before the first reply lands
+// (confirmed live: the dial path's OnReady and the incoming-video-triggered OnVideoState
+// path can both fire within the same moment) sees it and backs off, instead of both
+// racing past a check that only g_clonk_uri (populated inside the reply) would satisfy.
 static void clonk_open(void) {
-	if (g_clonk_uri[0] || !g_prv) return;
+	if (g_clonk_uri[0] || g_clonk_opening || !g_prv) {
+		clonk_diag_log("clonk_open: skipped (uri=%s opening=%d)", g_clonk_uri, g_clonk_opening);
+		return;
+	}
+	clonk_diag_log("clonk_open: issuing LSCallOneReply");
+	g_clonk_opening = 1;
 	LSError e;
 	LSErrorInit(&e);
 	LSMessageToken t;
@@ -266,6 +384,7 @@ static void clonk_open(void) {
 	                    clonk_open_reply, NULL, &t, &e)) {
 		fprintf(stderr, "wa-call: clonk open call failed: %s\n", e.message);
 		LSErrorFree(&e);
+		g_clonk_opening = 0; // no reply is coming to clear it for us
 	}
 }
 
@@ -281,16 +400,22 @@ static bool clonk_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 // with the rest of this long-lived service, so we don't disconnect to force that. A fresh
 // session is opened next time video starts.
 static void clonk_close(void) {
-	if (!g_clonk_uri[0]) return;
+	if (!g_clonk_uri[0]) {
+		clonk_diag_log("clonk_close: no-op (no uri open)");
+		return;
+	}
+	clonk_diag_log("clonk_close: tearing down session %s", g_clonk_uri);
 	skypekit_video_stop(); // stop our own socket threads before telling mediaserver to stop
 	clonk_uri_call_ctx("videoPlayerStop", "{\"args\":[]}", clonk_stop_reply, "videoPlayerStop");
 	clonk_uri_call_ctx("videoCaptureStop", "{\"args\":[]}", clonk_stop_reply, "videoCaptureStop");
 	g_clonk_uri[0] = 0;
+	g_clonk_opening = 0;
 }
 
 // Called from Go whenever this call's overall video state flips (see
 // gowhatsapp_go_call_changemedia and OnEnd in call.go).
 void gowhatsapp_call_video_active(int on) {
+	clonk_diag_log("gowhatsapp_call_video_active(%d)", on);
 	if (on) clonk_open(); else clonk_close();
 }
 
