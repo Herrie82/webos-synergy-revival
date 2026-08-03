@@ -28,7 +28,7 @@ new subsystems or UI paradigms not yet present in the app.
 | Media: GIF as animated media | ❌ Gap | S | S | **S-M** |
 | Voice calls | ✅ Done (+video, beyond scope) | — | — | — |
 | Groups: create/admin/invite | ❌ Gap | S (calls exist) | M-L (new screens) | **M-L** |
-| Communities (subgroup linking) | ❌ Gap | S (calls exist) | L-XL (new nav concept) | **L-XL** |
+| Communities (subgroup linking) | ❌ Gap | S-M (calls + blist filing) | S (nav concept already exists) | **M** |
 | Newsletters: create | ⚠️ Follow-only | S | S-M | **S-M** |
 | Status posts | ❌ Gap | M (audience logic) | L-XL (new UI paradigm) | **L-XL** |
 | Contacts: phone lookup | ❌ Gap | S | S | **S** |
@@ -71,17 +71,40 @@ lock/approval-mode/add-mode toggles), and a "pending join requests" queue screen
 UI pieces exist today; they'd be new Enyo views, though following well-trodden patterns (similar
 in shape to the existing swipe/menu actions in `ConversationList.js`).
 
-### Communities (subgroup linking) — L-XL
-Notably, **`ReqCreateGroup` already has an `IsParent` (`types.GroupParent`) field** — creating a
-community is the *same* `CreateGroup` call with one field set; `LinkGroup`/`UnlinkGroup`,
-`GetSubGroups`, and `GetLinkedGroupsParticipants` are all already exported too. So unlike groups,
-protocol complexity here is genuinely low. The cost is entirely architectural on the UI/data side:
-the webOS Messaging app's data model and `ConversationList` are built around a **flat list of
-1:1/group chat threads** — there's no existing concept of "a chat that is itself a collection of
-other chats." Introducing communities means either extending the chatthreader's linking logic
-(precedent: the existing group-name/JID chatthreader work) or bolting on a new navigational layer.
-This is the one item on this list where the limiting factor is the app's data model, not the
-wire protocol.
+### Communities (subgroup linking) — M
+**Correction from an earlier pass of this doc, prompted by a good push-back**: this was originally
+scored L-XL on the assumption that the Messaging app has no "a chat that is itself a collection of
+other chats" concept. That's wrong — it already does, and it's already generic across protocols.
+
+`com.palm.app.messaging/app/servers/` (`ServerList.js`/`ChannelList.js`/`ServerService.js`) is a
+shipped two-level drill-down (server list → that server's channel list → opens the channel's
+chatthread in the normal `ChatView`) backed by two real db8 kinds, **`com.palm.imserver:1`** and
+**`com.palm.imchannel:1`** (`imchannel.serverId` points at its parent `imserver`). It's already
+protocol-agnostic — the empty-state copy literally reads *"Add a Discord, IRC, Teams, Slack or
+Matrix account to see its servers here"* — and it's populated by a native mechanism
+(`LibpurpleAdapter::enumerateServersChannels` → `IMServiceHandler::syncServersChannels`, in
+`imlibpurpleservice`) that has **already been extended once for WhatsApp specifically**: followed
+newsletters/channels are synthesized into a single "WhatsApp Channels" pseudo-server today (see the
+`type_whatsapp`-specific block in `enumerateServersChannels`), so there's a direct, working
+precedent for "WhatsApp thing → entry in the Servers tab" already in this exact codebase.
+
+Crucially, the generic mechanism's "which guild does this chat belong to" signal is **just a
+naming convention on the purple buddy-list group** — `deriveServerName()` splits a blist group's
+name on `": "` (`"GuildName: Category"`), which is how Discord/Teams signal hierarchy today (no
+special per-protocol API, just a string convention `purple-discord`/`purple-teams` already follow
+when filing chats into blist groups). And on the whatsmeow side, `types.GroupInfo` already embeds
+**`GroupLinkedParent.LinkedParentJID`** directly — every group/subgroup we already receive via
+`JoinedGroup`/`GetGroupInfo` already tells us which community it belongs to, no extra polling
+needed (`GetSubGroups`/`GetLinkedGroupsParticipants` exist too, for completeness/backfill).
+
+So the real remaining work is narrow: when a group's `LinkedParentJID` is set, file its purple
+chat under a blist group named `"<CommunityDisplayName>: "` (`glue/blist.c` already provides blist
+manipulation primitives) instead of today's flat `"Whatsapp"` bucket, and resolve/cache the
+community's own display name (one `GetGroupInfo` call on the parent JID). That's it — the generic
+Servers/Rooms machinery (`imserver`/`imchannel`, the `ServerList`/`ChannelList` UI, unread
+aggregation) needs **zero changes**. In size and shape this is comparable to the ~100-line
+"WhatsApp Channels" synthetic-server block that's already shipped in `enumerateServersChannels` —
+a bounded, precedented addition, not a new subsystem.
 
 ### Newsletter creation — S-M
 `CreateNewsletter(ctx, CreateNewsletterParams{Name, Description, Picture})` already exists and
@@ -180,8 +203,10 @@ own profile (name/status/photo), GIF send.
 
 **Medium lifts** (backend mostly solved, meaningful but bounded new UI):
 newsletter creation, chat actions (archive/pin/mute/star), privacy settings + disappearing
-messages (incl. the local purge job), basic group create/admin/invite.
+messages (incl. the local purge job), basic group create/admin/invite, communities (rides the
+existing Servers/Rooms `imserver`/`imchannel` infrastructure — see correction above).
 
-**Large, architecture-touching** (save for last, or scope as their own mini-projects):
-communities (needs a new "collection of chats" concept in the app's data model), status posts
-(needs a genuinely new full-screen UI paradigm — closer to a new feature than an extension).
+**Large, architecture-touching** (save for last, or scope as its own mini-project):
+status posts — needs a genuinely new full-screen UI paradigm (story viewer, capture flow, 24h
+expiry, view tracking) with no existing analog in the app. This is the one item on the whole list
+that's closer to building a new feature than extending an existing one.
