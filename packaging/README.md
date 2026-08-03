@@ -14,11 +14,20 @@ actually be wired up.
 
 Install order:
 
-1. **`org.webosports.synergy.generic`** first, always — every other package depends on it
+1. **`org.webosports.synergy.generic`** first, always — every other package needs it
    (`imlibpurpleservice`, the shared libpurple engine, `_cloudcore`, QuickOffice/Photos/DocViewer
    integration, and the `device-setup/*` device fixes).
 2. Any connector package(s) you want (`org.webosports.synergy.dropbox`, `.teams`, `.telegram`, …).
    `org.webosports.cdav` (CardDAV/CalDAV) is fully self-contained and has no dependency on generic.
+
+Connector `control` files deliberately do **not** carry a formal `Depends: org.webosports.synergy.generic`
+line — confirmed live that WebOSQuickInstall/Preware refuse the install client-side ("Unable to
+install", no trace of the attempt ever reaching the device's own `ApplicationInstallerUtility`/`ipkg`)
+when they can't verify a declared dependency against their own subscribed feed, which a side-loaded,
+non-feed package like `generic` never is — even though it's actually installed and `ipkg` itself is
+completely happy with it. This is advisory-only anyway: neither `ipkg` nor our own postinst/prerm
+rely on the `Depends:` field functionally, so dropping it costs nothing except the client tool's own
+(broken, in this case) enforcement. Install order above is honor-system, not machine-enforced.
 
 ## Rebuild
 
