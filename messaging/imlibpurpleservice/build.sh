@@ -72,16 +72,20 @@ echo "=== Linking $OUT ==="
 LIBDIRS="-L$LIBSTUB -L$PURPLE/lib -L$GLIB_STAGING/lib -L$TIDY/lib"
 RPATHLINK="-Wl,-rpath-link,$LIBSTUB -Wl,-rpath-link,$PURPLE/lib -Wl,-rpath-link,$GLIB_STAGING/lib -Wl,-rpath-link,$TIDY/lib"
 
-# Point the interpreter at the wpe-glibc loader, NOT the Teams port's /lib/ld-teams.so.3. Both are
-# glibc 2.23 but different builds; the ld-teams build SIGSEGVs purple-signal's in-process JVM
-# (libjvm.so), while the wpe-glibc build runs it. Since the JVM is created in-process
-# (JNI_CreateJavaVM), the whole transport must load under the JVM-compatible glibc. imwrap.sh pairs
-# this by putting /media/cryptofs/wpe-glibc/lib first on LD_LIBRARY_PATH so the matching libc/pthread
-# load. The stock 2011 /lib/ld-linux.so.3 mis-resolves GNU_UNIQUE symbols and is not an option either.
-# NB: wpe-glibc lives on /media/cryptofs (NOT /media/internal) so the transport's mmap'd glibc doesn't
-# pin the USB-exported vfat and block "USB drive" mode (see usb-drive-mode-media-internal-blockers).
+# Point the interpreter at the synergy-glibc loader, NOT the Teams port's /lib/ld-teams.so.3. Both
+# are glibc 2.23 but different builds; the ld-teams build SIGSEGVs purple-signal's in-process JVM
+# (libjvm.so), while synergy-glibc runs it. Since the JVM is created in-process (JNI_CreateJavaVM),
+# the whole transport must load under the JVM-compatible glibc. imwrap.sh pairs this by putting
+# /media/cryptofs/synergy-glibc/lib first on LD_LIBRARY_PATH so the matching libc/pthread load.
+# The stock 2011 /lib/ld-linux.so.3 mis-resolves GNU_UNIQUE symbols and is not an option either.
+# NB: synergy-glibc lives on /media/cryptofs (NOT /media/internal) so the transport's mmap'd glibc
+# doesn't pin the USB-exported vfat and block "USB drive" mode (see
+# usb-drive-mode-media-internal-blockers). It is a specific frozen glibc 2.23 build (crosstool-NG)
+# -- NOT interchangeable with Atlas's own wpe-252 deviceroot despite both self-reporting "glibc
+# 2.23": confirmed live that swapping in Atlas's current build SIGSEGVs immediately when the kernel
+# loads it as this interpreter (different build/config, not ABI-compatible with this binary).
 $CXX $CXXFLAGS $OBJS -o "$OUT" \
-  -Wl,--dynamic-linker=/media/cryptofs/wpe-glibc/lib/ld-linux.so.3 \
+  -Wl,--dynamic-linker=/media/cryptofs/synergy-glibc/lib/ld-linux.so.3 \
   $LIBDIRS $RPATHLINK -Wl,--allow-shlib-undefined \
   -lmojodb -lmojocore -lmojoluna -llunaservice \
   -lpurple -ltidy -lrt -lpthread \

@@ -142,6 +142,43 @@ for so in libopus.so.0 libogg.so.0 libopusfile.so.0; do
   [ -f "$WPE/$so" ] && cp -L "$WPE/$so" "$STAGE/$BACKEND_LIB/$so"
 done
 
+echo "== generic: synergy-glibc (the transport's ELF interpreter + matching libc) =="
+# imlibpurpletransport's ELF interpreter is patched (build.sh --dynamic-linker) to
+# /media/cryptofs/synergy-glibc/lib/ld-linux.so.3, and imwrap.sh puts synergy-glibc/lib FIRST on
+# LD_LIBRARY_PATH so the matching libc/pthread/dl/rt load (loader<->libc are build-coupled; see
+# imwrap.sh's big comment on why Atlas's own wpe-252 glibc can't substitute here - confirmed live
+# SIGSEGV). This directory was, until now, never actually shipped by any package - every device
+# needed it hand-provisioned once (see files/var/README-device-launch.md), and a device missing it
+# crash-loops the transport with "env: can't execute .../imlibpurpletransport: No such file or
+# directory" (confirmed live). The exact frozen glibc 2.23 build is the crosstool-NG gcc125
+# toolchain's own sysroot -- the same one build.sh uses to LINK the transport against this
+# interpreter in the first place.
+#
+# Curated, not the whole sysroot/lib (~56MB, 61 files): only what `readelf -d` needs from glibc
+# itself, checked against BOTH the transport binary (build-arm/imlibpurpletransport) AND every
+# connector's own prpl .so (they're dlopen'd by libpurple at runtime, so their NEEDED libs don't
+# show up in the transport's own readelf -d at all - libutil.so.1 was missed at first for exactly
+# this reason, only showing up on purple-presage/libpresage.so, Signal's plugin). Covers:
+# libc/libpthread/librt/libm/libgcc_s/libutil (direct NEEDED, transport or a prpl), libdl (dlopen,
+# used internally by libc/glib), and the NSS pieces real network use needs (libresolv +
+# libnss_dns/libnss_files, which libc dlopen's per /etc/nsswitch.conf - not visible in readelf -d
+# at all). Everything else the transport or a prpl needs either isn't glibc (libpurple/libtidy/
+# libopus/libglib/libssl+libcrypto/liblunaservice/libjvm/... - system, WPE staging, or elsewhere
+# in this script)
+# or is already staged once into synergy-runtime above (libstdc++, libnsl) - duplicating those
+# here would be dead weight, not a second copy anything actually loads from this dir.
+GLIBC_SYSROOT="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/sysroot/lib"
+mkdir -p "$STAGE/media/cryptofs/synergy-glibc/lib"
+# -L: dereference symlinks into real file copies (e.g. ld-linux.so.3 -> ld-2.23.so's actual bytes,
+# under the ld-linux.so.3 name) - cryptofs (FUSE) rejects symlink() outright (confirmed live
+# elsewhere in this repo, see stage_root_dir's comment), so a real symlink here would fail the same
+# way at install time. A plain-file copy under each name works identically at runtime.
+for so in ld-linux.so.3 libc.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libm.so.6 \
+          libgcc_s.so.1 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2 libutil.so.1; do
+  [ -e "$GLIBC_SYSROOT/$so" ] && cp -L "$GLIBC_SYSROOT/$so" "$STAGE/media/cryptofs/synergy-glibc/lib/$so" \
+    || echo "!! synergy-glibc: $so missing from $GLIBC_SYSROOT" >&2
+done
+
 echo "== generic: cloudcore (shared by every cloud connector) =="
 stage_root_dir "$REPO/cloud/cloudcore/service/_cloudcore" "/$SERVICES_ROOT/_cloudcore"
 stage_app "$REPO/cloud/cloudcore/auth/com.palm.app.cloud-auth" com.palm.app.cloud-auth
