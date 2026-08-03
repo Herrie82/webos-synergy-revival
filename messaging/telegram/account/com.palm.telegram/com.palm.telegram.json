@@ -68,6 +68,7 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.telegram.contacts",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
@@ -78,8 +79,15 @@
             "capability": "PHONE",
             "id": "com.palm.telegram.call",
             "loc_shortName": "Telegram",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.telegram.call/",
             "serviceName": "type_telegram",
+            "wanAllowed": true,
+            "wifiAllowed": true,
+            "pausePrompt": false,
+            "pauseCode": [],
+            "waitCode": [],
+            "keyHoldMappings": [],
             "videoFormat": "both"
         }
     ]

@@ -60,6 +60,7 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.signal.contacts",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
@@ -70,8 +71,15 @@
             "capability": "PHONE",
             "id": "com.palm.signal.call",
             "loc_shortName": "Signal",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.signal.call/",
             "serviceName": "type_signal",
+            "wanAllowed": true,
+            "wifiAllowed": true,
+            "pausePrompt": false,
+            "pauseCode": [],
+            "waitCode": [],
+            "keyHoldMappings": [],
             "videoFormat": "both"
         }
     ]

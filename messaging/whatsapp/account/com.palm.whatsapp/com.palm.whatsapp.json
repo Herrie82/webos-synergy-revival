@@ -64,6 +64,7 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.whatsapp.contacts",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
             "readOnlyData": true,
             "db_kinds": {
@@ -73,6 +74,7 @@
         {
             "capability": "PHONE",
             "id": "com.palm.whatsapp.call",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.whatsapp.call/",
             "serviceName": "type_whatsapp",
             "wanAllowed": true,

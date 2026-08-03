@@ -65,6 +65,7 @@
             {
                 "capability": "CONTACTS",
                 "id": "com.palm.teams.contacts",
+                "alwaysOn": true,
                 "implementation": "palm://com.palm.imlibpurple/",
                 "readOnlyData": true,
                 "db_kinds": {
@@ -75,8 +76,15 @@
                 "capability": "PHONE",
                 "id": "com.palm.teams.call",
                 "loc_shortName": "Teams",
+                "alwaysOn": true,
                 "implementation": "palm://com.palm.teams.call/",
                 "serviceName": "type_teams",
+                "wanAllowed": true,
+                "wifiAllowed": true,
+                "pausePrompt": false,
+                "pauseCode": [],
+                "waitCode": [],
+                "keyHoldMappings": [],
                 "videoFormat": "both"
             }
         ]
