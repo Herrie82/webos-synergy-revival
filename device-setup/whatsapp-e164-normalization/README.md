@@ -21,19 +21,23 @@ this by borrowing the sender's `from.name`; an outgoing-only thread had no fallb
 1. **`messaging.library` `normalizeAddress`** now canonicalizes WhatsApp to E.164: strip
    `@s.whatsapp.net`, then ensure a leading `+` for a bare phone-number id (opaque `<id>@lid` /
    `@newsletter` are left as-is). Now the chatthread key == the contacts-side `normalizedValue`.
-   (core-apps commit; shipped here as `messaging.library-utils.js` + `messaging.library-concatenated.js`.)
-2. **One-time migration** (`migrate-ondevice.sh`) rekeys existing bare WhatsApp chatthreads → `+phone`
-   so they don't fork when the new normalize starts emitting `+phone`.
+   **This lives in the `core-apps` repo (`messaging.library/`) and is deployed by
+   `packaging/core-apps`** — not by anything in this directory.
+2. **One-time migration** (`migrate-ondevice.sh`, this directory) rekeys existing bare WhatsApp
+   chatthreads → `+phone` so they don't fork when the new normalize starts emitting `+phone`.
 3. **Revert** the earlier `contacts.plugin.messaging/utils.js` "+"-strip band-aid to stock — under
-   E.164 the stock `getUnassociatedChatThreads` matches verbatim (`+phone` == `+phone`).
+   E.164 the stock `getUnassociatedChatThreads` matches verbatim (`+phone` == `+phone`). Also this
+   directory (device-side revert, not source code — there's nothing to commit for "restore to
+   stock").
 
 With both sides on `+phone`, `Person.findByIM` (already keeps "+") and `getUnassociatedChatThreads`
 (stock) both match, so threads link to their contact at message time **and** at contact sync/relink.
 
 ## Install
-`sh install.sh` (over novacom). Order: migrate keys → deploy lib → revert plugin. There is a tiny
-transition window where an in-flight WhatsApp message could fork a thread; `migrate-ondevice.sh`
-reports any duplicate `+phone` key for a manual merge. Best run while not actively WhatsApp-chatting.
+Install/update the `core-apps` package first (deploys the lib fix), then `sh install.sh` here (over
+novacom) for the migration + band-aid revert. There is a tiny transition window where an in-flight
+WhatsApp message could fork a thread; `migrate-ondevice.sh` reports any duplicate `+phone` key for a
+manual merge. Best run while not actively WhatsApp-chatting.
 
 **After install: relaunch the Messaging app** (close the card + reopen) so it loads the new
 `normalizeAddress`. The chatthreader forks per-activity and picks it up on the next message.
@@ -45,9 +49,10 @@ luna-send -i -a com.palm.configurator palm://com.palm.db/find \
 ```
 
 ## Relation to `../chatthreader-person-link-fix`
-That package's `newmessageassistant.js` imbuddystatus fallback + `repair-existing-threads.sh` remain as
-a defensive backstop / a one-time repair for threads already missing a `personId`. Its
-`contacts-plugin-messaging-utils.js` "+"-strip is superseded and reverted by this package.
+That directory's `repair-existing-threads.sh` remains as a one-time repair for threads already
+missing a `personId` (the `newmessageassistant.js` fix itself now lives in the
+`com.palm.messaging.chatthreader` repo, deployed by `packaging/core-apps`).
 
 ## Undo
-Restore `*.b4e164` for the lib, re-migrate `+phone`→bare, and restore the contacts plugin from git.
+Re-migrate `+phone`→bare (this directory) and restore the contacts plugin from its own backup;
+restore the lib itself via the `core-apps` package's own prerm.
