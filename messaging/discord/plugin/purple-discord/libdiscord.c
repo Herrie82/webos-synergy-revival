@@ -3007,6 +3007,15 @@ discord_process_message(DiscordAccount *da, JsonObject *data, unsigned special_t
 	 * call discord_process_message twice for the same id and create a duplicate immessage in db8.
 	 * Edits/pins deliberately re-touch an existing id, so they are exempt. */
 	if (special_type == DISCORD_MESSAGE_NORMAL && msg_id != 0) {
+		/* webOS: da->received_message_ids can be NULL here if discord_close() tore it down
+		 * while a backlog of queued/in-flight messages was still being delivered (seen live:
+		 * a burst of these calls with a NULL table froze the whole imtransport process, since
+		 * g_hash_table_contains/insert on NULL just logs a GLib-CRITICAL and returns without
+		 * ever making progress, spinning the caller). Lazily recreate it, matching the same
+		 * guard already used elsewhere in this file for the other da->*_ids tables. */
+		if (da->received_message_ids == NULL) {
+			da->received_message_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		}
 		gchar *id_key = from_int(msg_id);
 		if (g_hash_table_contains(da->received_message_ids, id_key)) {
 			g_free(id_key);
