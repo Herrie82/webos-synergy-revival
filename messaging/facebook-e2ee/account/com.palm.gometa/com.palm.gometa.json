@@ -61,7 +61,9 @@
         {
             "capability": "CONTACTS",
             "id": "com.palm.gometa.contacts",
+            "alwaysOn": true,
             "implementation": "palm://com.palm.imlibpurple/",
+            "sync": "palm://com.palm.imlibpurple/sync",
             "readOnlyData": true,
             "db_kinds": {
                 "contact": "com.palm.contact.libpurple:1"
