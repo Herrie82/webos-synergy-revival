@@ -79,7 +79,8 @@
             "id": "com.palm.telegram.call",
             "loc_shortName": "Telegram",
             "implementation": "palm://com.palm.telegram.call/",
-            "serviceName": "type_telegram"
+            "serviceName": "type_telegram",
+            "videoFormat": "both"
         }
     ]
 }]

@@ -71,7 +71,8 @@
             "id": "com.palm.signal.call",
             "loc_shortName": "Signal",
             "implementation": "palm://com.palm.signal.call/",
-            "serviceName": "type_signal"
+            "serviceName": "type_signal",
+            "videoFormat": "both"
         }
     ]
 }]
