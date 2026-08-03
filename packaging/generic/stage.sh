@@ -14,6 +14,8 @@ REPO="$(cd "$HERE/../.." && pwd)"
 STAGE="$1"
 NAME=generic
 # shellcheck source=/dev/null
+source "$HERE/control.env"
+# shellcheck source=/dev/null
 source "$REPO/packaging/lib/common.sh"
 
 # device-setup/QuickOffice/Photos payloads: postinst reads/executes these in custom, per-fix ways

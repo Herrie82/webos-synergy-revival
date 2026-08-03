@@ -6,27 +6,42 @@
 # originally applied by hand over novacom).
 set +e
 DS=/media/cryptofs/synergy-revival/device-setup
-# $OV is scoped per-package at build time (packaging/lib/common.sh's overwrite_rel(), keyed by
-# $NAME) -- ipkg's file-ownership tracking is by exact path regardless of whether the file still
-# physically exists after postinst deletes it, so a shared literal path collides across packages
-# (confirmed live: dropbox failed with ".symlinks... already provided by package
-# org.webosports.synergy.generic" even though generic's own postinst had already deleted its
-# copy). Glob for whichever subdirectory THIS package's data.tar.gz actually populated -- ipkg
-# fully installs+configures one package before starting the next, so there's never a moment where
-# two packages' subdirectories coexist here.
+
+# Derive our own package id from how this script was invoked: either the direct-install path
+# (/usr/lib/ipkg/info/<pkg-id>.postinst, confirmed live) or the Preware/WebOS Quick Install
+# offline-root path (/media/cryptofs/apps/.scripts/<pkg-id>/pmPostInstall.script -- ipkg's
+# offline-root mode skips running control.tar.gz's own postinst entirely, confirmed live; that's
+# what pmPostInstall.script, added as a top-level ar member by make-ipk.sh, is FOR). $OV is scoped
+# per-package at build time by exactly this same id (packaging/lib/common.sh's overwrite_rel(),
+# keyed by $PKG_ID) so this looks up EXACTLY our own staged subdirectory -- not just "whichever
+# subdirectory happens to have one", which is unsafe if more than one package's staged data is
+# ever present at once (not something this session could verify either way for the App Installer's
+# real batching behavior, so guard against it rather than assume single-package-at-a-time).
+case "$0" in
+  */pmPostInstall.script) PKGID="$(basename "$(dirname "$0")")" ;;
+  *.postinst) PKGID="$(basename "$0" .postinst)" ;;
+  *) PKGID="" ;;
+esac
+
 OV=""
-for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
-  [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
-done
+if [ -n "$PKGID" ]; then
+  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
+    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
+  done
+fi
+# Fallback (should never trigger given the above -- kept only in case PKGID derivation ever fails
+# for an invocation pattern this session didn't see): old "first match" behavior.
+if [ -z "$OV" ]; then
+  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+  done
+fi
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
-# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.postinst (confirmed live: $0 is that
-# exact path) -- derive our own package id from it so APPLIED below is scoped per-package too:
-# it's a *persistent* manifest that outlives $OV (which gets wiped each run), so without this it
-# would accumulate every OTHER connector's entries as well, and every connector's prerm would see
-# (and try to remove) all of them.
-PKGID="$(basename "$0" | sed 's/\.postinst$//')"
+# APPLIED is a *persistent* manifest that outlives $OV (which gets wiped below), scoped by the
+# same PKGID so it doesn't accumulate every OTHER connector's entries -- otherwise every
+# connector's prerm would see (and try to remove) all of them.
 APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
 
 # Copies everything staged under $OV (by stage_root_file/stage_root_dir/stage_account/

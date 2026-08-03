@@ -5,18 +5,31 @@
 set +e
 SVCID=org.webosports.service.cdav
 APPID=org.webosports.app.cdav
-# $OV is scoped per-package at build time (packaging/lib/common.sh's overwrite_rel(), keyed by
-# $NAME) -- ipkg's file-ownership tracking is by exact path regardless of whether the file still
-# physically exists after postinst deletes it, so a shared literal path collides across packages
-# (confirmed live: dropbox failed with ".symlinks... already provided by package
-# org.webosports.synergy.generic" even though generic's own postinst had already deleted its
-# copy). Glob for whichever subdirectory THIS package's data.tar.gz actually populated -- ipkg
-# fully installs+configures one package before starting the next, so there's never a moment where
-# two packages' subdirectories coexist here.
+
+# Derive our own package id from how this script was invoked -- see generic/postinst's matching
+# comment for the full rationale (offline-root pmPostInstall.script vs direct .postinst). $OV is
+# scoped per-package at build time by exactly this same id (packaging/lib/common.sh's
+# overwrite_rel(), keyed by $PKG_ID), so this looks up EXACTLY our own staged subdirectory instead
+# of blindly taking whichever one happens to exist.
+case "$0" in
+  */pmPostInstall.script) PKGID="$(basename "$(dirname "$0")")" ;;
+  *.postinst) PKGID="$(basename "$0" .postinst)" ;;
+  *) PKGID="" ;;
+esac
+
 OV=""
-for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
-  [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
-done
+if [ -n "$PKGID" ]; then
+  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
+    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
+  done
+fi
+# Fallback (should never trigger -- kept only in case PKGID derivation ever fails for an
+# invocation pattern this session didn't see): old "first match" behavior.
+if [ -z "$OV" ]; then
+  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+  done
+fi
 BAK=/media/cryptofs/synergy-stock-backup
 
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null

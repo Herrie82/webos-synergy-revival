@@ -18,16 +18,23 @@ SERVICES_ROOT="usr/palm/services"
 # postinst function (duplicated into each package family's postinst) copies everything staged
 # here to its real destination, backing up whatever's already there first.
 #
-# Scoped per-package (via $NAME, which every caller must set before staging anything -- messaging/
-# cloud's stage.sh already receive it as $1; generic/carddav set it to a fixed string) rather than
+# Scoped per-package via $PKG_ID (every stage.sh must `source` its own package's control.env --
+# right next to it, e.g. packaging/cloud/$NAME/control.env -- before staging anything) rather than
 # one shared path: ipkg's file-ownership tracking is by exact path REGARDLESS of whether the file
 # still physically exists after postinst deletes it (confirmed live: installing dropbox after
 # generic failed with "wants to install .../rootfs-overwrite/.symlinks, but that file is already
 # provided by package org.webosports.synergy.generic", even though generic's own postinst had
 # already deleted its copy of that same literal path).
+#
+# Deliberately PKG_ID (org.webosports.synergy.teams), not the short connector $NAME (teams): the
+# corresponding postinst derives its OWN pkg id from how it was invoked ($0) and must look up
+# EXACTLY its own staged subdirectory here, not just "whichever one happens to exist" -- unsafe if
+# more than one package's staged data is ever present at once (flagged as a real risk: the old
+# NAME-keyed path couldn't be matched against $0's pkg id at all, since they're spelled
+# differently, leaving postinst no choice but to blindly glob).
 overwrite_rel() {
-  : "${NAME:?NAME must be set before staging anything through OVERWRITE (stage_root_file/stage_root_dir/stage_account/stage_service)}"
-  printf 'media/cryptofs/synergy-revival/rootfs-overwrite/%s' "$NAME"
+  : "${PKG_ID:?PKG_ID must be set (source this package control.env) before staging anything through OVERWRITE (stage_root_file/stage_root_dir/stage_account/stage_service)}"
+  printf 'media/cryptofs/synergy-revival/rootfs-overwrite/%s' "$PKG_ID"
 }
 # libpurple.so's own compiled-in plugin search path is /usr/lib/purple-2, and the shared runtime
 # deps dir is /usr/lib/synergy-runtime -- but root (/dev/mapper/store-root) is a FIXED, TINY 559MB

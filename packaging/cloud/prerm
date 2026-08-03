@@ -10,8 +10,13 @@ log() { echo "[synergy-cloud] $*"; }
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
-# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.prerm -- see postinst's matching comment.
-PKGID="$(basename "$0" | sed 's/\.prerm$//')"
+# Derived the same way as postinst (direct /usr/lib/ipkg/info/<pkg-id>.prerm, or Preware/WebOS
+# Quick Install's offline-root .../pmPreRemove.script) -- see postinst's matching comment.
+case "$0" in
+  */pmPreRemove.script) PKGID="$(basename "$(dirname "$0")")" ;;
+  *.prerm) PKGID="$(basename "$0" .prerm)" ;;
+  *) PKGID="" ;;
+esac
 APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
 
 if [ -f "$APPLIED" ]; then

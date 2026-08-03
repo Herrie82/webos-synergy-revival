@@ -4,9 +4,14 @@
 # db8 records) alone. Best-effort: every step logs and continues on failure.
 set +e
 log() { echo "[synergy-generic] $*"; }
-# ipkg invokes this script as /usr/lib/ipkg/info/<pkg-id>.prerm -- see postinst's matching
-# comment for why APPLIED needs this per-package scoping.
-PKGID="$(basename "$0" | sed 's/\.prerm$//')"
+# Derived the same way as postinst (direct /usr/lib/ipkg/info/<pkg-id>.prerm, or Preware/WebOS
+# Quick Install's offline-root .../pmPreRemove.script) -- see postinst's matching comment for why
+# APPLIED needs this per-package scoping.
+case "$0" in
+  */pmPreRemove.script) PKGID="$(basename "$(dirname "$0")")" ;;
+  *.prerm) PKGID="$(basename "$0" .prerm)" ;;
+  *) PKGID="" ;;
+esac
 
 log "stopping imtransport..."
 stop imtransport 2>/dev/null

@@ -8,6 +8,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 NAME="$1"; STAGE="$2"
+[ -f "$HERE/$NAME/control.env" ] || { echo "!! unknown cloud connector: $NAME" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$HERE/$NAME/control.env"
 # shellcheck source=/dev/null
 source "$REPO/packaging/lib/common.sh"
 

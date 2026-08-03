@@ -10,6 +10,8 @@ REPO="$(cd "$HERE/../.." && pwd)"
 STAGE="$1"
 NAME=carddav
 # shellcheck source=/dev/null
+source "$HERE/control.env"
+# shellcheck source=/dev/null
 source "$REPO/packaging/lib/common.sh"
 ROOT="$REPO/carddav"
 DEPLOY="$ROOT/deploy"
