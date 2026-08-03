@@ -19,7 +19,7 @@ set +e
 # fully installs+configures one package before starting the next, so there's never a moment where
 # two packages' subdirectories coexist here.
 OV=""
-for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
   [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
 done
 BAK=/media/cryptofs/synergy-stock-backup
