@@ -34,6 +34,17 @@ func GetAnyPollCreationMessage(message *waE2E.Message) *waE2E.PollCreationMessag
 	return nil
 }
 
+// messageHasAttachment reports whether message carries a media payload that handle_attachment will
+// turn into its own bubble - used to skip the redundant "[STATUS] " placeholder text for a status
+// update that already has a picture/video/etc, so it doesn't show up as two separate messages.
+func messageHasAttachment(message *waE2E.Message) bool {
+	return message.GetImageMessage() != nil ||
+		message.GetVideoMessage() != nil ||
+		message.GetAudioMessage() != nil ||
+		message.GetDocumentMessage() != nil ||
+		message.GetStickerMessage() != nil
+}
+
 // write_link_preview_thumbnail persists an ExtendedTextMessage's inline link-preview JPEG thumbnail
 // to the account's attachment directory and returns a file:// URL for it (or "" on failure / when the
 // attachment path isn't configured). The directory is the static prefix of the account's
@@ -77,11 +88,30 @@ func (handler *Handler) handle_message(message *waE2E.Message, info types.Messag
 			handler.log.Warnf("Ignoring status broadcast.")
 			return
 		} else {
-			// the protocol implements status broadcasts in the form of a group
-			// we just treat those messages as if they were direct messages
-			info.MessageSource.Chat = info.MessageSource.Sender
+			// webOS: route status updates into the Servers tab (like followed WhatsApp Channels)
+			// instead of masquerading as an ordinary 1:1 chat from the sender - collapsing Chat to
+			// Sender made every status update show up as a random new chat (e.g. "+31630828957").
+			// Use a synthetic "<phone>@broadcast" JID (types.BroadcastServer) so LibpurpleAdapter's
+			// incoming_message_cb can recognize + bucket it (isWhatsAppStatus), the same way
+			// "<id>@newsletter" is recognized for followed Channels.
+			statusJid := types.JID{User: info.MessageSource.Sender.User, Server: types.BroadcastServer}
+			name := info.PushName
+			if name == "" {
+				name = purple_get_alias(handler.account, info.MessageSource.Sender.ToNonAD().String())
+			}
+			if name != "" {
+				// creates/aliases the synthetic status buddy, same sink fetch_newsletter_names uses
+				purple_update_name(handler.account, statusJid.String(), name)
+			}
+			info.MessageSource.Chat = statusJid
 			info.MessageSource.IsGroup = false
-			text = "[STATUS] "
+			// A status update reaching us TWICE as separate bubbles (a "[STATUS]" placeholder plus
+			// the actual media) was the "two messages instead of one" bug: only stamp the "[STATUS]"
+			// marker for a text-only update. A media status still gets exactly one bubble from
+			// handle_attachment below (which already folds in the media's own caption, if any).
+			if !messageHasAttachment(message) {
+				text = "[STATUS] "
+			}
 		}
 	}
 	if handler.blocklist != nil {
