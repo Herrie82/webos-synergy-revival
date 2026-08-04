@@ -55,10 +55,10 @@ history survive an upgrade untouched.
 
 | Package | Version | Repo | Stock baseline |
 |---|---|---|---|
-| `com.palm.app.accounts` | 3.1.1 | core-apps | 3.0-40 |
-| `com.palm.app.phone` | 3.1.1 | core-apps | 3.0-84.2 |
-| `com.palm.app.messaging` | 3.1.0 | core-apps | 3.0-66.2 |
-| `messaging.library` | 1.4.0 | core-apps | 1.0-1.3 |
+| `com.palm.app.accounts` | 1.0.0 | core-apps | 3.0-40 |
+| `com.palm.app.phone` | 2.0.1 | core-apps | 3.0-84.2 |
+| `com.palm.app.messaging` | 3.0.6607 | core-apps | 3.0-66.2 |
+| `messaging.library` | 1.3.1 | core-apps | 1.0-1.3 |
 | `contacts.plugin.messaging` | 12.2.0 | core-apps | 1.0-12.1 |
 | `com.palm.service.accounts` | 1.1.0 | app-services | 1.0-78 |
 | `com.palm.service.contacts.linker` | 1.1.0 | app-services | 1.0-77 |
@@ -66,9 +66,17 @@ history survive an upgrade untouched.
 | `enyo-accounts` | 1.1.1 | enyo-1.0 | 1.0-7 |
 | `com.palm.messaging.chatthreader` | 1.1.0 | com.palm.messaging.chatthreader | 1.0-52 |
 
+*Versions above are each package's own `appinfo.json` "version" field (what webOS itself reads —
+Preware/App Manager/Settings all show this, not the `.ipk`'s own package version) — as of this
+session, `packaging/lib/make-ipk.sh` in core-apps derives `PKG_VERSION` from it directly instead
+of a separately hand-maintained copy in `control.env`, so the two can no longer drift apart. The
+`com.palm.app.accounts`/`com.palm.app.phone`/`com.palm.app.messaging`/`messaging.library` numbers
+above were corrected from previously-hardcoded `control.env` values that had quietly drifted from
+what each package's own `appinfo.json` actually said.*
+
 ---
 
-### `com.palm.app.messaging` — 3.1.0
+### `com.palm.app.messaging` — 3.0.6607
 
 The Messaging app itself — by far the largest single component (89 commits). Brings back the
 message-level features every dead Synergy IM connector needs to feel like a first-party
@@ -110,7 +118,7 @@ experience.
   deployed only via manual `novacom put`); confirmed byte-for-byte match with the live device via
   full md5 manifest before packaging.
 
-### `com.palm.app.accounts` — 3.1.1
+### `com.palm.app.accounts` — 1.0.0
 
 - Synergy accounts list grouped into a nested **SYNERGY ACCOUNTS** box, separate from stock
   account types.
@@ -120,7 +128,7 @@ experience.
   which had been entirely absent from this fork versus stock — non-English UI would otherwise
   regress.
 
-### `com.palm.app.phone` — 3.1.1
+### `com.palm.app.phone` — 2.0.1
 
 - Synergy calling accounts (Add/Modify) now managed from the Accounts app instead of Phone's own
   preferences pane.
@@ -137,7 +145,7 @@ experience.
   (`resources/en/au/appinfo.json`, `resources/en_au.json`) — a true gap versus stock, distinct
   from this fork's own added `zh`/`zh_cn` locale, which was kept.
 
-### `messaging.library` — 1.4.0
+### `messaging.library` — 1.3.1
 
 - Vendored the shared framework from stock webOS 3.0.5 as the source of truth (was previously
   unpackaged).
