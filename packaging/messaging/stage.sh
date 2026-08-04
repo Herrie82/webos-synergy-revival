@@ -28,13 +28,16 @@ GXX_SYSROOT="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-l
 
 case "$NAME" in
   teams)
-    # org.webosports.app.teams (renamed from com.palm.app.teams for vendor-namespace consistency)
-    # is now a plain setup app like every other connector's — the shared libpurple engine used to
-    # be (wrongly) nested inside its app dir; it now lives at the real /usr/lib, owned by the
-    # generic package (see packaging/README.md "why /usr/lib now").
+    # com.palm.app.teams -- was briefly renamed to org.webosports.app.teams for vendor-namespace
+    # consistency, then reverted (commit f963964, "Teams: Rename back to com.palm.app.teams"; this
+    # stage.sh reference was left stale pointing at the reverted name, confirmed live as a build
+    # failure -- "stage_root_dir: .../org.webosports.app.teams missing"). Plain setup app like
+    # every other connector's — the shared libpurple engine used to be (wrongly) nested inside its
+    # app dir; it now lives at the real /usr/lib, owned by the generic package (see
+    # packaging/README.md "why /usr/lib now").
     stage_account "$M/teams/account/com.palm.teams" com.palm.teams
-    stage_app "$M/teams/apps/org.webosports.app.teams" org.webosports.app.teams
-    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/org.webosports.app.teams/appinfo.json"
+    stage_app "$M/teams/apps/com.palm.app.teams" com.palm.app.teams
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.teams/appinfo.json"
     stage_backend_plugin_as "$M/teams/plugin/purple-teams/libteams-personal.stripped.so" libteams.so
     # Calling (inbound routing): ls-hubd needs this .service on file even though the RESIDENT
     # transport registers com.palm.teams.call itself in-plugin -- without it, "Service does not

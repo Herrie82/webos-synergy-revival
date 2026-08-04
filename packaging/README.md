@@ -105,7 +105,15 @@ packaging/
   (`libteams.so`, `libwhatsmeow.so`, ...) go directly in `/usr/lib/purple-2/` — brand new
   filenames with zero stock-collision risk, no backup needed.
 
-  **Done:** `com.palm.app.teams` is renamed to `org.webosports.app.teams` (matching the
+  **Reverted (commit f963964, "Teams: Rename back to com.palm.app.teams" — "To follow the same
+  convention" as this project's other `com.palm.app.*`-named connector apps):** the rename
+  described below (`com.palm.app.teams` -> `org.webosports.app.teams`) was undone. The app
+  directory, `appinfo.json` `id`, and `messaging/teams/deploy-teams.sh` were reverted with it;
+  `packaging/messaging/stage.sh`'s `teams)` case was not and briefly referenced the since-reverted
+  name until fixed here. Left the rest of this section as historical record of what the rename
+  originally touched, in case it's ever redone.
+
+  ~~**Done:**~~ `com.palm.app.teams` is renamed to `org.webosports.app.teams` (matching the
   `org.webosports` vendor namespace used elsewhere) — the app directory, `appinfo.json` `id`, and
   every `customUI.appId`/`readPermissions`/`writePermissions` reference in the account template
   (`com.palm.teams.json`) were updated together, plus every `deploy-*.sh` across all 7 messaging
