@@ -40,12 +40,14 @@ echo "== generic: imlibpurpleservice =="
 IM="$REPO/messaging/imlibpurpleservice/imlibpurpleservice"
 stage_root_file "$REPO/messaging/imlibpurpleservice/build-arm/imlibpurpletransport" /usr/bin/imlibpurpletransport
 # /var is its own small (~60MB), always-writable partition (confirmed distinct from root even
-# when root is read-only) -- these tiny shell scripts stage directly here as before, no OVERWRITE
-# indirection needed. Keep it that way; /var is too small to also route bulkier payloads through.
-mkdir -p "$STAGE/var"
-cp "$IM/files/var/imwrap.sh" "$IM/files/var/imdaemon.sh" \
-   "$IM/files/var/provision-im-db.sh" "$IM/files/var/provision-im-reactions.sh" \
-   "$IM/files/var/provision-person-search.sh" "$STAGE/var/"
+# when root is read-only), but that only sidesteps the READ-ONLY-ROOT problem -- it does NOT make
+# a direct $STAGE/var/... write immune to Preware/WebOS Quick Install's offline-root doubling
+# (confirmed live: a direct write here landed at /media/cryptofs/apps/var/imwrap.sh instead of
+# /var/imwrap.sh, silently leaving imlibpurpletransport's own dbus Exec= launcher missing and the
+# whole transport never starting). Routed through stage_root_file like everything else now.
+for f in imwrap.sh imdaemon.sh provision-im-db.sh provision-im-reactions.sh provision-person-search.sh; do
+  stage_root_file "$IM/files/var/$f" "/var/$f"
+done
 stage_root_file "$IM/files/etc/event.d/imtransport" /etc/event.d/imtransport
 # ONLY the genuinely-new kind/permission names -- confirmed live on a real device (ipkg return 22)
 # that com.palm.imcommand/imgroupchat/iminvitation/immessage/imloginstate (+ tempdb imbuddystatus)

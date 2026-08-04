@@ -19,6 +19,14 @@ case "$0" in
 esac
 APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
 
+# Stop the transport before touching anything - see generic/postinst's matching comment: writing
+# OR removing a file the running transport already has mmap'd has been confirmed live to corrupt
+# it on this cryptofs FUSE filesystem (0-byte file, crash-looping the transport until fixed by
+# hand). $APPLIED for a messaging connector always includes its own backend plugin .so under
+# synergy-purple-plugins/synergy-runtime, which the transport has dlopen'd for as long as it's
+# been running - matches the install-side postinst pattern exactly.
+stop imtransport 2>/dev/null
+
 if [ -f "$APPLIED" ]; then
   while IFS= read -r dst; do
     [ -n "$dst" ] || continue
@@ -31,6 +39,7 @@ if [ -f "$APPLIED" ]; then
   rm -f "$APPLIED"
 fi
 
+start imtransport 2>/dev/null
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
 log "removal complete."
 exit 0

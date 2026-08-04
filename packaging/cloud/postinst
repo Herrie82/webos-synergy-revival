@@ -68,6 +68,21 @@ fix_doubled_apps_prefix() {
 }
 fix_doubled_apps_prefix
 
+# Belt-and-suspenders for anything NOT under media/cryptofs/... that still got staged directly
+# instead of through stage_root_file (e.g. /var/imwrap.sh - confirmed live: doubled to
+# /media/cryptofs/apps/var/imwrap.sh, leaving imlibpurpletransport's own dbus Exec= launcher
+# missing and the whole transport unable to start). All current stage.sh scripts route through
+# stage_root_file/overwrite_rel() now (immune by construction), so this should be a permanent
+# no-op - kept only as a safety net against a future regression.
+fix_doubled_var_prefix() {
+  local doubled="/media/cryptofs/apps/var"
+  [ -d "$doubled" ] || return 0
+  log "found doubled offline-root path $doubled - merging back into /var"
+  cp -a "$doubled/." /var/
+  rm -rf "$doubled"
+}
+fix_doubled_var_prefix
+
 # See generic/postinst's matching function for the full rationale (same mechanism, shared here
 # since each package's postinst is a standalone script with no way to source another package's
 # files at install time).

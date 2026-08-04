@@ -59,6 +59,20 @@ fix_doubled_apps_prefix() {
 }
 fix_doubled_apps_prefix
 
+# Belt-and-suspenders for anything NOT under media/cryptofs/... that still got staged directly
+# instead of through stage_root_file (e.g. /var/provision-cdav-db.sh - confirmed live elsewhere in
+# this repo: /var/imwrap.sh doubled to /media/cryptofs/apps/var/imwrap.sh). carddav's stage.sh
+# routes through stage_root_file/overwrite_rel() now (immune by construction), so this should be a
+# permanent no-op - kept only as a safety net against a future regression.
+fix_doubled_var_prefix() {
+  local doubled="/media/cryptofs/apps/var"
+  [ -d "$doubled" ] || return 0
+  echo "[cdav] found doubled offline-root path $doubled - merging back into /var"
+  cp -a "$doubled/." /var/
+  rm -rf "$doubled"
+}
+fix_doubled_var_prefix
+
 # The service/ls2-roles/dbus-activation/db8-kinds/permissions/account-templates all land on real
 # root-fs paths, which stock webOS boots read-only -- ipkg extracts data.tar.gz itself, before
 # this script ever runs and gets a chance to remount root rw, so stage.sh staged them on cryptofs

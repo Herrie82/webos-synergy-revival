@@ -103,7 +103,14 @@ if [ -f "$APPLIED" ]; then
     restore_or_remove "$dst"
   done < "$APPLIED"
 fi
-rm -rf "$STOCKBAK" "$APPLIED"
+# $STOCKBAK is SHARED across every synergy package (cloud/messaging postinst also write into it,
+# keyed by the same literal destination paths - see packaging/lib/common.sh's overwrite_rel()
+# comment on why $APPLIED is per-PKGID but this legacy backup dir never was). The restore loop
+# above already moved out everything THIS package put there; do not rm -rf the shared directory
+# itself here - confirmed live as a real bug: doing so while any cloud/messaging connector was
+# still installed deleted ITS not-yet-restored backups too, silently corrupting its own future
+# uninstall. Only remove our own manifest.
+rm -f "$APPLIED"
 
 log "removing imlibpurpleservice + backend files..."
 rm -f /usr/bin/imlibpurpletransport /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh \
@@ -116,7 +123,17 @@ umount /usr/lib/purple-2 2>/dev/null
 umount /usr/lib/synergy-runtime 2>/dev/null
 rmdir /usr/lib/purple-2 /usr/lib/synergy-runtime 2>/dev/null
 rm -rf /usr/palm/services/_cloudcore
-rm -rf /media/cryptofs/synergy-revival
+# /media/cryptofs/synergy-revival is SHARED across every synergy package (rootfs-overwrite/<pkg-id>
+# staging + applied-paths.<pkg-id>.list for cloud/messaging/carddav too - see packaging/lib/
+# common.sh's overwrite_rel()). Wholesale rm -rf here was a real bug: uninstalling generic while
+# any other synergy package was still installed deleted THEIR applied-paths.*.list manifests too,
+# leaving their own future uninstall with nothing to restore/remove from (silently orphaning
+# whatever they'd overwritten). Only remove what's unambiguously ours: our own already-emptied OV
+# dir (apply_rootfs_overwrite already rm -rf'd it during postinst; harmless if already gone) and
+# device-setup (generic's own payload area, not shared). Then rmdir the parent - a no-op unless
+# generic happens to be the LAST synergy package removed, in which case it's actually empty.
+rm -rf "/media/cryptofs/synergy-revival/rootfs-overwrite/$PKGID" /media/cryptofs/synergy-revival/device-setup
+rmdir /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/synergy-revival 2>/dev/null
 
 # Deliberately NOT remounting root back to read-only here -- ipkg writes its own bookkeeping
 # after prerm returns, and that needs root writable too. See postinst's matching comment.

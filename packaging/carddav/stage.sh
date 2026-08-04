@@ -74,10 +74,10 @@ else
   echo "   (no setup app in deploy/app/$APPID -- skipping)"
 fi
 
-# /var is its own small (~60MB), always-writable partition (confirmed distinct from root even
-# when root is read-only) -- this tiny shell script stages directly here as before, no OVERWRITE
-# indirection needed.
-mkdir -p "$STAGE/var"
-cp "$DEPLOY/provision-cdav-db.sh" "$STAGE/var/provision-cdav-db.sh"
+# /var is its own small (~60MB), always-writable partition, but that only sidesteps the
+# READ-ONLY-ROOT problem -- a direct $STAGE/var/... write is still vulnerable to Preware/WebOS
+# Quick Install's offline-root doubling (confirmed live elsewhere in this repo: landed at
+# /media/cryptofs/apps/var/... instead of /var/...). Routed through stage_root_file.
+stage_root_file "$DEPLOY/provision-cdav-db.sh" "/var/provision-cdav-db.sh"
 
 echo "carddav stage complete: $STAGE"
