@@ -57,6 +57,12 @@ if [ -d "$DEPLOY/app/$APPID" ]; then
   # directly under $STAGE/$APP_ROOT - see stage_app's comment in packaging/lib/common.sh for why.
   stage_app "$DEPLOY/app/$APPID" "$APPID"
   APP_STAGED="$STAGE/$(overwrite_rel)/$APP_ROOT/$APPID"
+  # Every other stage_app call in this repo (generic/, cloud/, messaging/) is immediately paired
+  # with bump_version so the staged app's own appinfo.json can never silently drift from the
+  # package version -- this was the one stage_app call in the whole repo missing it (confirmed:
+  # currently harmless, deploy/app/org.webosports.app.cdav's committed appinfo.json and this
+  # package's control.env both happen to say 0.9.0 today, but nothing enforced that).
+  bump_version "$APP_STAGED/appinfo.json"
   # The Google OAuth client_secret is kept out of git (see GoogleSetup.js's GOCSPX_INJECTED_AT_DEPLOY
   # placeholder). Inject it at package-build time the same way deploy-cdav.sh does at deploy time.
   GSECRET="${CDAV_GOOGLE_CLIENT_SECRET:-}"
