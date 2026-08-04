@@ -53,8 +53,29 @@ mount -o remount,rw / 2>/dev/null
 # since each package's postinst is a standalone script with no way to source another package's
 # files at install time).
 apply_rootfs_overwrite() {
-  [ -d "$OV" ] || return 0
+  # This whole script runs under `set +e` (a failed step shouldn't abort a postinst mid-way
+  # through other packages' installs), which means a corrupted/truncated ipk transfer during
+  # install (confirmed live elsewhere in this session: a bad transfer left com.palm.app.messaging
+  # silently "installed" into an EMPTY directory, both ipkg and its postinst reporting success)
+  # would otherwise go completely unnoticed here too - $OV missing or empty just silently applied
+  # nothing while the rest of this script still logged "installed" and exited 0. Fail loudly
+  # instead: require $OV to exist and hold at least one file/symlink to apply, and verify the
+  # number of paths actually recorded in $APPLIED matches what we found to apply.
+  if [ ! -d "$OV" ]; then
+    echo "!! apply_rootfs_overwrite: staged dir $OV not found - install produced nothing" >&2
+    return 1
+  fi
+  local expected
+  expected=$(find "$OV" -type f ! -name .symlinks | wc -l)
+  local expected_links=0
+  [ -s "$OV/.symlinks" ] && expected_links=$(wc -l < "$OV/.symlinks")
+  if [ "$expected" -eq 0 ] && [ "$expected_links" -eq 0 ]; then
+    echo "!! apply_rootfs_overwrite: $OV has no files to apply - likely a corrupted/truncated transfer" >&2
+    return 1
+  fi
+
   mkdir -p "$(dirname "$APPLIED")"
+  : > "$APPLIED"
   local f rel dst
   find "$OV" -type f | while IFS= read -r f; do
     rel="${f#"$OV"}"
@@ -79,9 +100,21 @@ apply_rootfs_overwrite() {
       echo "$dst" >> "$APPLIED"
     done < "$OV/.symlinks"
   fi
+
+  local applied
+  applied=$(wc -l < "$APPLIED" 2>/dev/null || echo 0)
   rm -rf "$OV"
+  if [ "$applied" -lt "$((expected + expected_links))" ]; then
+    echo "!! apply_rootfs_overwrite: only applied $applied of $((expected + expected_links)) expected path(s) - possible partial/corrupted install" >&2
+    return 1
+  fi
+  log "applied $applied path(s)"
+  return 0
 }
-apply_rootfs_overwrite
+if ! apply_rootfs_overwrite; then
+  echo "!! [synergy-messaging] postinst failed - install did not complete correctly, try reinstalling" >&2
+  exit 1
+fi
 
 stop imtransport 2>/dev/null
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
