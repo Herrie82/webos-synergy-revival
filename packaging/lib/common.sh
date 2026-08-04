@@ -107,12 +107,21 @@ stage_service() {
 }
 
 # stage_app <src-dir> <app-id>
-# Copies an app bundle directory to /media/cryptofs/apps/usr/palm/applications/<app-id>/
+# Copies an app bundle directory to /media/cryptofs/apps/usr/palm/applications/<app-id>/ - routed
+# through stage_root_dir (the overwrite_rel() OV mechanism), NOT written directly under
+# $STAGE/$APP_ROOT. Writing directly there used to mean staging a tar entry that ALREADY starts
+# with "media/cryptofs/apps/...", which Preware/WebOS Quick Install's offline-root ipkg invocation
+# (`ipkg -o /media/cryptofs/apps install <ipk>`) then extracts relative to ITS OWN
+# /media/cryptofs/apps root, prepending that prefix a second time
+# (confirmed live: landed at /media/cryptofs/apps/media/cryptofs/apps/usr/palm/applications/<id>,
+# where App Manager never looks - "Could not get app path: Invalid appId specified"). Routing
+# through the OV mechanism sidesteps this entirely: postinst reads the real destination out of
+# dest.txt as a literal string and cp's there explicitly, so it lands correctly regardless of
+# which root ipkg extracted the archive relative to. stage_account/stage_service (below) never had
+# this bug for exactly this reason - this just brings stage_app in line with them.
 stage_app() {
   local src="$1" id="$2"
-  [ -d "$src" ] || { echo "!! stage_app: $src missing" >&2; return 1; }
-  mkdir -p "$STAGE/$APP_ROOT/$id"
-  cp -r "$src/." "$STAGE/$APP_ROOT/$id/"
+  stage_root_dir "$src" "/$APP_ROOT/$id"
 }
 
 # stage_app_files <src-dir> <app-id> <file>...
@@ -141,16 +150,18 @@ stage_app_files() {
 # when both shipped their own libopus.so.0 copy) without needing a payload/copy-on-postinst
 # workaround -- with the shared libs owned solely by generic, no two packages ever claim the same
 # filename in the first place.
+# Both stage_backend_plugin* below route through stage_root_file (the overwrite_rel() OV
+# mechanism) rather than writing directly under $STAGE/$BACKEND_PURPLE2 or $STAGE/$BACKEND_LIB -
+# same reason as stage_app above: those paths already start with "media/cryptofs/...", which
+# Preware/WebOS Quick Install's offline-root ipkg invocation would otherwise double-prefix.
 stage_backend_plugin() {
   local so="$1"; shift
   [ -f "$so" ] || { echo "!! stage_backend_plugin: $so missing" >&2; return 1; }
-  mkdir -p "$STAGE/$BACKEND_PURPLE2"
-  cp "$so" "$STAGE/$BACKEND_PURPLE2/"
+  stage_root_file "$so" "/$BACKEND_PURPLE2/$(basename "$so")"
   local lib
   for lib in "$@"; do
     [ -f "$lib" ] || { echo "!! stage_backend_plugin: runtime dep $lib missing (skip)" >&2; continue; }
-    mkdir -p "$STAGE/$BACKEND_LIB"
-    cp "$lib" "$STAGE/$BACKEND_LIB/"
+    stage_root_file "$lib" "/$BACKEND_LIB/$(basename "$lib")"
   done
 }
 
@@ -160,13 +171,11 @@ stage_backend_plugin() {
 stage_backend_plugin_as() {
   local so="$1" name="$2"; shift 2
   [ -f "$so" ] || { echo "!! stage_backend_plugin_as: $so missing" >&2; return 1; }
-  mkdir -p "$STAGE/$BACKEND_PURPLE2"
-  cp "$so" "$STAGE/$BACKEND_PURPLE2/$name"
+  stage_root_file "$so" "/$BACKEND_PURPLE2/$name"
   local lib
   for lib in "$@"; do
     [ -f "$lib" ] || { echo "!! stage_backend_plugin_as: runtime dep $lib missing (skip)" >&2; continue; }
-    mkdir -p "$STAGE/$BACKEND_LIB"
-    cp "$lib" "$STAGE/$BACKEND_LIB/"
+    stage_root_file "$lib" "/$BACKEND_LIB/$(basename "$lib")"
   done
 }
 

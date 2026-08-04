@@ -53,9 +53,10 @@ done
 
 if [ -d "$DEPLOY/app/$APPID" ]; then
   echo "== carddav: setup app =="
-  # Already on cryptofs (APP_ROOT) -- no OVERWRITE indirection needed for this one.
+  # stage_app routes through stage_root_dir (the overwrite_rel() OV mechanism), not written
+  # directly under $STAGE/$APP_ROOT - see stage_app's comment in packaging/lib/common.sh for why.
   stage_app "$DEPLOY/app/$APPID" "$APPID"
-  APP_STAGED="$STAGE/$APP_ROOT/$APPID"
+  APP_STAGED="$STAGE/$(overwrite_rel)/$APP_ROOT/$APPID"
   # The Google OAuth client_secret is kept out of git (see GoogleSetup.js's GOCSPX_INJECTED_AT_DEPLOY
   # placeholder). Inject it at package-build time the same way deploy-cdav.sh does at deploy time.
   GSECRET="${CDAV_GOOGLE_CLIENT_SECRET:-}"

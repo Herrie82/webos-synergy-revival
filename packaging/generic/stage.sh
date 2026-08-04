@@ -25,6 +25,15 @@ source "$REPO/packaging/lib/common.sh"
 # remount root rw, so anything staged directly under root fails that extraction outright
 # ("Read-only file system", confirmed live). /media/cryptofs is always writable regardless of
 # root's state.
+#
+# Deliberately NOT routed through stage_root_file/overwrite_rel() like everything else on this
+# page: postinst reads this whole tree back out via a single hardcoded literal path (DS= in
+# generic/postinst), not per-file through a PKG_ID-scoped OV dir, so there's no dest.txt-style
+# indirection to make it doubling-proof the same way. It's still vulnerable in principle to the
+# same offline-root doubling (Preware/WebOS Quick Install prepending /media/cryptofs/apps onto a
+# path that already starts with media/cryptofs/...) - covered instead by generic/postinst's
+# fix_doubled_apps_prefix(), which runs before any device-setup/* step reads from $DS and merges
+# any doubled tree back into place first.
 DS_OUT="$STAGE/media/cryptofs/synergy-revival/device-setup"
 
 echo "== generic: imlibpurpleservice =="
@@ -116,30 +125,32 @@ echo "== generic: private runtime deps (non-stock-colliding, direct install) =="
 # nothing to gain from also carrying a defensive copy there; worse, ipkg treats two packages
 # shipping the same tracked filename as a hard conflict (confirmed live installing telegram then
 # whatsapp when both carried their own libopus.so.0 -- this is the actual fix for that).
-# Already on cryptofs (BACKEND_LIB), no OVERWRITE indirection needed for anything in this block.
-mkdir -p "$STAGE/$BACKEND_LIB"
+# Routed through stage_root_file (overwrite_rel() OV mechanism), not written directly under
+# $STAGE/$BACKEND_LIB - see stage_app's comment in packaging/lib/common.sh for why (Preware/WebOS
+# Quick Install's offline-root ipkg would otherwise double-prefix a path already starting with
+# "media/cryptofs/...").
 # MUST be the gcc125 toolchain build, not gcc93's: imlibpurpletransport (built against gcc125,
 # see messaging/imlibpurpleservice/build.sh) needs GLIBCXX_3.4.29, which gcc93's libstdc++.so.6.0.28
 # does not provide ("version `GLIBCXX_3.4.29' not found", confirmed live -- transport wouldn't
 # start at all). gcc93's build is a similar size (11.3MB vs gcc125's 11.6MB) so this is easy to
 # get wrong silently; verify with `strings libstdc++.so.6 | grep GLIBCXX_3.4.29` if in doubt.
 GXX="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/lib"
-[ -f "$GXX/libstdc++.so.6.0.30" ] && cp "$GXX/libstdc++.so.6.0.30" "$STAGE/$BACKEND_LIB/libstdc++.so.6"
+[ -f "$GXX/libstdc++.so.6.0.30" ] && stage_root_file "$GXX/libstdc++.so.6.0.30" "/$BACKEND_LIB/libstdc++.so.6"
 # libnsl.so.1: needed by libpurple.so.0 itself (readelf -d), same crosstool-ng gcc125 sysroot.
 GXX_SYSROOT="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/sysroot/lib"
-[ -f "$GXX_SYSROOT/libnsl.so.1" ] && cp "$GXX_SYSROOT/libnsl.so.1" "$STAGE/$BACKEND_LIB/libnsl.so.1"
+[ -f "$GXX_SYSROOT/libnsl.so.1" ] && stage_root_file "$GXX_SYSROOT/libnsl.so.1" "/$BACKEND_LIB/libnsl.so.1"
 # libtidy.so.58: needed by imlibpurpletransport itself (HTML sanitize, readelf -d confirms), built
 # by device-setup's own tidy-arm build (see messaging/imlibpurpleservice/build.sh's TIDY var).
 TIDY="$REPO/build-output/tidy-arm/install/lib"
-[ -f "$TIDY/libtidy.so.58" ] && cp "$TIDY/libtidy.so.58" "$STAGE/$BACKEND_LIB/libtidy.so.58"
+[ -f "$TIDY/libtidy.so.58" ] && stage_root_file "$TIDY/libtidy.so.58" "/$BACKEND_LIB/libtidy.so.58"
 # libopus.so.0/libogg.so.0: needed by imlibpurpletransport itself (readelf -d -- its own Opus voice
-# note encoder, OpusEncoder.cpp), so universal regardless of which connectors get installed.
+# note encoder, OpusEncoder.cpp), so universal regardless of which connectors end up installed.
 # libopusfile.so.0: not needed by the transport itself, but shared by WhatsApp+Facebook (2
 # connectors) -- simplest to also own here rather than duplicate across both. All three from the
 # same WPE ARM staging dir every deploy-*.sh script already sourced from.
 WPE="/home/herrie/webos/wpe/staging-glibc-252/lib"
 for so in libopus.so.0 libogg.so.0 libopusfile.so.0; do
-  [ -f "$WPE/$so" ] && cp -L "$WPE/$so" "$STAGE/$BACKEND_LIB/$so"
+  [ -f "$WPE/$so" ] && cp -L "$WPE/$so" "/tmp/.$so.$$" && stage_root_file "/tmp/.$so.$$" "/$BACKEND_LIB/$so" && rm -f "/tmp/.$so.$$"
 done
 
 echo "== generic: synergy-glibc (the transport's ELF interpreter + matching libc) =="
@@ -168,28 +179,32 @@ echo "== generic: synergy-glibc (the transport's ELF interpreter + matching libc
 # or is already staged once into synergy-runtime above (libstdc++, libnsl) - duplicating those
 # here would be dead weight, not a second copy anything actually loads from this dir.
 GLIBC_SYSROOT="/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/arm-unknown-linux-gnueabi/sysroot/lib"
-mkdir -p "$STAGE/media/cryptofs/synergy-glibc/lib"
+# Routed through stage_root_file (overwrite_rel() OV mechanism), not written directly under
+# $STAGE/media/cryptofs/synergy-glibc - same doubling hazard as $BACKEND_LIB/$APP_ROOT above.
 # -L: dereference symlinks into real file copies (e.g. ld-linux.so.3 -> ld-2.23.so's actual bytes,
 # under the ld-linux.so.3 name) - cryptofs (FUSE) rejects symlink() outright (confirmed live
 # elsewhere in this repo, see stage_root_dir's comment), so a real symlink here would fail the same
 # way at install time. A plain-file copy under each name works identically at runtime.
 for so in ld-linux.so.3 libc.so.6 libpthread.so.0 libdl.so.2 librt.so.1 libm.so.6 \
           libgcc_s.so.1 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2 libutil.so.1; do
-  [ -e "$GLIBC_SYSROOT/$so" ] && cp -L "$GLIBC_SYSROOT/$so" "$STAGE/media/cryptofs/synergy-glibc/lib/$so" \
-    || echo "!! synergy-glibc: $so missing from $GLIBC_SYSROOT" >&2
+  if [ -e "$GLIBC_SYSROOT/$so" ]; then
+    cp -L "$GLIBC_SYSROOT/$so" "/tmp/.$so.$$" && stage_root_file "/tmp/.$so.$$" "/media/cryptofs/synergy-glibc/lib/$so" && rm -f "/tmp/.$so.$$"
+  else
+    echo "!! synergy-glibc: $so missing from $GLIBC_SYSROOT" >&2
+  fi
 done
 
 echo "== generic: cloudcore (shared by every cloud connector) =="
 stage_root_dir "$REPO/cloud/cloudcore/service/_cloudcore" "/$SERVICES_ROOT/_cloudcore"
 stage_app "$REPO/cloud/cloudcore/auth/com.palm.app.cloud-auth" com.palm.app.cloud-auth
-bump_version "$STAGE/$APP_ROOT/com.palm.app.cloud-auth/appinfo.json"
+bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.cloud-auth/appinfo.json"
 
 echo "== generic: QuickOffice / Photos / DocViewer integration payloads (applied by postinst) =="
 mkdir -p "$DS_OUT/quickoffice-integration" "$DS_OUT/photos-integration"
 cp -r "$REPO/quickoffice-integration/." "$DS_OUT/quickoffice-integration/"
 cp -r "$REPO/photos-integration/." "$DS_OUT/photos-integration/"
 stage_app "$REPO/docviewer/com.palm.app.docviewer" com.palm.app.docviewer
-bump_version "$STAGE/$APP_ROOT/com.palm.app.docviewer/appinfo.json"
+bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.docviewer/appinfo.json"
 
 echo "== generic: device-setup/* fixes (payloads staged; postinst applies them) =="
 mkdir -p "$DS_OUT"

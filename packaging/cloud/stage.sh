@@ -43,7 +43,7 @@ if [ -d "$D/apps" ]; then
     app_id="$(basename "$app")"
     echo "   + dedicated auth app $app_id"
     stage_app "$app" "$app_id"
-    bump_version "$STAGE/$APP_ROOT/$app_id/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/$app_id/appinfo.json"
   done
 fi
 

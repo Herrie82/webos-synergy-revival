@@ -34,7 +34,7 @@ case "$NAME" in
     # generic package (see packaging/README.md "why /usr/lib now").
     stage_account "$M/teams/account/com.palm.teams" com.palm.teams
     stage_app "$M/teams/apps/org.webosports.app.teams" org.webosports.app.teams
-    bump_version "$STAGE/$APP_ROOT/org.webosports.app.teams/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/org.webosports.app.teams/appinfo.json"
     stage_backend_plugin_as "$M/teams/plugin/purple-teams/libteams-personal.stripped.so" libteams.so
     # Calling (inbound routing): ls-hubd needs this .service on file even though the RESIDENT
     # transport registers com.palm.teams.call itself in-plugin -- without it, "Service does not
@@ -46,7 +46,7 @@ case "$NAME" in
   telegram)
     stage_account "$M/telegram/account/com.palm.telegram" com.palm.telegram
     stage_app "$M/telegram/apps/com.palm.app.telegram" com.palm.app.telegram
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.telegram/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.telegram/appinfo.json"
     # readelf -d confirms libtelegram-tdlib.stripped.so's only third-party NEEDED is libopus.so.0
     # (voice notes) -- generic already provides this (needed by the transport itself too). libcrypto/
     # libssl/liblunaservice/libasound/libpalmgstskype are either handled by imwrap.sh
@@ -63,7 +63,7 @@ case "$NAME" in
   signal)
     stage_account "$M/signal/account/com.palm.signal" com.palm.signal
     stage_app "$M/signal/apps/com.palm.app.signal" com.palm.app.signal
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.signal/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.signal/appinfo.json"
     # readelf -d confirms libpresage.stripped.so's only third-party NEEDED beyond the universal set
     # is libutil.so.1 (not needed by any other connector or the transport itself) -- from the same
     # crosstool-ng gcc125 sysroot as libstdc++/libnsl (generic/stage.sh), size-verified against the
@@ -79,15 +79,15 @@ case "$NAME" in
     stage_account "$M/discord/account/com.palm.discord" com.palm.discord
     stage_app "$M/discord/apps/com.palm.app.discord" com.palm.app.discord
     stage_app "$M/discord/apps/com.palm.app.discordqr" com.palm.app.discordqr
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.discord/appinfo.json"
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.discordqr/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.discord/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.discordqr/appinfo.json"
     stage_backend_plugin_as "$M/discord/plugin/purple-discord/libdiscord.stripped.so" libdiscord.so
     ;;
 
   whatsapp)
     stage_account "$M/whatsapp/account/com.palm.whatsapp" com.palm.whatsapp
     stage_app "$M/whatsapp/apps/com.palm.app.whatsapp" com.palm.app.whatsapp
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.whatsapp/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.whatsapp/appinfo.json"
     # readelf -d: libwhatsmeow's third-party NEEDED set (libopusfile/libopus/libogg) is entirely
     # generic-provided -- libopusfile is shared with Facebook below, libopus/libogg the transport
     # itself needs regardless.
@@ -103,7 +103,7 @@ case "$NAME" in
   facebook)
     stage_account "$M/facebook-e2ee/account/com.palm.gometa" com.palm.gometa
     stage_app "$M/facebook-e2ee/apps/com.palm.app.gometa" com.palm.app.gometa
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.gometa/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.gometa/appinfo.json"
     # Same combined plugin as WhatsApp (messagix + whatsmeow in one Go runtime) — packaged
     # independently per-connector (small duplication; simplest, matches "one IPK per connector").
     # Runtime deps (libopusfile/libopus/libogg) generic-provided -- see the WhatsApp case above.
@@ -114,17 +114,18 @@ case "$NAME" in
   googlechat)
     stage_account "$M/googlechat/account/com.palm.googlechat" com.palm.googlechat
     stage_app "$M/googlechat/apps/com.palm.app.googlechat" com.palm.app.googlechat
-    bump_version "$STAGE/$APP_ROOT/com.palm.app.googlechat/appinfo.json"
+    bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.googlechat/appinfo.json"
     stage_backend_plugin_as "$M/googlechat/plugin/purple-googlechat/build-arm/libgooglechat.stripped.so" \
       libgooglechat.so
     # libprotobuf-c drops in the private synergy-runtime dir (not purple-2/), matching BUILD-LOG.md.
     # MUST keep the .so.1 suffix -- readelf -d confirms libgooglechat.so's NEEDED entry is the exact
     # SONAME "libprotobuf-c.so.1", not "libprotobuf-c.so" (the dynamic linker matches NEEDED entries
     # by exact string, so the wrong filename here would silently fail dlopen at plugin load). Staged
-    # directly (not via generic): no other connector needs protobuf-c, so no filename conflict risk.
-    mkdir -p "$STAGE/$BACKEND_LIB"
-    cp "$M/googlechat/plugin/purple-googlechat/build-arm/libprotobuf-c.stripped.so" \
-       "$STAGE/$BACKEND_LIB/libprotobuf-c.so.1"
+    # by this package (not via generic): no other connector needs protobuf-c, so no filename
+    # conflict risk. Routed through stage_root_file (overwrite_rel() OV mechanism), not written
+    # directly under $STAGE/$BACKEND_LIB - same doubling hazard as everywhere else in this repo.
+    stage_root_file "$M/googlechat/plugin/purple-googlechat/build-arm/libprotobuf-c.stripped.so" \
+      "/$BACKEND_LIB/libprotobuf-c.so.1"
     ;;
 
   *)

@@ -35,6 +35,30 @@ BAK=/media/cryptofs/synergy-stock-backup
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
+# Preware/WebOS Quick Install's offline-root ipkg invocation (`ipkg -o /media/cryptofs/apps
+# install <ipk>`) prepends /media/cryptofs/apps to EVERY path in the archive - including paths
+# that already start with media/cryptofs/... (APP_ROOT, staged directly with no OVERWRITE
+# indirection - see carddav/stage.sh), producing a DOUBLED prefix
+# (/media/cryptofs/apps/media/cryptofs/...) that nothing else ever looks at: confirmed live
+# elsewhere in this repo, a connector's companion app staged this way was invisible to App
+# Manager. ipkg's own native extraction does this, before any postinst runs, so there's no
+# manifest to check - just detect and merge the doubled tree back into place. A DIRECT
+# (non-offline-root) ipkg install never creates this, so this is a no-op there.
+fix_doubled_apps_prefix() {
+  local doubled="/media/cryptofs/apps/media/cryptofs"
+  [ -d "$doubled" ] || return 0
+  echo "[cdav] found doubled offline-root path $doubled - merging back into /media/cryptofs"
+  local d name
+  for d in "$doubled"/*; do
+    [ -e "$d" ] || continue
+    name="$(basename "$d")"
+    mkdir -p "/media/cryptofs/$name"
+    cp -a "$d/." "/media/cryptofs/$name/"
+  done
+  rm -rf "$doubled"
+}
+fix_doubled_apps_prefix
+
 # The service/ls2-roles/dbus-activation/db8-kinds/permissions/account-templates all land on real
 # root-fs paths, which stock webOS boots read-only -- ipkg extracts data.tar.gz itself, before
 # this script ever runs and gets a chance to remount root rw, so stage.sh staged them on cryptofs

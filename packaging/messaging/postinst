@@ -49,6 +49,32 @@ APPLIED="/media/cryptofs/synergy-revival/applied-paths.$PKGID.list"
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
+# Preware/WebOS Quick Install's offline-root ipkg invocation (`ipkg -o /media/cryptofs/apps
+# install <ipk>`) prepends /media/cryptofs/apps to EVERY path in the archive - including paths
+# that already start with media/cryptofs/... (APP_ROOT/BACKEND_PURPLE2/BACKEND_LIB, see
+# packaging/lib/common.sh), producing a DOUBLED prefix
+# (/media/cryptofs/apps/media/cryptofs/...) that nothing else ever looks at: confirmed live, a
+# connector's companion setup app staged this way was invisible to App Manager ("Could not get
+# app path: Invalid appId specified: com.palm.app.whatsapp"), and its account template's
+# validator.customUI launch silently did nothing (blank screen). ipkg's own native extraction
+# does this, before any postinst runs, so there's no manifest to check - just detect and merge
+# the doubled tree back into place. A DIRECT (non-offline-root) ipkg install never creates this,
+# so this is a no-op there.
+fix_doubled_apps_prefix() {
+  local doubled="/media/cryptofs/apps/media/cryptofs"
+  [ -d "$doubled" ] || return 0
+  log "found doubled offline-root path $doubled - merging back into /media/cryptofs"
+  local d name
+  for d in "$doubled"/*; do
+    [ -e "$d" ] || continue
+    name="$(basename "$d")"
+    mkdir -p "/media/cryptofs/$name"
+    cp -a "$d/." "/media/cryptofs/$name/"
+  done
+  rm -rf "$doubled"
+}
+fix_doubled_apps_prefix
+
 # See generic/postinst's matching function for the full rationale (same mechanism, shared here
 # since each package's postinst is a standalone script with no way to source another package's
 # files at install time).
@@ -62,6 +88,16 @@ apply_rootfs_overwrite() {
   # instead: require $OV to exist and hold at least one file/symlink to apply, and verify the
   # number of paths actually recorded in $APPLIED matches what we found to apply.
   if [ ! -d "$OV" ]; then
+    # WebOSQuickInstall (confirmed live, see other postinst scripts in this repo) runs
+    # pmPostInstall.script a SECOND time itself, after the real App-Installer-driven install
+    # already ran it once and cleaned up $OV - a second run legitimately finds nothing staged,
+    # which is not a real failure. $APPLIED (written on success below, never cleaned up here -
+    # only prerm removes it) records what the first run actually applied; if its first entry is
+    # still on disk, this is that harmless redundant second run, not a failed install.
+    if [ -s "$APPLIED" ] && [ -e "$(head -n 1 "$APPLIED")" ]; then
+      log "nothing newly staged - already installed (see $APPLIED), treating as a no-op"
+      return 0
+    fi
     echo "!! apply_rootfs_overwrite: staged dir $OV not found - install produced nothing" >&2
     return 1
   fi
