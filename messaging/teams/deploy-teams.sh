@@ -2,10 +2,10 @@
 # deploy-teams.sh — install the Microsoft Teams Synergy surface onto the connected TouchPad via
 # novacom. Mirrors deploy-whatsapp.sh. Three artifacts:
 #   1. account template -> /usr/palm/public/accounts/com.palm.teams
-#   2. setup app        -> /media/cryptofs/apps/usr/palm/applications/org.webosports.app.teams
+#   2. setup app        -> /media/cryptofs/apps/usr/palm/applications/com.palm.app.teams
 #   3. the prpl plugin  -> the real /usr/lib/purple-2 (libpurple's own compiled-in plugin dir)
 #
-# org.webosports.app.teams (renamed from com.palm.app.teams) is now a PLAIN setup app like every
+# com.palm.app.teams (renamed from com.palm.app.teams) is now a PLAIN setup app like every
 # other messaging connector's — it used to also double as the shared libpurple-engine host
 # (backend/lib/purple-2), which never actually belonged to Teams; that engine now lives at the
 # real /usr/lib, installed by the generic package (see packaging/README.md "why /usr/lib now").
@@ -16,7 +16,7 @@ PKG="$(cd "$(dirname "$0")" && pwd)"
 nr() { printf '%s\n' "$1" | novacom run file://bin/sh; }
 BACKEND_PURPLE2="${BACKEND_PURPLE2:-/usr/lib/purple-2}"
 PRPL="$PKG/plugin/purple-teams/libteams-personal.stripped.so"
-APPID=org.webosports.app.teams
+APPID=com.palm.app.teams
 
 echo "== 1. install account template (rootfs rw) =="
 ACC=/usr/palm/public/accounts/com.palm.teams

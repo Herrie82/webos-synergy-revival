@@ -77,7 +77,13 @@ extern "C" {
 	void sebinary_set(void *self, const void *data, unsigned len) asm("_ZN8SEBinary3setEPKvj");
 }
 
-static const unsigned kRtpPacketReceivedCmdId = 20;
+// Was 20 (0x14): see WHATSAPP_VIDEO_STATUS.md Part 36 -- traced ProcessCall's real dispatch via
+// VideoHost's ELF-relocation vtable dump. RtpPacketReceived's real vtable slot is +0x58, which
+// ProcessCall's case 0x13 calls (parses one param via rd_parms, returns without wr_response --
+// fire-and-forget, matching this call's known behavior). Case 0x14 calls vtable+0x60
+// (StopPlayback), takes no params, and IS request/response -- this was silently invoking
+// StopPlayback() with no arguments instead of RtpPacketReceived on every single call.
+static const unsigned kRtpPacketReceivedCmdId = 19;
 static const unsigned kRtpPacketReceivedFieldIndex = 91;
 static const unsigned kSendRTPPacketFieldIndex = 0;
 static const unsigned kRtpPayloadType = 96; // confirmed live, Part 15/18 (H.264 dynamic PT)
@@ -242,11 +248,25 @@ static void send_one_packet(void *vctx, const unsigned char *payload, size_t len
 	sebinary_init(sebinary);
 	sebinary_set(sebinary, pkt, (unsigned)(12 + len));
 
-	unsigned int cmdId = kRtpPacketReceivedCmdId;
+	// wr_call_lst's 3rd/4th params ("cmdId"/"cmdName") are actually consumed as
+	// bl_write_bytes(ci, length, data) -- *cmdId* bytes are written raw, unencoded onto the wire
+	// starting at the cmdName pointer. The real header format is [0x5a]['R'=0x52][2 LEB128
+	// varints]; wr_preencoded_lst's own internal wr_value(&responseId) call appends the 3rd
+	// varint automatically. Passing (&cmdId, "RtpPacketReceived") wrote raw bytes of the literal
+	// debug string onto the wire -- never a real protocol header. See WHATSAPP_VIDEO_STATUS.md.
+	unsigned char header[4];
+	header[0] = 0x5a;
+	header[1] = 0x52;
+	header[2] = 0x00;
+	header[3] = (unsigned char)kRtpPacketReceivedCmdId;
+	unsigned int headerLen = sizeof(header);
 	unsigned int responseId = 0;
-	binclient_wr_call_lst(ctx->binclient, /*ci=*/nullptr, &cmdId, "RtpPacketReceived",
+	int wr_rc = binclient_wr_call_lst(ctx->binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
 	                        &responseId, M_SkypeVideoRTPInterface_fields,
 	                        kRtpPacketReceivedFieldIndex, sebinary);
+	if (wr_rc != 0) {
+		fprintf(stderr, "tm-call: send_one_packet wr_call_lst FAILED rc=%d len=%u\n", wr_rc, (unsigned)len);
+	}
 }
 
 // Thread B never blocks in a way that needs pthread_cancel to interrupt (see the comment on
