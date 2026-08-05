@@ -854,6 +854,9 @@ discord_add_thread(DiscordAccount *da, DiscordGuild *guild, DiscordChannel *pare
 		parent = discord_get_channel_global(da, from_int(thread->parent_id));
 	}
 	if (parent) {
+		if (parent->threads == NULL) {
+			parent->threads = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, NULL);
+		}
 		g_hash_table_replace_int64(parent->threads, thread->id, thread);
 	}
 	return thread;
@@ -4208,6 +4211,21 @@ static void discord_send_lazy_guild_request(DiscordAccount *da, DiscordGuild *gu
 static void
 discord_process_dispatch(DiscordAccount *da, const gchar *type, JsonObject *data)
 {
+	/* webOS: data is json_object_get_object_member(obj, "d") from the caller
+	 * (discord_process_frame) - NULL whenever a dispatch frame's "d" is absent or the wrong
+	 * JSON type (an occasional malformed/unusual gateway frame, same flakiness class as every
+	 * other connector's guarded call sites - see teams_trouter.c). Every branch below reads off
+	 * data unconditionally; without this guard a single bad frame cascaded into 100+
+	 * g_hash_table_contains/insert_internal "hash_table != NULL" criticals from operating on
+	 * the resulting NULL object throughout this function - confirmed live, clustered right at
+	 * login (presence-sync burst). Skip this one event instead; the single unavoidable
+	 * json_object_get_object_member warning at the call site is json-glib's own behavior, not
+	 * ours to suppress. */
+	if (data == NULL) {
+		purple_debug_info("discord", "discord_process_dispatch: no/malformed data for %s, skipping\n", type ? type : "(null)");
+		return;
+	}
+
 	if (purple_strequal(type, "PRESENCE_UPDATE")) {
 		JsonObject *userdata = json_object_get_object_member(data, "user");
 		DiscordUser *user = discord_upsert_user(da->new_users, userdata);
@@ -4620,8 +4638,13 @@ discord_process_dispatch(DiscordAccount *da, const gchar *type, JsonObject *data
 			guint64 parent_id = to_int(json_object_get_string_member(thread, "parent_id"));
 			DiscordChannel *parent = discord_get_channel_global_int(da, parent_id);
 
-			if (parent && !g_hash_table_contains_int64(parent->threads, thread_id)) {
-				discord_add_thread(da, guild, parent, thread, guild_id);
+			if (parent) {
+				if (parent->threads == NULL) {
+					parent->threads = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, NULL);
+				}
+				if (!g_hash_table_contains_int64(parent->threads, thread_id)) {
+					discord_add_thread(da, guild, parent, thread, guild_id);
+				}
 			}
 		}
 
@@ -7036,7 +7059,32 @@ discord_process_frame(DiscordAccount *da, const gchar *frame)
 			gint64 seq = json_object_get_int_member(obj, "s");
 
 			da->seq = seq;
-			discord_process_dispatch(da, type, json_object_get_object_member(obj, "d"));
+
+			/* webOS: check "d"'s type BEFORE calling json_object_get_object_member on it,
+			 * don't rely on its return value for safety. Confirmed live via an LD_PRELOAD
+			 * interposition shim (backtrace() itself returns 0 frames on this ARM build, no
+			 * unwind tables - had to intercept json_object_get_object_member directly and
+			 * capture the caller's return address instead): "d" arrived as a JSON ARRAY for a
+			 * real DISPATCH frame during a Discord presence-sync burst, tripping the
+			 * 'JSON_NODE_HOLDS_OBJECT || JSON_NODE_HOLDS_NULL' assertion. On this build
+			 * g_return_val_if_fail's early-return apparently doesn't reliably stop execution
+			 * (G_DISABLE_CHECKS?), so the function fell through and reinterpreted the array
+			 * node's internal union AS an object - a garbage-but-non-NULL JsonObject* handed
+			 * to discord_process_dispatch, which then flooded 100+
+			 * g_hash_table_contains/insert_internal "hash_table != NULL" criticals from
+			 * repeatedly misusing it as a hash table. discord_process_dispatch's own
+			 * data==NULL guard (added earlier) never caught this because data was never
+			 * actually NULL - just corrupt. Checking the type here avoids calling the fallible
+			 * getter at all when it doesn't hold. */
+			JsonNode *d_node = json_object_get_member(obj, "d");
+			JsonObject *d_obj = (d_node != NULL && (JSON_NODE_HOLDS_OBJECT(d_node) || JSON_NODE_HOLDS_NULL(d_node)))
+			                    ? json_object_get_object_member(obj, "d") : NULL;
+			if (d_node != NULL && d_obj == NULL && !JSON_NODE_HOLDS_NULL(d_node)) {
+				purple_debug_info("discord", "discord_process_frame: \"d\" is not an object (type %d) for event %s, skipping\n",
+				                   (int) json_node_get_node_type(d_node), type ? type : "(null)");
+				break;
+			}
+			discord_process_dispatch(da, type, d_obj);
 
 			break;
 		}
@@ -7843,6 +7891,9 @@ discord_chat_threads(PurpleConnection *pc, int id, const gchar *filter)
 	GHashTableIter thread_iter;
 	gpointer key, value;
 	/* TODO: get archived thread data */
+	if (channel->threads == NULL) {
+		channel->threads = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, NULL);
+	}
 	g_hash_table_iter_init(&thread_iter, channel->threads);
 
 	gchar *threads_list = g_strdup(_("Active Threads:\n<pre>Creation Time       | Last Message Time   | Name"));
@@ -10343,6 +10394,9 @@ discord_get_thread_id_from_timestamp(DiscordAccount *da, PurpleConversation *con
 	GHashTableIter iter;
 	gpointer key, value;
 
+	if (channel->threads == NULL) {
+		channel->threads = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, NULL);
+	}
 	g_hash_table_iter_init(&iter, channel->threads);
 
 	while (g_hash_table_iter_next(&iter, &key, &value)) {
