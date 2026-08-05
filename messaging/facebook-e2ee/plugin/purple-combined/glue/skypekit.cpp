@@ -30,6 +30,7 @@
 #include <cstring>
 #include <cstdint>
 #include <ctime>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "skypekit.h"
@@ -74,7 +75,13 @@ extern "C" {
 	void sebinary_set(void *self, const void *data, unsigned len) asm("_ZN8SEBinary3setEPKvj");
 }
 
-static const unsigned kRtpPacketReceivedCmdId = 20;
+// Was 20 (0x14): traced ProcessCall's real dispatch via VideoHost's ELF-relocation vtable dump
+// (see WHATSAPP_VIDEO_STATUS.md Part 36) -- RtpPacketReceived's real vtable slot is +0x58, which
+// ProcessCall's case 0x13 calls (parses one param via rd_parms first, returns without wr_response
+// -- fire-and-forget, exactly matching this call's known behavior). Case 0x14 calls vtable+0x60
+// (StopPlayback), takes no params, and IS request/response -- every prior call was silently
+// invoking StopPlayback() with no arguments instead of RtpPacketReceived.
+static const unsigned kRtpPacketReceivedCmdId = 19;
 static const unsigned kRtpPacketReceivedFieldIndex = 91;
 static const unsigned kSendRTPPacketFieldIndex = 0;
 
@@ -220,6 +227,21 @@ static void *thread_a_main(void *) {
 // real read timeout (~57s) waiting for an ACK that will never arrive, which (before this was
 // understood) silently made every multi-packet test look like a one-shot connection.
 //
+// CORRECTED (see WHATSAPP_VIDEO_STATUS.md Part 36): the "unmodified end to end" analysis below
+// this comment was real but incomplete -- it only traced gst_skype_video_rtp_submit ->
+// gst_skype_rtp_src_write -> gst_skype_rtp_src_create, all genuinely custom gst_skype_* code
+// that does pass the buffer through unmodified. But gst_skype_rtp_src_create's output feeds a
+// *standard, unmodified* GStreamer `rtph264depay` element (clonkvhsrc's internal "depay") before
+// ever reaching the decoder -- that stage was missed. Confirmed live: sending raw Annex-B here
+// makes `rtph264depay` log "Received invalid RTP payload, dropping" on every single buffer
+// (gst_base_rtp_depayload_chain), because it validates real RTP structure. The 12-byte-header-
+// corruption theory below was reasoning about symptoms actually caused by the separate cmdId
+// bug (19 vs 20, see kRtpPacketReceivedCmdId) that was misrouting every call to StopPlayback()
+// instead of RtpPacketReceived() at the time -- not evidence against real RTP framing being
+// required. Restored h264_packetize()-based packetization below; clonkvhsrc's own init-time caps
+// (`application/x-rtp, clock-rate=90000, payload=96, encoding-name=H264`, confirmed via `strings`
+// on the real libpalmgstskype.so) dictate the payload type and clock rate used here.
+//
 // send_access_unit sends the RAW Annex-B access unit (exactly as skypekit_video_receive_frame
 // received it), with NO RTP header and NO RFC 6184 fragmentation. Decompiling the real 305
 // firmware end to end (VideoHost::RtpPacketReceived -> gst_skype_video_rtp_submit ->
@@ -233,10 +255,21 @@ static void *thread_a_main(void *) {
 // live "flickering/icon instead of clean video" symptom (some frames survive the corruption,
 // most don't). RtpPacketReceived's real role, despite the name, is just "hand me one already-
 // reassembled access unit at a time" -- h264_packetize's RFC 6184 framing was never needed here.
-static void send_access_unit(void *binclient, const unsigned char *data, unsigned len) {
+static const uint32_t kVideoRtpPayloadType = 96; // clonkvhsrc init-time caps: payload=(int)96
+static uint16_t g_tx_seq = 0;
+static const uint32_t g_tx_ssrc = 0x53545231; // arbitrary fixed SSRC, internal-only transport
+static int g_tx_ts_init = 0;
+static struct timeval g_tx_ts_start;
+
+struct rtp_emit_ctx {
+	void *binclient;
+	uint32_t rtp_ts;
+};
+
+static void send_rtp_packet_raw(void *binclient, const unsigned char *pkt, unsigned len) {
 	unsigned char sebinary[256];
 	sebinary_init(sebinary);
-	sebinary_set(sebinary, data, len);
+	sebinary_set(sebinary, pkt, len);
 
 	unsigned char header[4];
 	header[0] = 0x5a;
@@ -245,9 +278,48 @@ static void send_access_unit(void *binclient, const unsigned char *data, unsigne
 	header[3] = (unsigned char)kRtpPacketReceivedCmdId;
 	unsigned int headerLen = sizeof(header);
 	unsigned int responseId = 0;
-	binclient_wr_call_lst(binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
+	int wr_rc = binclient_wr_call_lst(binclient, /*ci=*/nullptr, &headerLen, (const char *)header,
 	                        &responseId, M_SkypeVideoRTPInterface_fields,
 	                        kRtpPacketReceivedFieldIndex, sebinary);
+	if (wr_rc != 0) {
+		fprintf(stderr, "wa-call: send_rtp_packet_raw wr_call_lst FAILED rc=%d len=%u\n", wr_rc, len);
+	}
+}
+
+static void emit_rtp_packet(void *ctx_v, const unsigned char *payload, size_t len, int marker) {
+	rtp_emit_ctx *ctx = (rtp_emit_ctx *)ctx_v;
+	unsigned char pkt[12 + 1400];
+	if (len > sizeof(pkt) - 12) len = sizeof(pkt) - 12; // h264_packetize's mtu already bounds this
+	pkt[0] = 0x80; // V=2, P=0, X=0, CC=0
+	pkt[1] = (unsigned char)((marker ? 0x80 : 0x00) | kVideoRtpPayloadType);
+	uint16_t seq = g_tx_seq++;
+	pkt[2] = (unsigned char)(seq >> 8);
+	pkt[3] = (unsigned char)seq;
+	pkt[4] = (unsigned char)(ctx->rtp_ts >> 24);
+	pkt[5] = (unsigned char)(ctx->rtp_ts >> 16);
+	pkt[6] = (unsigned char)(ctx->rtp_ts >> 8);
+	pkt[7] = (unsigned char)ctx->rtp_ts;
+	pkt[8] = (unsigned char)(g_tx_ssrc >> 24);
+	pkt[9] = (unsigned char)(g_tx_ssrc >> 16);
+	pkt[10] = (unsigned char)(g_tx_ssrc >> 8);
+	pkt[11] = (unsigned char)g_tx_ssrc;
+	memcpy(pkt + 12, payload, len);
+	send_rtp_packet_raw(ctx->binclient, pkt, (unsigned)(12 + len));
+}
+
+static void send_access_unit(void *binclient, const unsigned char *data, unsigned len) {
+	if (!g_tx_ts_init) {
+		gettimeofday(&g_tx_ts_start, nullptr);
+		g_tx_ts_init = 1;
+	}
+	struct timeval now;
+	gettimeofday(&now, nullptr);
+	long long elapsed_us = (long long)(now.tv_sec - g_tx_ts_start.tv_sec) * 1000000LL +
+	                       (now.tv_usec - g_tx_ts_start.tv_usec);
+	rtp_emit_ctx ctx;
+	ctx.binclient = binclient;
+	ctx.rtp_ts = (uint32_t)((elapsed_us * 90) / 1000); // 90kHz clock per clonkvhsrc's own caps
+	h264_packetize(data, len, /*mtu=*/1400, emit_rtp_packet, &ctx);
 }
 
 // Thread B never blocks in a way that needs pthread_cancel to interrupt (see the comment on

@@ -1607,3 +1607,1033 @@ real call so far), so forcing a restart is a working, if heavier-handed, substit
 build verified clean; `gowhatsapp_call_request_keyframe` confirmed present and correctly typed in
 the linked `.so`. Not yet exercised against a real PLI/FIR from the peer (only compile/link
 verified) — the packet-loss conditions that trigger it didn't occur during this session's calls.
+
+## Part 22 — two real firmware bugs found and fixed via binary patching `media-pipeline.real`: the black-screen root cause
+
+Follow-up session, driven by the still-open "audio works, incoming video never displays" symptom
+even after Parts 1–21's fixes. Built a local reproduction harness (`testInjectVideo`/
+`testStopInjectVideo` debug LS2 methods added to `glue/call.c`, reusing the production
+`clonk_open`→`videoCaptureStart`→`videoPlayerStart` path and injecting a real captured H.264
+SPS+PPS+IDR access unit via `skypekit_video_receive_frame()` on a timer) to iterate without needing
+a live call. Discovered along the way that the actual per-session GStreamer worker is **not**
+`mediaserver` itself but a child it `--spawn`s per call: `/usr/bin/media-pipeline.real` (`mediaserver`
+just supervises). Both bugs below live in that binary. Ghidra project (auto-analysis, no manual
+symbols needed — binary is unstripped): imported at
+`third_party/meowcaller` session scratch, function/vtable addresses below are from that binary's own
+symbol table.
+
+**Bug 1 — `setDisplayFull()` never enables the "VideoEnableDisplay" GStreamer property; its sibling
+`setDisplayPip()` does.** `media::pipeline::gst::element::VideoSink` has parallel setup functions for
+the two sink types: `setDisplayPip()` (self-view/outgoing) sets `VideoDeviceParams` then calls
+`setDisplayEnable(this, 1)`; `setDisplayFull()` (incoming/remote — what `initializeVPlayPipeline`
+uses) sets `VideoDeviceParams` and **stops there**, never calling `setDisplayEnable`. The
+`VideoEnableDisplay` property directly gates `palm_videosink_render()` (in
+`libPmMediaGstVideoSinkLib.so`, confirmed via decompile of the property-setter and the render
+function's early-exit check) — without it, every render call for the incoming sink logs `Entering
+Preroll: display state = false. not displaying frame.` and never reaches `vhm_write()` (the actual
+hardware overlay write), confirmed live via `gst_debug_child.log`: 3317/3317 `false`, 0 `true`,
+across an entire session including real calls. This is the direct, mechanical cause of "audio
+plays, video never appears" — frames were reaching the sink and being silently dropped at the very
+last step, every single time, for both real calls and the local harness. **Fix:** since the
+function bodies live in a read-only system binary (no source, no rebuild), patched the compiled
+ARM directly. Found a genuinely dead function (`setDisplayAngle`, confirmed zero real callers —
+only the synthetic dynsym "Entry Point" reference — via Ghidra reference-manager query) and
+overwrote its 60-byte body with a 6-instruction trampoline (`mov r4,lr / mov r0,r7 / mov r1,#1 / bl
+setDisplayEnable / mov r0,r5 / bx r4`), then replaced the single `mov r0,r5` instruction at the end
+of `setDisplayFull`'s tail (right after its own `g_object_set` call, before the existing
+`gst_structure_free` tail-call) with a `bl` to that trampoline — one 4-byte instruction changed at
+the call site, nothing else touched. Confirmed live post-patch:
+`PROP_VIDEO_DEVICE_PARAMS: type=full,...,display=TRUE` immediately followed by
+`PROP_ENABLE_DISPLAY: display_frames=TRUE`, for the real incoming sink, every time.
+
+**Bug 2 — `GST_STATE_CHANGE_NO_PREROLL` misclassified as failure in `startVPlayPipeline` (and every
+sibling start* function).** `ClonkPipeline::startVPlayPipeline()` calls
+`gst_element_set_state(pipeline, PLAYING)` and classifies the result via `1 < (result - 1)` — which
+correctly passes `SUCCESS`(1) and `ASYNC`(2) but incorrectly treats `NO_PREROLL`(3) as failure.
+`NO_PREROLL` is the normal, expected return for a pipeline containing a live source (exactly what
+`clonkvhsrc`/`skypevideosrc`, the incoming RTP video receiver, is) — not an error. Same bug pattern
+confirmed present in `startACapturePipeline`/`startAPlayPipeline` (audio) by disassembly; not yet
+patched there. **Fix:** single-byte patch, `cmp r1, #1` → `cmp r1, #2` at the comparison inside
+`startVPlayPipeline` (`0xb0ffc` in this binary's build) — now `FAILURE`(0) alone fails, everything
+else (`SUCCESS`/`ASYNC`/`NO_PREROLL`) passes. Confirmed this measurably changes real behavior: before
+the fix, the incoming pipeline never even attempted the `PAUSED`→`PLAYING` transition; after, it
+does.
+
+**Both patches applied directly to `/usr/bin/media-pipeline.real` on-device** (the shipped file, not
+a rebuild — there's no source for this binary). Verified byte-for-byte correct via `objdump`
+re-disassembly before deploying, and confirmed **the patched binary survives reboots** (persistent
+storage, not `/tmp`) — this is now the live, permanent state of this specific TouchPad. No `.so`/
+source-tree change corresponds to this fix; it's a device-local binary patch, undone by any future
+OS/firmware reflash. Backups of the original, unpatched `media-pipeline.real` and `mediaserver`
+kept in `/tmp/media-pipeline.real.orig_backup` etc. on-device (won't survive a reboot — `/tmp` is
+tmpfs) and in the session's own scratch directory.
+
+**Remaining open question, not yet resolved: a still-undiagnosed internal teardown after `PLAYING`
+is reached.** Even with both bugs fixed, the local test harness's incoming sink still gets torn down
+(`gst_element_set_state(clonk_video_play, NULL)`, no GStreamer `ERROR`/`EOS` message preceding it —
+confirmed via full `GST_STATES`/`GST_BUS`/`clonk`-category capture) somewhere between ~60ms and
+~600ms after reaching `PLAYING`, with the exact gap varying run to run. Traced the vtable dispatch
+(`ClonkPipeline`'s real vtable dumped directly from the binary's `_ZTVN5media8pipeline3gst13ClonkPipelineE`
+symbol, 36 slots identified by address) far enough to rule out the already-known, already-fixed
+keyframe-restart storm (Part 21's 25s cooldown — that's peer-PLI-driven via `call.go`/`call.c` and
+can't fire in this harness, which has no real peer) as the cause here specifically. As an
+*experiment only* (not deployed as a real fix — reverted before finishing this session), patched
+`stopVPlayPipeline`/`teardownVPlayPipeline`'s entry points to `bx lr` (immediate no-op return) to
+see what happens with teardown disabled entirely: the incoming sink then survives 100+ seconds
+without being torn down, but gets permanently stuck in `PAUSED`/`ASYNC` — `clonk_vplay_h264dec`
+(the H.264 decoder) reaches `PLAYING` but never outputs a single decoded buffer, so the sink never
+completes preroll and never renders anything either way. Since the harness only ever injects one
+static, repeated SPS+PPS+IDR access unit (no subsequent P-frames, no real RTP timing/sequencing),
+this "decoder never outputs anything" result is very plausibly a **test-data limitation, not a
+third platform bug** — a real call's continuous, properly-encoded/timed stream may decode fine
+where a single repeated keyframe does not. **This is the one thing Parts 1–22 have not been able to
+confirm without a real live call**: whether, with just the two confirmed-real fixes above (and
+without the experimental teardown no-op, which was reverted), a real incoming video stream now
+actually renders on screen end to end. The keyframe-restart cooldown (Part 21) and these two new
+fixes should, in principle, together be sufficient — a real call is the next and clearest way to
+find out.
+
+**Device state at the end of this session:** `/usr/bin/media-pipeline.real` on the live TouchPad
+carries both fixes (confirmed via md5 after an intentional reboot). `/etc/event.d/mediaserver`
+restored to its original, unmodified content (was temporarily edited mid-session to redirect
+`GST_DEBUG_FILE` to an isolated log path for cleaner capture — reverted). The experimental
+teardown-disabling patch was **not** kept in the final deployed binary. `mediaserver`/
+`imlibpurpletransport` both confirmed healthy and responding to LS2 calls after the final reboot.
+
+## Part 23: Narrowing the ~300ms teardown, and a deliberate stop point
+
+Picked the Part 22 open question back up: traced exactly which log line brackets the
+`gst_element_set_state(clonk_video_play, NULL)` call. Captured a full `GST_STATES`/`GST_BUS`
+trace of the ~16 GStreamer bus messages processed in the same main-loop iteration immediately
+before the `NULL` transition (`before_null.txt`) — every one of them is a routine
+`state-changed`/`stream-status`/`new-clock` message, all on the same thread (`0x2b617ea8`), and
+critically **none of them are logged as "discarded" by `busMsgCallback`** the way `stream-status`/
+`new-clock` messages are elsewhere in the same trace. That absence is the tell: `state-changed`
+messages are *not* being discarded, they're being actively handled.
+
+Dumped and decompiled `ClonkPipeline::busMsg_STATE_CHANGED` (`0xb0ac0`) directly (Ghidra recovered
+the real signature via debug info: `busMsg_STATE_CHANGED(GstPipelineType, GstElement*, GstBus*,
+GstMessage*)`, confirming param_2 is the pipeline type enum — 0/1/2/3, with our incoming sink as
+case 1 = VPlay). Its logic: on every state-changed message, it calls a query method through a
+**second vtable — not `ClonkPipeline`'s own**, dereferenced via a member pointer at `this+4`
+(some "owner"/host object, not yet identified — not `ManagedClonkPipeline`, which was already
+ruled out in Part 22 as an unrelated arbitration class, though its vtable happens to expose four
+similarly-shaped `*HasPipelineChanged` query slots at the same offsets, which may or may not be
+coincidental). Based on that query's result combined with the new/pending GStreamer state, it
+computes a boolean and calls a *second* method on the same owner object to report the outcome.
+Neither of these two calls is `gst_element_set_state` itself — this function only *notifies* the
+owner; whatever decides to actually tear the pipeline down lives inside that owner object's
+callback, in a class this session never mapped.
+
+**Decision: stopping here rather than reverse-engineering a third, unmapped class blind.**
+Continuing would mean identifying the owner class from scratch (likely `ClonkSession` itself, or
+a member of it), decompiling its vtable, finding the specific callback at slot `0x114` (VPlay's
+case), and tracing from there into whatever calls `teardownVPlayPipeline`/`stopVPlayPipeline` —
+realistically another multi-hour session with no guarantee of a clean single-instruction patch at
+the end of it (unlike the two bugs already fixed, which were both clean, isolated, one-function
+issues). Weighed against that: the test harness driving all of this analysis only ever feeds the
+*same single static IDR frame* on a timer (see `test_inject_frame_tick` in `glue/call.c`) — no
+real RTP sequence numbers, no P-frames, no realistic inter-frame timing. It's entirely plausible
+the owner object's "has your pipeline changed" query is reacting to something specific to that
+unrealistic input pattern (e.g. duplicate timestamps, no progress signal) rather than to a real
+platform bug that a genuine call's continuous stream would also trigger. Building a proper
+multi-frame injection harness from the real 240-frame `received.h264` capture (tracked as an open
+task) would help resolve that ambiguity, but is itself a non-trivial rebuild/redeploy/retest cycle
+for a question a single real live call answers directly and conclusively.
+
+**Bottom line for this session:** two real, isolated, deployed, reboot-surviving platform bugs
+fixed (Part 22). A third possible issue (early VPlay teardown) is real in the synthetic test
+harness but not yet confirmed to occur with genuine call data, and its root cause is only
+partially traced. Recommended next step is a real WhatsApp video call, not further synthetic
+reverse-engineering — that single test will show directly whether Parts 1-23's fixes are
+sufficient, and if not, whether the teardown reproduces under real conditions (in which case the
+`this+4` owner-object lead above is exactly where to resume).
+
+## Part 24: Identified the `this+4` owner class — and ruled it out as the trigger
+
+Continued the Part 23 lead at the user's request. The `this+4` pointer in `ClonkPipeline` is a
+`media::ClonkState*` (confirmed directly: `ClonkPipeline`'s constructor is literally
+`ClonkPipeline(media::ClonkState&)`, and its body does `*(ClonkState**)(this+4) = param_1;` with
+no pointer adjustment). `ClonkState` is *not* defined in `media-pipeline.real` itself — it lives in
+`/usr/lib/libmedia-api.so` (pulled from the device and analyzed statically; confirmed by symbol
+name against the running process's own `/proc/PID/maps`). `ClonkState` is a classic getter/
+setter/notify observer interface (`getVideoPlayerActive`/`setVideoPlayerActive`/
+`notifyvideoPlayerActive`, etc., one triad per property) — `ClonkSession` implements it, almost
+certainly by way of `media::AbstractClonk` (`ClonkSession`'s first base per its RTTI, base_count=2:
+`AbstractClonk` at offset 0, `ClonkHostListener` at offset 8 — `AbstractClonk` itself isn't defined
+in `media-pipeline.real`, so its full hierarchy wasn't traced further; not needed for what follows).
+
+Since `libmedia-api.so` is a PIC shared library, its vtable slots are zero in the raw file
+(runtime-relocated) — read the actual targets from the `.rela`/`.rel` table instead
+(`readelf -r`), cross-referenced against each of the four `initializeXXXPipeline` functions in
+`media-pipeline.real`, which each make an unambiguous, literal-argument call of the form
+`this+4->vtable[offset](true)` to mark their own pipeline "has a pipeline" — giving a ground-truth,
+per-pipeline-type offset without needing to guess `GstPipelineType`'s enum values:
+
+| offset | resolved `ClonkState` method | confirmed via |
+|---|---|---|
+| 0x104 | `setVideoCaptureHasPipeline(bool)` | called from `initializeVCapturePipeline` |
+| 0x108 | `setVideoPlayerHasPipeline(bool)` | called from `initializeVPlayPipeline` |
+| 0x10c | `setAudioCaptureHasPipeline(bool)` | called from `initializeACapturePipeline` |
+| 0x110 | `setAudioPlayerHasPipeline(bool)` | called from `initializeAPlayPipeline` |
+
+Applying that same offset arithmetic to `busMsg_STATE_CHANGED`'s two call sites (Part 23) gives:
+
+| `GstPipelineType` case | query call (offset) | notify call (offset) |
+|---|---|---|
+| 0 | `getAudioCaptureActive()` (0x84) | `setAudioCaptureActive(bool)` (0x11c) |
+| 1 | `getVideoCaptureActive()` (0x7c) | `setVideoCaptureActive(bool)` (0x114) |
+| 2 | `getAudioPlayerActive()` (0x88) | `setAudioPlayerActive(bool)` (0x120) |
+| 3 | `getVideoPlayerActive()` (0x80) | `setVideoPlayerActive(bool)` (0x118) |
+
+**This corrects a wrong assumption carried since Part 22**: `GstPipelineType` is not
+`[VCapture=0, VPlay=1, ACapture=2, APlay=3]` as assumed — it's interleaved,
+`[ACapture=0, VCapture=1, APlayer=2, VPlayer=3]`. Our incoming sink is **case 3**, not case 1.
+
+With the correct case, `busMsg_STATE_CHANGED`'s logic for VPlay reduces to: read the current
+`getVideoPlayerActive()` flag, combine it with the (pending, new-state) of *this* GStreamer
+state-changed message, and write the result back via `setVideoPlayerActive(bool)`. Concretely: it
+sets the flag to `false` only when the pipeline is either failing to reach `PLAYING` or has fully
+settled at `READY` (the ordinary bookkeeping you'd expect right after any stop, self-initiated or
+not) — **this function only ever reacts to a state transition already in progress; it never itself
+calls `gst_element_set_state`.** It's a passive property mirror, not a decision-maker. Confirmed
+this by exhaustively tracing the arithmetic; no code path in `busMsg_STATE_CHANGED` reaches a
+`gst_element_set_state` call directly or indirectly through `ClonkPipeline`'s own vtable.
+
+**Conclusion: the `this+4`/`ClonkState` lead is exhausted — it's a dead end, not the trigger.**
+`setVideoPlayerActive(false)` presumably fires a `notifyvideoPlayerActive()` callback through
+`ClonkState`'s observer-pattern base (`ClonkChangeListener`, seen registered via
+`ClonkSession::addClonkChangeListener` in `ClonkSession`'s own vtable), which could in principle
+reach back into LS2/whatever is actually deciding to tear the pipeline down — but that listener
+chain, and whatever code actually calls `gst_element_set_state(clonk_video_play, NULL)` in the
+first place, is still unmapped, and is a different, deeper investigation than this lead led to.
+
+Also attempted live-process memory inspection via `gdbserver`/`gdb-multiarch` over a
+`novacom -P` port forward to shortcut the static RTTI tracing. Confirmed workable in principle
+(one successful attach + memory read against a live `media-pipeline.real` process, verifying the
+binary loads at fixed static addresses with no ASLR) but proved too unreliable for sustained use
+this session: the tunnel drops non-deterministically, `info proc mappings` crashes this
+`gdbserver` build and kills the attached target outright (had to fully cycle `mediaserver` to
+recover), and every fresh attach's first connection attempt reliably fails. Consistent with the
+gdb limitations already documented in Part 6 — reads work, but the tooling around it is fragile.
+Static analysis (pulling and disassembling the actual shared libraries involved, as done here) was
+the more productive path.
+
+**Where to resume, if a real call reproduces the teardown**: find what registers as a
+`ClonkChangeListener` on the `ClonkSession`/`ClonkState` for the `videoPlayerActive` property (or
+more directly, search `media-pipeline.real` and `libmedia-api.so` for direct callers of
+`gst_element_set_state` with a `NULL`/1 target state near the VPlay pipeline, which was not done
+this session — the vtable-tracing approach answered "who gets told" but not "who actually acts").
+Device left in the same clean, two-patch-only state as Part 22/23 (`media-pipeline.real` md5
+`c92458a3c20a06876d6f25f61c5ff3b8`, upstart config original, `mediaserver` restarted cleanly and
+verified running post-investigation).
+
+## Part 25: Six more hypotheses tested — five ruled out, one genuine new anomaly surfaced
+
+Continued at the user's explicit request ("keep pushing on the ClonkChangeListener chain"). Result
+up front: **the exact trigger for the ~300ms VPlay teardown is still not found**, but the search
+space has narrowed a lot, and one previously-only-suspected finding (from a `call.c` comment
+written earlier this same overnight session, before compaction, referencing "tonight's
+disassembly") is now independently re-confirmed with solid ground truth rather than recollection.
+
+**Dead ends, now conclusively ruled out** (each traced to a real decompiled function, not inferred):
+
+1. **`ManagedClonkPipeline` as a `ClonkChangeListener`** (the Part 23/24 lead). It does inherit
+   `ClonkChangeListener` as a second base (confirmed via RTTI: base1 = `media::ClonkChangeListener`
+   at `this+8`), and overrides exactly 4 of its ~44 callbacks — `videoCaptureHasPipelineChanged`,
+   `videoPlayerHasPipelineChanged`, `audioCaptureHasPipelineChanged`, `audioPlayerHasPipelineChanged`
+   — but **all four overrides are byte-identical** (`ldr r3,[r0]; call [r3+0x84]`) and that shared
+   target slot resolves back to one of the four themselves, meaning this code is either dead or
+   depends on further derivation that doesn't exist in this binary. Not the trigger, and not even
+   clearly live code. It does **not** override `videoPlayerActiveChanged` (the property our actual
+   teardown-adjacent `setVideoPlayerActive(false)` bookkeeping call touches) at all.
+2. **`ManagedClonkPipeline::suspend()`/`pause()`/`configureArbitration()`** — real, meaningful
+   OS-level resource-arbitration logic (confirmed by decompile: checks
+   `getVideoPlayerHasPipeline()`/`getVideoCaptureHasPipeline()` via the real `ClonkState` vtable,
+   logs `"Suspending video (playback/capture) due to arb request"`), but **zero direct callers
+   exist anywhere in this binary** for `pause()`/`suspend()`/`configureArbitration()` — they're
+   only reachable via `AbstractManagedMediaResource`'s own external interface, i.e. driven by
+   mediaserver's OS-level resource arbiter reacting to real hardware contention (another app
+   wanting the camera, power events, etc.), which our synthetic single-process test never
+   triggers. Plausible in a real call under real contention; not applicable to our test.
+3. **`ClonkSession::handleEventCB`'s per-event `Watchdog`** — real, confirmed (every popped
+   `ClonkHostEvent` gets wrapped in a `media::util::Watchdog(name, 15000)` while
+   `processHostEvent` runs) but the timeout is **15000ms**, two orders of magnitude too slow to
+   explain a ~300ms teardown. Just a hang-safety-net, not our mechanism.
+4. **`ClonkPipeline::monitorVPlayDecSrcCB`** — a one-shot `GstPad` buffer probe on the decoder's
+   source pad that logs `"Saw first frame after %llu uS"` (success if <500ms) and then
+   self-removes. Purely diagnostic — computes and logs but takes no corrective action either way.
+   Also **would never fire at all** in our test, since (per Part 22) the decoder never produces a
+   single output buffer with our synthetic repeated-IDR data — so it's an inert bystander here.
+5. **Every teardown-capable `ClonkPipeline` method** (`stopVPlayPipeline`, `teardownVPlayPipeline`,
+   `ClonkPipeline::teardown()`, and the shared `teardownPipeline()` helper they all funnel into) —
+   confirmed via full-binary `objdump` search that **none of them have a single direct (`bl`)
+   caller anywhere in the binary**. They are only reachable through virtual dispatch on a
+   `shared_ptr<ClonkPipeline>`, which in practice means only `ClonkSession::processHostEvent`
+   (itself only reachable by an event actually being queued via `ClonkSession::postEvent`, which
+   is *also* only virtually dispatched — likely through the `ClonkHostListener` interface that the
+   LS2 method handlers use). This significantly narrows the search: the trigger is not some
+   free-floating internal timer or listener callback discovered so far — it has to be a genuinely
+   posted `ClonkHostEvent`, from somewhere.
+
+**New, ground-truth-confirmed anomaly (not newly discovered — re-verified from a same-session,
+pre-compaction `call.c` comment referencing "tonight's disassembly" and "the native
+busMsg_STATE_CHANGED bug"):** decompiled `ClonkSession::videoPlayerStart(ulong,ulong)` directly and
+confirmed byte-for-byte it constructs `ClonkHostEvent(type=7)` — so "event type 7 = videoPlayerStart"
+is solid, not a guess. Then re-read `processHostEvent`'s case 7 (`mp_processevent.txt` line
+199-240) against the now-fully-ground-truthed `gst::ClonkPipeline` vtable (Part 22's dump): case 7
+calls `ClonkSession::getVideoBitrate()` (offset `0x80` on `ClonkSession`'s own vtable) twice as a
+gate, and if it's non-zero, in addition to building/pushing a `VideoSettings` object, it also
+calls **vtable slot `0x28`, which is `startVCapturePipeline`, not `startVPlayPipeline` (`0x30`)** —
+confirmed via the same ground-truth vtable dump used for the two already-fixed and deployed bugs.
+**This is very likely gated off in our synthetic test** (we never call `videoCaptureStart`, so
+`getVideoBitrate()` almost certainly reads 0/unset and this branch never executes) — but in a
+*real* call, where `videoCaptureStart` runs first and does set a real bitrate, `videoPlayerStart`
+would, as an apparent side effect, **also (re-)start the capture pipeline** — a real, currently
+unexplained oddity worth its own investigation, separate from (and probably not the cause of) the
+test-harness-visible ~300ms teardown, but flagged here since it's now independently confirmed
+rather than just carried forward as a recollection.
+
+**Assessment**: five real hypotheses tested and eliminated with concrete evidence; the actual
+`gst_element_set_state(clonk_video_play, NULL)` caller is now known to be reachable only through
+`ClonkSession::processHostEvent`, meaning something is constructing and posting a
+`videoPlayerStop`-or-equivalent `ClonkHostEvent` ~300ms after `videoPlayerStart`, from inside this
+same process, without any LS2 call from `call.c` telling it to (confirmed no such call exists in
+the harness's timeline). Where that post would come from remains unfound after this session's
+effort. Given the breadth of internal candidates now ruled out, the two next-most-likely
+remaining explanations are: (a) something in `ClonkSession`'s own C++ logic auto-posts a
+stop/restart event synchronously as a side effect of some other call (worth grep'ing
+`postEvent`'s few dozen construction sites — every `ClonkSession::videoXXXStart/Stop` method looked
+at this session builds and posts its own event inline, so there may be a similar unexamined method
+that fires automatically), or (b) it is in fact a consequence of the test harness's synthetic data
+specifically (single repeated static IDR, no real RTP timing) rather than a discoverable "trigger
+function" at all — consistent with Part 22's decoder-never-outputs-a-frame finding — in which case
+no amount of further RE will find a dedicated trigger because the real mechanism is a downstream
+consequence of malformed/unrealistic input, not a bug with a single call site.
+
+Device state unchanged from Part 24 (clean two-patch build, md5 `c92458a3c20a06876d6f25f61c5ff3b8`,
+original upstart config, `mediaserver` running normally, confirmed post-investigation).
+
+## Part 26: False alarm — "device-state incident" was actually a second TOPAZ device
+
+**Correction to the original Part 26** (written earlier in this same session): the apparent
+unpatched-binary/reset-config/missing-`imdaemon.sh` scare was **not** a real device-state
+anomaly. There are two `topaz-linux` devices reachable via `novacom` on this network
+(`f3bf93d992db42d3d8f021e58e4bfc83cf5d1556`, the real target used all session, and a second,
+unrelated one, `0192530b6bc9f9496323c58995da96acab1bf3fe`, which reconnected partway through this
+session). `novacom` without an explicit `-d <nduid>` picks a default device that can silently
+change when a second device is present/reconnects, and a run of checks this session ended up
+hitting the *other* TouchPad — which of course has none of this project's patches, custom scripts,
+or WhatsApp account configured, exactly matching every symptom originally attributed to a mystery
+reset. Re-checked explicitly against `-d f3bf93d992db42d3d8f021e58e4bfc83cf5d1556` and confirmed
+everything was fine the entire time: `media-pipeline.real` still `c92458a3c20a06876d6f25f61c5ff3b8`,
+`/etc/event.d/mediaserver` still the Part 22-restored version with `GST_DEBUG` set,
+`imlibpurpletransport` (pid 1697) had been running continuously and healthily for the whole
+session (never actually needed any of the kill/relaunch cycles performed against the wrong
+device), and `testInjectVideo` immediately worked and spawned a fresh `media-pipeline.real` child.
+
+**Lesson for every future session on this device**: always pass `novacom -d
+f3bf93d992db42d3d8f021e58e4bfc83cf5d1556 ...` explicitly (or `-d` whichever nduid is confirmed via
+`novacom -l` at session start) rather than relying on the default-device selection, whenever more
+than one `topaz-linux` device might be connected.
+
+## Part 27: Decisive result — the decoder never outputs a frame, confirmed over 35s, cleanly
+
+Continued pushing on the teardown trigger per the user's explicit direction. Two infrastructure
+fixes made this possible that are worth keeping for future sessions:
+
+1. **`novacom run <cmd> > localfile` corrupts large output with NULL-byte padding.** This was the
+   real explanation for a lot of "empty log" confusion this session (not a real device issue).
+   The reliable pattern: gzip the file **on-device** first, then `novacom -d <nduid> get
+   file:///path/to.gz > local.gz` (matches how the earlier `libmedia-api.so` pull worked cleanly).
+   `/media/internal/gst_debug_child.log` itself also has a large leading run of real NUL bytes
+   (pre-allocation artifact, not a transport bug) — skip to the first non-NUL byte before treating
+   it as text.
+2. **A stray, still-ticking `g_timeout_add` from a much earlier test invocation** (hours old, from
+   a `delayMs=0 intervalMs=200` call) had been masking whether fresh `testInjectVideo` calls were
+   landing at all — `imstdout.log` kept showing old skypekit "sending access unit" traffic that
+   looked current but wasn't. A full device reboot (confirmed via `/proc/uptime`, not just a
+   process restart) was needed to get a trustworthy, fully clean baseline.
+
+With a genuinely clean boot and the reliable gzip-based log pull, captured the **complete, real**
+first-ever `videoPlayerStart` sequence for the first time this whole investigation:
+`initializeVCapturePipeline` at t=2.33s → `initializeVPlayPipeline` at t=3.93s (clonkvhsrc,
+clonk_vplay_h264dec, palmvideosink1 all built and linked correctly) → decoder reaches
+`GST_STATE_CHANGE_PAUSED_TO_PLAYING` at t=3.97s → **silent** teardown starts (`PLAYING to PAUSED`
+on `clonk_vplay_h264dec`) at t=6.50s, ~2.5s later this run (consistent with Part 22's already-
+documented 60ms-600ms+ run-to-run variance, just landing at the higher end here). Critically:
+**nothing at all logs on the `clonk` category between the last routine `handleThrottleCB` tick
+and the teardown** — confirming (independently of the static analysis) that whatever calls
+`gst_element_set_state(..., NULL)` doesn't log anything itself, consistent with `stopVPlayPipeline`
+specifically (confirmed by decompile to contain zero `gst_debug_log` calls) but not conclusively
+identifying it over `teardownVPlayPipeline`/`ClonkPipeline::teardown()`, which are equally silent.
+
+**This same clean capture also directly contradicts Part 25's `processHostEvent` case 7/8 reading**
+(that videoPlayerStart's handler calls `startVCapturePipeline` instead of `startVPlayPipeline`) —
+empirically, `initializeVPlayPipeline`/the VPlay pipeline demonstrably **does** get built and reach
+PLAYING correctly on every run. That decompiled reading is now considered unreliable and should
+not be trusted for this specific function — Ghidra's decompiler was very likely misrepresenting
+the true control flow of `processHostEvent`'s heavily boost::shared_ptr-laden switch statement.
+The `audioCaptureStart`/`Stop` ↔ `startVPlayPipeline`/`stopVPlayPipeline` type-11/12 dead-code
+finding from Part 25 (those event types are never constructed by any code in the binary) still
+stands as independently verified (constructor + vtable ground truth), but its relevance is now
+unclear given the case 7/8 reading it was cross-checked against turned out to be unreliable.
+
+**The decisive experiment**: redeployed the earlier session's experimental "no-op
+`stopVPlayPipeline`/`teardownVPlayPipeline`" patch (md5 `e61588a512f0a270fdec1639adf96e60`,
+Part 22) on a freshly-rebooted device, and let a `testInjectVideo` run for a full **35 seconds**
+uninterrupted (vs. Part 22's shorter ~100s-but-less-rigorously-captured original check). Result,
+unambiguous: the pipeline reaches `PAUSED_TO_PLAYING` exactly once and **never reverses** for the
+entire 35s (teardown fully suppressed, confirming the patch works as intended) — but
+`palm_videosink_render` was called **zero times** the entire run, and
+`palm_videodecoder_src_task` logs `"waiting for buffer"` once, immediately after entering
+PLAYING, and never logs anything else for the rest of the capture. **The hardware H.264 decoder
+never produces a single output frame, no matter how long it's given**, when fed our test harness's
+repeated single static IDR access unit with no advancing timestamps and no P-frames.
+
+**Conclusion**: this strongly supports Part 22's original hypothesis over any of the native-bug
+theories chased in Parts 24-26. The most likely explanation for the whole "~300ms-2.5s teardown"
+phenomenon is a **legitimate protective/cleanup mechanism** (still not pinpointed to an exact call
+site, and per the above it may not even matter which specific function it is) reacting correctly
+to a pipeline that is genuinely stuck — not an independent platform bug requiring more
+reverse-engineering. A real WhatsApp call's continuous, properly-encoded, properly-timestamped
+H.264 stream is very plausibly not affected by this at all. **Recommendation: stop pursuing this
+via further static/synthetic analysis — a real live call is now clearly the correct next step**,
+and is very likely to just work given the two confirmed-real fixes (Part 22) plus this session's
+finding that the teardown is most plausibly a test-harness artifact, not a third platform bug.
+
+**Device state at end of session**: reverted from the experimental no-op-teardown build back to
+the confirmed production two-patch build (md5 `c92458a3c20a06876d6f25f61c5ff3b8`), `mediaserver`
+cleanly restarted and verified running, upstart config confirmed intact (including the `GST_DEBUG`
+verbosity settings — those persisted across this session's reboots after all). Confirmed **two**
+`topaz-linux` devices exist on this network; this session's real target is
+`f3bf93d992db42d3d8f021e58e4bfc83cf5d1556` — always pass `-d` explicitly in future sessions.
+
+## Part 28: Built the real-stream test harness — and found the actual blocker
+
+At the user's request, built Task #32: a real, 240-frame, properly-timed multi-frame H.264 test
+injection harness, replacing the single-repeated-static-IDR one used through Part 27.
+
+**Implementation**: `received.h264` (the already-validated real captured stream from Part 1) sliced
+by the exact per-frame byte sizes in its companion `diag/callee/video.jsonl` (240 frames, sizes and
+`ts_ms` verified to sum/align perfectly, every slice starts on a real Annex-B start code — 232
+P-frames + 7 IDRs + 1 combined SPS/PPS/IDR first frame). Generated
+`glue/test_stream_data.h` (one flat byte array + parallel offset/size/inter-frame-delta-ms arrays)
+and added a second injection path in `call.c` (`test_inject_stream_tick`, gated by a new
+`realStream` param on the existing `testInjectVideo` LS2 method) that self-reschedules each frame
+with its *real* recorded delta instead of a fixed interval, looping back to frame 0 at the end.
+Rebuilt via `build-combined.sh` (clean build, no errors) and deployed the new `libwhatsmeow.so` to
+`.../com.palm.app.teams/backend/lib/purple-2/libwhatsmeow.so` (the actual on-device path,
+discovered via `/proc/<imlibpurpletransport-pid>/maps` — the wa-call plugin is hosted inside the
+Teams app bundle despite the name). Note for future sessions: `json_str()` in `call.c` only accepts
+**quoted** JSON string values (`"realStream":"1"`, not `"realStream":true` or `:1` unquoted) —
+sent the wrong format on the first few attempts and got silent no-ops with `realStream=0` in the
+logs before catching it.
+
+**Result — decisive, and different from what Part 27 predicted.** With the confirmed two-patch
+production build, the real-stream data made no difference: teardown still happens, now observed
+consistently in the **14-40ms range** (two independent fresh-session runs) rather than Part 27's
+2.5s outlier — meaning the real teardown timing floor is *faster* than any previous single test
+suggested, fast enough that it happens **before the test harness's `delayMs` wait has even
+elapsed**, i.e. before a single real (or fake) frame has been injected at all. This by itself
+already shows the teardown is not reacting to *frame content* — nothing has arrived yet when it
+fires.
+
+**Then, decisively: redeployed the no-op-teardown patch (Part 22/27, md5
+`e61588a512f0a270fdec1639adf96e60`) together with the new real-stream-capable plugin, and ran a
+full 40-second capture.** Teardown stayed suppressed as expected (single `PAUSED_TO_PLAYING`, no
+reversal). But `clonk_vplay_h264dec`'s `palm_videodecoder_src_task` still only logs `"waiting for
+buffer"` **once**, immediately after entering PLAYING, and never anything else — **zero decoded
+frames over 40 seconds, with real, valid, correctly-timed H.264 data being actively sent the whole
+time.** This conclusively **refutes** Part 22/27's "synthetic test data" hypothesis: the decoder
+doesn't fail to produce output because our test data is unrealistic. It fails regardless.
+
+**Traced further and found where the real disconnect is**: confirmed via the plugin's own stderr
+(`imstdout.log`) that skypekit Thread B is genuinely, actively sending correctly-sized access units
+the whole time (`"skypekit thread B sending access unit (562 bytes)"`, `(4317 bytes)`, `(233
+bytes)`, etc. — real, varying sizes matching the injected stream, not the old fixed 562-byte
+repeat). But on the receiving side, `gst_debug_child.log` shows **zero** push/chain/buffer activity
+on `clonk_vplay_h264dec:sink` for the entire 40 seconds — the pad gets activated
+(`gst_pad_activate_push`) and then nothing. **Data is being sent correctly by the client side and
+never arrives at the decoder's input inside `media-pipeline.real`.** The last thing logged before
+this silence is the already-long-flagged `gst_skype_video_src_change_state:<clonkvhsrc> "resolution
+not set on capsfilter"` WARN — previously dismissed in earlier parts of this investigation as
+benign (per the referenced Part 11/12 conclusion), but given this session's direct evidence that
+literally nothing gets through afterward, that dismissal should be treated as **unconfirmed, not
+settled** — it's the most concrete remaining lead for why the decoder never receives anything.
+
+**Where this leaves the investigation**: the real, currently-most-likely-correct picture is
+different from every theory chased in Parts 22-27. It is not (solely) about the teardown timing, and
+not about test data realism. The actual blocker is that `clonkvhsrc` — the GStreamer source element
+inside `media-pipeline.real` that's supposed to receive frames arriving over the SkypeKit Thread B
+socket bridge and inject them into the decode pipeline — never delivers anything to its downstream
+peer, even though the client side is confirmed actively writing real data to that socket the whole
+time. **Next session should start here**: decompile `gstskypevideosrc.c`'s buffer-producing/socket-
+reading logic (not yet done this whole investigation — all prior Ghidra work targeted
+`ClonkPipeline`/`ClonkSession`/`ClonkState`, never the `libpalmgstskype.so` plugin that actually
+implements `clonkvhsrc` itself) and specifically resolve whether "resolution not set on capsfilter"
+is truly non-fatal to data flow or is in fact silently blocking it via failed caps negotiation.
+
+**Device/build state at end of session**: `glue/test_stream_data.h` and the `call.c` real-stream
+harness are committed to the working tree (not reverted — this is real, reusable test
+infrastructure, not a throwaway experiment). The **experimental no-op-teardown**
+`media-pipeline.real` (md5 `e61588a512f0a270fdec1639adf96e60`) is what's currently deployed on
+device — **this must be reverted to the production two-patch build (md5
+`c92458a3c20a06876d6f25f61c5ff3b8`, available locally as `media-pipeline.real.patched2.gz`) before
+any real call is attempted**, since the no-op patch disables real hangup/teardown cleanup. The new
+`libwhatsmeow.so` (md5 `604f9af666c5ccaef0b1723b167f3197`) is deployed and is safe to leave in
+place — it only adds a new opt-in test path, `testInjectVideo`'s default (`realStream` omitted)
+behavior is unchanged from Part 22-27.
+
+## Part 29: Found and patched a third real platform bug — width/height never set on clonkvhsrc
+
+Pulled and fully decompiled `/usr/lib/gstreamer-0.10/libpalmgstskype.so` (never analyzed before
+this session — all prior Ghidra work targeted `media-pipeline.real` only). It's unstripped with
+full C++ symbols, which made mapping the whole `clonkvhsrc` (`gst_skype_video_src`) internals
+tractable in one sitting.
+
+**Architecture, confirmed via decompile**: `clonkvhsrc` is itself a mini-bin wrapping three real
+sub-elements — an internal `gst_skype_rtp_src` (a custom `GstBaseSrc` with its own blocking
+producer/consumer queue: `gst_skype_rtp_src_write()` enqueues + signals a `GCond`,
+`gst_skype_rtp_src_create()` waits on that same `GCond` and pops), a depayloader, and a
+**capsfilter**, linked in that order and ghosted out as `clonkvhsrc`'s single src pad.
+`gst_skype_video_rtp_submit()` (the function that ultimately receives incoming access units) does
+some optional pcap-file debug-dumping, then just calls `gst_skype_rtp_src_write()` — confirmed via
+decompile it has **no dependency on caps or resolution at all**, so the producer/consumer queue
+pairing itself is sound. Also mapped, and ruled out as relevant here: `clonkvhsrc`'s
+`change_state()` spawns a *separate*, independent thread running `gst_skype_video_src_in_loop`,
+which reads a local pcap-format file (`fopen` on the element's `"location"` property, magic bytes
+`0xa1b2c3d4`/`0xd4c3b2a1` checked) and replays it — apparently a genuine alternate operating mode
+for this element family (`gst_h264_file_src` also exists in `plugin_init`'s registration list), but
+irrelevant to our RPC-fed path, and confirmed **not** where `GstSkypeInstance::RunVideoHost` gets
+started (traced the actual thread-entry pointer via Ghidra's own resolved references — it's
+`gst_skype_video_src_in_loop`, not `RunVideoHost`/`S_threadVideo`). Could not fully pin down what
+*does* start `RunVideoHost` (zero direct callers found in either `media-pipeline.real` or
+`libpalmgstskype.so` itself — plausibly a lazy-init path triggered by the audio elements, not
+chased further), but per Part 17's already-existing, live-tested documentation it demonstrably does
+run and does accept Thread B's connection, so this remains a loose end rather than a blocker.
+
+**The actual bug**: `gst_skype_video_src_change_state()`'s `READY→PAUSED` handler checks two
+**global** (not per-instance) width/height variables before configuring the real caps on the
+capsfilter — `if (width < 1 || height < 1) { WARN("resolution not set on capsfilter"); }` else
+`g_object_set(capsfilter, "caps", <real 320x240 caps>, NULL)`. This is the exact, literal source of
+the long-standing `gstskypevideosrc.c:411 "resolution not set on capsfilter"` warning that earlier
+parts of this investigation (Part 11/12, an earlier session) had dismissed as benign. It isn't:
+`gst_skype_video_src_set_width(int)` / `set_height(int)` are real, exported, directly-callable C
+functions in this library whose entire job is to set those two globals — **and grepping both
+`media-pipeline.real` and `libpalmgstskype.so` itself for any caller of either function turns up
+zero** (confirmed via `nm -D` undefined-symbol search and Ghidra cross-reference search). Nothing,
+anywhere in this build, ever calls them. The globals sit at their BSS zero default forever, the
+`< 1` check always fires, and the capsfilter's caps are never configured for the real 320×240
+stream — a genuine, previously-unknown gap, structurally identical in spirit to Part 22's
+`setDisplayFull()`-missing-`setDisplayEnable()` bug, just one library over.
+
+**First patch attempt crashed the device — root-caused and fixed with a safer, cave-free patch
+instead.** The original plan (ARM trampoline in `gst_skype_video_src_init`, repurposing
+`gst_h264_file_src_unlock_stop`'s machine code as a cave) deployed cleanly but **crashed
+`media-pipeline.real` with SIGSEGV** on the very first real test (confirmed via `dmesg`:
+`minicore_launch: CRASH! media-pipeline.(5334) received 11`; no fresh minicore dump was actually
+saved to `/media/internal/cores/` to inspect, only stale ones from `Jul 26`, so the exact faulting
+instruction was never directly observed). Root cause was never proven but is almost certainly that
+`gst_h264_file_src_unlock_stop`'s address is a real `GstBaseSrcClass` vtable slot for the
+`gst_h264_file_src` element type — even though `ClonkPipeline.cpp` never instantiates that element
+by name, GStreamer 0.10's registry-scanning machinery can transiently instantiate every registered
+type to introspect it, which would call into the repurposed cave with a **completely wrong "this"
+pointer type** (a `GstH264FileSrc*`, not `GstSkypeVideoSrc*`), corrupting memory when the trampoline
+tried to jump back into `gst_skype_video_src_init`'s body using that wrong instance. Unlike Part 22's
+`setDisplayAngle` cave (verified fully dead via a real vtable dump with zero references, in
+`media-pipeline.real`), this session never did the equivalent rigorous check for
+`libpalmgstskype.so` — a real process error, not just bad luck.
+
+**The actual, deployed fix is simpler and doesn't need a cave at all.** Decompiling
+`gst_skype_video_src_change_state` directly showed that the two register values used in the
+width/height check (`r3`/`ip`) flow **completely unmodified** from the check straight through to
+`gst_caps_new_simple()`'s actual argument setup a few dozen instructions later — nothing reloads
+them from memory in between. That means the two 4-byte `ldr` instructions that read the (always-
+zero) global width/height at the point of the check can simply be replaced in-place with
+`movw r3, #320` / `movw ip, #240` — same instruction size, no branch, no cave, no external function
+call, entirely self-contained within a function that's unambiguously real, instance-correct code
+(it's called through `clonkvhsrc`'s own concrete, definitely-instantiated element). Verified via
+`objdump` re-disassembly: the `ble` branches that used to skip real caps-setting are now permanently
+dead (320 and 240 are always `> 0`), and the real `gst_caps_new_simple(..., 320, ..., 240, ...)` call
+now always executes. **Deployed and confirmed via live test: the "resolution not set on capsfilter"
+warning is completely gone** (zero occurrences in a fresh capture, vs. appearing on every single
+previous run this entire investigation) — this part of the fix is real and working. md5 of the
+deployed `libpalmgstskype.so`: `8a07e9de65fc9980047bc5668d8016cc`.
+
+**But this fix alone is not suffient — re-ran the Part 27 decisive experiment (no-op-teardown
+patch + this fix + the real 240-frame stream, 40 second capture) and the result is unchanged from
+Part 27: zero decoded frames, zero calls to `palm_videodecoder_chain` (the decoder's own input
+handler) for the entire 40 seconds**, even though the pipeline reaches `PLAYING` and stays there
+(teardown confirmed suppressed) and the caps are now genuinely correct. Traced further this
+session than ever before: confirmed via the plugin's own stderr that skypekit Thread B is still
+actively sending real access units the whole time, and confirmed via `gst_debug_child.log` that
+`clonk_vplay_h264dec:sink`'s pad gets activated but its `chain` function is **never once invoked**
+— meaning data still never crosses from `clonkvhsrc`'s internal producer/consumer queue out to the
+decoder, independent of caps/resolution entirely. The width/height bug was real, and the fix is
+real and safely deployed, but it is not "the" bug that's been driving Parts 22-29 — there is at
+least one more disconnect somewhere between `gst_skype_video_rtp_submit()` successfully being
+called (assumed, not directly confirmed) and `gst_skype_rtp_src_create()` actually producing a
+buffer for the depayloader/capsfilter/decoder chain to consume.
+
+**Also traced, and explicitly left unresolved**: neither `GstSkypeInstance::RunVideoHost()` nor
+`VideoHost::SetCallback()` (the method that would register the callback `RtpPacketReceived`
+ultimately needs to reach `gst_skype_video_rtp_submit`) have **any** real function-level caller
+anywhere in `media-pipeline.real` or `libpalmgstskype.so` itself (checked via `nm -D` and Ghidra
+cross-reference search both times) — only ambiguous "unknown @ address" references that are most
+likely vtable/GOT data entries, not call sites. Thread B's connection to
+`/tmp/vidrtp_from_skypekit_key` does empirically succeed (confirmed via the plugin's own log,
+consistent with the already-existing, live-tested Part 17 finding from an earlier session), so
+*something* is listening and accepting — but this session was unable to find where that something
+gets bootstrapped, or definitively confirm it dispatches into the specific, active
+`GstSkypeVideoSrc` instance backing our real pipeline rather than some other, disconnected one.
+**This is the most concrete remaining lead**: find what actually starts `RunVideoHost` (candidates
+not yet checked: whether it's triggered lazily from within the audio elements' own init/start paths,
+or from a constructor/`__attribute__((constructor))`-style static initializer this session's
+`.init_array`/`plugin_init` check didn't cover in enough depth), and from there trace whether its
+`ProcessCall` dispatch really reaches the correct, live `gst_skype_video_rtp_submit` target.
+
+**Device state at end of session**: production two-patch `media-pipeline.real` (md5
+`c92458a3c20a06876d6f25f61c5ff3b8`) redeployed, confirmed running cleanly.
+The width/height fix in `libpalmgstskype.so` (md5 `8a07e9de65fc9980047bc5668d8016cc`) is left
+deployed — it's safe (no crashes across multiple subsequent tests), it's a genuine improvement
+(eliminates a real, confirmed warning and sets real caps), and reverting it buys nothing since the
+underlying blocker is elsewhere. The experimental no-op-teardown `media-pipeline.real` build was
+used only for the one decisive test and is **not** what's currently deployed.
+
+## Part 30 — found and fully mapped the RunVideoHost bootstrap and RPC dispatch chain; a plausible fix tried and empirically ruled out
+
+Picked up the exact open thread from Part 29: "find what actually starts `RunVideoHost`."
+Decompiled `GstSkypeInstance`'s two constructors (nm `0x28660`/`0x28790`) and found the answer:
+the constructor unconditionally does `AudioHost::AudioHost()` + `VideoHost::VideoHost()` +
+**two** `g_thread_create_full()` calls (matching `S_threadAudio`/`S_threadVideo`) every time the
+lazy singleton (`GstSkypeInstance::getInstance()`) is first constructed by *anything* — so
+`RunVideoHost` starts as a side effect of whichever element (audio or video) happens to call
+`getInstance()` first. This resolves the open question cleanly: there is no video-specific bootstrap
+to find because the singleton's constructor always spins up both hosts together.
+
+**Fully decompiled `RunVideoHost()` (nm `0x29bc0`) and traced the real dispatch chain**, correcting
+Part 29's tentative reading:
+- It builds a `Sid::AVServer`/`BinServer` (listens on the `/tmp/vidrtp_from_skypekit_key` transport
+  key found via `strings`) and, critically, sets `this_00[+0xa0] = videoHostPtr` — i.e. it registers
+  the `VideoHost` instance itself (not the separate `BinClient` stub built alongside it) as the
+  callback object for its own RPC server.
+- `Sid::SkypeVideoRTPInterfaceServer::ProcessCall`'s case `0x14` (`kRtpPacketReceivedCmdId`)
+  dispatches through vtable slot `0x60` on that registered `this+0xa0` object — landing on
+  `VideoHost::RtpPacketReceived(SEBinary const&)` (nm `0x382c4`), confirmed via decompile to call
+  `gst_skype_video_rtp_submit(data, size, 1)` directly and unconditionally. The separate
+  `Sid::SkypeVideoRTPInterfaceCbClient::SendFrame`/`SendRTPPacket` methods found in Part 29 turned
+  out to be for a different, outgoing-relay leg (`this_01`/`AVTransportWrapper`, connected via
+  `Sid::AVTransportWrapper::Connect`), not the receive path — a wrong turn corrected this session.
+- `gst_skype_video_rtp_submit` (nm `0x2115c`) resolves its target purely via a **global**, mutex-
+  guarded pointer (no element parameter) — confirmed via raw disassembly (not just decompiler text)
+  the true address is nm/runtime-relative `0x64ca4` in `.data`. If that global is `0`, the function
+  just logs a debug message and returns — a fully silent no-op, no crash, matching the exact
+  observed symptom perfectly.
+- Found who writes that global: `gst_skype_video_src_change_state` (nm `0x2234c`, the same function
+  patched in Part 29 for the width/height bug) sets it unconditionally on READY→PAUSED
+  (`*(elem_ptr) = this`) and **clears it back to 0 on PAUSED→READY**, but only if it still equals
+  `this` (`if (registered == this) registered = 0`) — confirmed via Ghidra reference search
+  (`streq lr,[r8,#0xc]` at nm `0x224c4`) and byte-verified (`0x0588e00c`).
+
+**Hypothesis tested**: combined with Part 22/27/28's already-documented internal auto-stop/teardown
+behavior, a plausible full explanation was that the video-src element's own state briefly cycles
+back through READY (independent of `ClonkPipeline`'s own `stopVPlayPipeline`/`teardownVPlayPipeline`,
+which live in a different binary and were already shown in Part 28 not to be the full story),
+clearing this registration before/during real RTP arrival — explaining silent packet loss with no
+crash, exactly matching every symptom collected since Part 22.
+
+**Patched and tested directly**: NOP'd the conditional clear (`streq` → unconditional NOP,
+`0x0588e00c` → `0xe320f000`) on top of the confirmed caps-fix build (new md5
+`a2b64d11ad572118f88da889f327b2ff`), deployed, fresh `mediaserver` restart, and ran the Part 28
+real-stream harness (`luna-send palm://com.palm.whatsapp.call/testInjectVideo
+'{"delayMs":"500","realStream":"1"}'`, confirmed via `imstdout.log` that Thread B sent real,
+correctly-varying-size access units the entire run). **Result: no change.**
+`clonk_vplay_h264dec` logged exactly one `PAUSED_TO_PLAYING` and one `"waiting for buffer"`
+(`PalmOmxVideoDecoder.c:654`), then total silence for the whole capture — `palm_videodecoder_chain`
+never fires, identical to every prior run. Notably, in this run the outer `ClonkPipeline` teardown
+(Part 22/27/28's "~300ms auto-stop") **did not even occur** — the decoder's own state never reversed
+— yet the outcome was unchanged, which on its own already weakens the teardown-timing theory as
+the primary blocker for this specific "never receives a single buffer" symptom (as opposed to a
+possible separate, real-call-only issue).
+
+**Patch reverted** (not kept): beyond not helping, it introduces a real latent risk on its own
+merits — a stale registration surviving element teardown means a later, in-flight
+`gst_skype_video_rtp_submit` call could dereference a freed `GstSkypeRtpSrc` after its owning
+bin is destroyed (a genuine use-after-free), which is almost certainly *why* the original code
+clears the pointer on PAUSED→READY in the first place. Device restored to the known-good state:
+`libpalmgstskype.so` back to `8a07e9de65fc9980047bc5668d8016cc` (caps fix only),
+`media-pipeline.real` unchanged at `c92458a3c20a06876d6f25f61c5ff3b8`, `mediaserver` freshly
+restarted and confirmed healthy.
+
+**Where this leaves the investigation**: the entire RPC path from Thread B's socket connection
+down through `ProcessCall` → `VideoHost::RtpPacketReceived` → `gst_skype_video_rtp_submit` →
+`gst_skype_rtp_src_write` is now fully mapped and structurally verified correct by decompile, and
+the one concrete stateful hypothesis for silent packet loss at that boundary (the registration
+global) has been directly tested and ruled out as the (sole) cause. The blocker is still somewhere
+between a successful `gst_skype_rtp_src_write()` (enqueue) and `gst_skype_rtp_src_create()`
+(dequeue) actually producing output the depayloader/capsfilter/decoder chain receives — or,
+alternatively, the registration global genuinely never gets set at all for reasons not yet found
+(worth checking directly next time: live-read the actual value of the global at runtime rather than
+inferring it from behavior — this session's attempt via `gdbserver`/`gdb-multiarch` hit the same
+"'g' packet reply is too long" register-description mismatch history has run into before with this
+old `gdbserver` build talking to a modern `gdb-multiarch`; unlike Part 6's version this was a hard
+error, not just a warning, and wasn't worked around this session. Also worth checking next: whether
+`gst_skype_rtp_src`'s own pad ever activates its push-mode task at all (only `clonkvhsrc`'s pad
+*linking* was confirmed in the debug log this session, not its task/activation), and whether the
+internal depayloader element between `gst_skype_rtp_src` and the capsfilter is configured/receiving
+correctly.
+
+## Part 31 — confirmed the internal pad task DOES activate; found and fixed two real logging-visibility bugs; the RTP-delivery gap is now a clean, reproducible dead end pointing at the RPC layer itself
+
+Directly answered Part 30's open question: does the depayloader/rtp-src pad task ever activate?
+**Yes.** A clean debug capture shows `rtp:src`, `depay:src`/`depay:sink`, and `filter:src`/`filter:sink`
+all activating in push mode right on schedule (~t+1.34s into `initializeVPlayPipeline`), via generic
+`GST_PADS`-category tracing (`gst_pad_start_task`, `activated in push mode`) — independent of the
+plugin's own "skypevideosrc" debug category. The internal chain's plumbing is healthy.
+
+**Found two real logging-visibility bugs while chasing this, both fixed for future sessions:**
+1. `gst_pad_push`/`chain()`-level buffer traffic logs at `LOG`/`TRACE`, above the `GST_PADS:6` ceiling
+   the shipped `/etc/event.d/mediaserver` used — meaning **every prior session's "chain never fires"
+   conclusion was drawn from a verbosity level that couldn't have shown it either way.** Bumped to
+   `GST_PADS:7` (and added `skypevideosrc:7`/`skypekit:7`/`rtph264depay:7`/`rtpbasedepayload:7`,
+   `palmvideodecoder:7`) — this revealed the plugin's own category is literally named `skypevideosrc`
+   (source file prefix `gstskypevideosrc.c`/`gstskypertpsrc.c`), confirmed via a real debug line:
+   `gstskypertpsrc.c:286:gst_skype_rtp_src_create:<rtp> waiting for buffers` — the internal queue
+   consumer genuinely is running and genuinely is blocked (queue empty), not a logging artifact.
+2. `RunVideoHost`/`VideoHost`/`ProcessCall`/`RtpPacketReceived` (the C++ RPC bridge layer, decompiled
+   in Part 30) use GLib's `g_log(NULL, G_LOG_LEVEL_DEBUG, ...)`, **not** `gst_debug_log()` — a
+   completely different logging path that never touches `GST_DEBUG_FILE` at all. GLib's default
+   handler silently drops `G_LOG_LEVEL_DEBUG`/`INFO` messages unless `G_MESSAGES_DEBUG` is set, and
+   it was **not set anywhere in this device's config, likely for this entire multi-week
+   investigation** — meaning this whole RPC layer has been completely dark to every previous
+   session's log-based analysis. Added `env G_MESSAGES_DEBUG=all` to `/etc/event.d/mediaserver`.
+
+**Result after both fixes, on a genuinely clean full reboot (confirmed via `/proc/uptime`), with a
+single isolated `testInjectVideo` (`realStream=1`) run, no process killed mid-run**: `clonkvhsrc`
+builds correctly (`initializeVPlayPipeline` ×5, `clonkvhsrc` ×19), the internal `rtp`/`depay`/`filter`
+chain activates and blocks on `gst_skype_rtp_src_create`'s "waiting for buffers" — and, confirmed via
+`imstdout.log`, Thread B is actively sending real, correctly-varying-size access units the entire
+time. Yet **`RtpPacketReceived`, `gst_skype_video_rtp_submit`, and `gst_skype_rtp_src_write` show
+zero occurrences** in the bumped `GST_PADS`/`skypevideosrc` trace, and `mediaserver_flicker_debug.log`
+(where `g_log` output should land per `/proc/<pid>/fd` — confirmed fd 1/2 both point there) stayed at
+**0 bytes** throughout, even with `G_MESSAGES_DEBUG=all` active. This is no longer a visibility
+question — with both known logging gaps closed, the RPC delivery chain genuinely produces no
+observable trace of ever running, while everything upstream (Thread B send) and downstream (internal
+queue consumer) is confirmed alive and healthy.
+
+**Tested and ruled out this session**: a "stale Thread B connection" hypothesis (Thread B, living
+inside the long-running `imlibpurpletransport` process, connects once to
+`/tmp/vidrtp_from_skypekit_key` and might never reconnect across `media-pipeline.real` restarts,
+sending into an orphaned socket while a fresh `RunVideoHost` waits for a new client) — tested by
+force-restarting `imlibpurpletransport` itself before retesting; made no difference to the outcome.
+
+**Remaining open possibilities, next session should start here**: (a) the 0-byte flicker log could
+still be a genuine libc stdio full-buffering artifact specific to a long-lived, never-exiting process
+(stderr is unbuffered by POSIX by default, but GLib's log handler or C++ iostreams could plausibly be
+wrapping a differently-buffered `FILE*`/stream internally) — worth testing with `LD_PRELOAD`-based
+unbuffering or a genuinely clean `gdb`/`strace -e trace=write -p <pid>` attach (this session's
+`gdbserver`/`gdb-multiarch` attempt hit the same `'g' packet reply is too long` register-description
+mismatch as Part 6 — unlike Part 6 this was a hard error, and wasn't worked around); (b) it's possible
+the AVServer/AVTransportWrapper connection Thread B makes doesn't actually reach *this* fresh
+`RunVideoHost` instance at all — worth directly confirming via `strace -f -e trace=network,connect`
+on both processes during a fresh test, watching the exact socket-level handshake, rather than
+inferring success from "Thread B says it's sending" alone; (c) worth re-examining whether
+`RtpPacketReceived`'s dispatch inside `ProcessCall`'s case `0x14` (Part 30) is really reached given
+the *exact* command byte our own `skypekit.cpp` sends — cross-check the literal `cmdId`/field-index
+constants in `skypekit.cpp` (`kRtpPacketReceivedCmdId = 20`, `kRtpPacketReceivedFieldIndex = 91`)
+against `ProcessCall`'s real switch-case decode logic byte-for-byte, since a field-index or framing
+mismatch there would produce exactly this symptom (client "successfully" writes bytes, server's
+`ProcessCommands()` loop never recognizes them as a valid call) with zero errors on either side.
+
+**Device state at end of session**: `libpalmgstskype.so` confirmed back to the safe caps-fix build
+(md5 `8a07e9de65fc9980047bc5668d8016cc`), `media-pipeline.real` unchanged production build (md5
+`c92458a3c20a06876d6f25f61c5ff3b8`), `/etc/event.d/mediaserver` restored to its original content
+(verbosity bumps and `G_MESSAGES_DEBUG` were diagnostic-only, not kept — re-apply from this section
+if resuming this investigation), `mediaserver` freshly restarted and confirmed responding to
+`testInjectVideo`/`testStopInjectVideo`, no stray `media-pipeline.real`/test-injection timers left
+running, root filesystem was remounted `rw` mid-session (had reset to `ro` on reboot — needed for the
+`/etc/event.d/mediaserver` edits) and is currently `rw`; no further binary changes made this session.
+
+## Part 32 — strace confirms a live, fresh RPC write genuinely succeeds; server-side still shows nothing; error-checking added to `send_access_unit` as a permanent diagnostic
+
+Followed up Part 31's connection-tracing lead with `strace -f -p <media-pipeline.real pid> -e
+trace=network,read,write`. Initial read looked like a smoking gun — an `accept(61, <unfinished ...>)`
+that never completed for the whole 15s capture — but cross-referencing `imstdout.log`'s timestamps
+against the exact same PID (`clonk session open: palm://com.palm.mediad.Clonk_12286/` immediately
+followed by `skypekit thread B connected to mediaserver`) proved Thread B's actual video-socket
+connect had already completed *before* the strace attach raced to catch it; fd 61 was something else
+(most likely the audio path or an LS2 session socket). Lesson for next time: attach strace *before*
+triggering the test (e.g. via a wrapper `exec` if one can be inserted), not after — racing `ps` to
+find a freshly-spawned PID is inherently too slow to catch the first ~1s of a short-lived process's
+socket setup.
+
+**Read `skypekit.cpp`'s `send_access_unit()` (glue/skypekit.cpp:236) closely while chasing this**,
+and found the real client-side send call's return value was being silently discarded:
+`binclient_wr_call_lst(...)` returns `int` and the call site never checked it. Added error logging
+(`if (wr_rc != 0) fprintf(stderr, "wa-call: send_access_unit wr_call_lst FAILED rc=%d len=%u\n", ...)`),
+rebuilt via `build-combined.sh`, and deployed the new `libwhatsmeow.so` (md5
+`691f14b3393bde10a8ebe34b3d275cd8`) to
+`.../com.palm.app.teams/backend/lib/purple-2/libwhatsmeow.so`. (One deploy mishap along the way: a
+`cp` between two `novacom run` calls raced and truncated the live `.so` to 0 bytes for about a minute
+— caught immediately via `md5sum` after every write from now on, restored from a pre-saved backup,
+no lasting impact.)
+
+**Result, decisive on both sides of the picture:**
+- On a **stale** Thread B connection (only `mediaserver` restarted, not `imlibpurpletransport`, so
+  Thread B was still holding a handle to an already-dead `media-pipeline.real`): every single
+  `send_access_unit` call logged `wr_call_lst FAILED rc=2`. This **proves the error-check mechanism
+  is real and correctly distinguishes failure from success** — it isn't a no-op or always-zero stub.
+  It also is very likely a distinct, real, second bug in `skypekit.cpp` in its own right: Thread B's
+  data-send loop never checks this return value for reconnection purposes, so once connected it never
+  notices its peer died and never re-attempts `avtw_connect` — worth fixing separately (retry/backoff
+  on repeated `wr_call_lst` failure) since this exact scenario (`media-pipeline.real` dying/restarting
+  mid-session, e.g. after Part 22-30's teardown bug) would silently blackhole a real call's video too.
+- On a **genuinely fresh** connection (confirmed via the `clonk session open` / `skypekit thread B
+  connected to mediaserver` log pairing on a just-spawned PID), **zero** `wr_call_lst FAILED` lines
+  appeared across an entire real-stream run — the client-side RPC write reports success on every
+  single access unit, exactly as before. Combined with Part 31's finding (zero server-side trace of
+  `RtpPacketReceived`/`gst_skype_video_rtp_submit`/`gst_skype_rtp_src_write` even with full logging),
+  this now firmly rules out a silent client-side write failure as the cause. The gap is specifically
+  between "client's `wr_call_lst` returns 0" and "server's `ProcessCall`/`RtpPacketReceived` ever
+  runs" — i.e. either the bytes never actually reach the server's read loop despite the local `send()`
+  succeeding (kernel-level socket issue, wrong fd, or writing to a *different* connection than the one
+  `RunVideoHost`'s `accept()` produced), or they arrive but `BinServer::rd_command`/`rd_call` silently
+  fails to recognize them as a valid call and neither dispatches nor errors.
+
+**Attempted but inconclusive this session**: a follow-up strace specifically watching the server's
+`read()` calls on the connected socket (to settle the last question above directly) was planned but
+the test harness became increasingly unreliable partway through this session — `testInjectVideo`
+calls started requiring 2-3 retries to actually spawn a fresh `media-pipeline.real`, `luna-send -n 1`
+intermittently produced no visible reply over `novacom run` regardless of success/failure, and one
+`imlibpurpletransport` restart cycle left `clonk_open()` not spawning anything for several minutes
+without a clear cause in `imstdout.log`. Not clearly a real platform bug — more likely test-harness/
+transport friction from this session's unusually large number of back-to-back restarts. **Next
+session should start here**: with a patient, single clean reboot and generous settle time, attach
+`strace -f -e trace=network,read` to the target PID *before* calling `testInjectVideo` if possible
+(e.g. briefly pause `clonk_open()` with a `sleep`/env-gated hook, or just accept the race and retry
+until the attach lands before the "connected to mediaserver" log line), and watch specifically
+whether `read()`/`recv()` on the accepted video-socket fd ever returns bytes matching the sizes
+Thread B logs sending. If reads return 0 bytes despite a successful client write, the bug is a
+mismatched/wrong fd or socket-level issue; if reads return the right byte count but `RtpPacketReceived`
+still never fires, the bug is in `BinServer::rd_command`/`rd_call`'s parsing of our client's exact
+byte sequence (worth a byte-for-byte comparison against what `Sid::Protocol::BinServer`'s real
+disassembly expects, beyond the header comment's existing analysis in `skypekit.cpp:207-235`).
+
+**Device state at end of session**: `libpalmgstskype.so` unchanged (md5 `8a07e9de65fc9980047bc5668d8016cc`,
+caps-fix only), `media-pipeline.real` unchanged (md5 `c92458a3c20a06876d6f25f61c5ff3b8`, production
+build), `/etc/event.d/mediaserver` confirmed back to original content (no elevated verbosity left
+running). The new `libwhatsmeow.so` (md5 `691f14b3393bde10a8ebe34b3d275cd8`, adds the `wr_call_lst`
+error-check/log only, otherwise identical to the previous `604f9af6...` build) **is** left deployed —
+it's a pure diagnostic addition with no behavior change on the success path, safe to keep. No stray
+`strace`/test-injection processes left running; confirmed via `ps` at session end.
+
+## Part 33 — found and root-caused this whole session's test-harness flakiness (two real state bugs, both in our own test code, not the platform); wchan probing points at the same known teardown-timing issue from a new angle
+
+Continued straight from Part 32's plan (strace the server's `read()`s). `strace -f -p <mediaserver>`
+before triggering the test produced **zero** trace lines even for basic LS2/network activity on a
+process confirmed still healthy and responsive afterward (`State: S (sleeping)`, `luna-send` still
+worked) — concluded this is the same class of ancient-ptrace-tooling limitation already documented in
+Part 6 for `gdbserver` on this device, not a real finding, and abandoned server-side `strace` as an
+approach here.
+
+**Switched to a non-invasive alternative**: reading `/proc/<pid>/task/*/wchan` and `/status` (Name:
+field) to see what kernel call each thread is blocked in, without ptrace at all. This is what led to
+finding the real cause of this session's escalating test-harness unreliability (media-pipeline.real
+frequently not spawning, `testInjectVideo` needing repeated retries):
+
+**Bug 1 — `clonk_open()`'s idempotency guard (`glue/call.c:539`) doesn't know about processes we
+kill out-of-band.** `clonk_open()` no-ops if `g_clonk_uri[0]` is already set, by design — this is
+correct behavior for real concurrent-call races (its own comment explains this), but this whole
+session's habit of `kill -9`-ing `media-pipeline.real` directly for a "clean" retest (instead of
+calling `testStopInjectVideo` first, which drives `clonk_close()` and clears `g_clonk_uri`) left the
+plugin's view of the world stale: it kept believing a session was open long after mediaserver's side
+was dead, so every subsequent `testInjectVideo` silently no-op'd. Confirmed directly from
+`/media/internal/wacall_clonk.log` (written via `fopen`+`fclose` every call — immune to the stdio-
+buffering issue from Part 31/32 — a genuinely reliable diagnostic source, worth using first in future
+sessions over `imstdout.log`): repeated `clonk_open: skipped (uri=palm://com.palm.mediad.Clonk_27052/
+opening=0)` lines while `media-pipeline.real` PID 27052 was already long dead.
+
+**Bug 2 — `mediaserver`'s own session bookkeeping gets similarly confused by the same abrupt kills.**
+After properly calling `testStopInjectVideo` (confirmed real teardown via `clonk_close: tearing down
+session ...` in the diag log, not a no-op) and retriggering, `clonk_open_reply` still returned the
+**same stale session URI** (`Clonk_27052`) and the chain hung after `clonk_open_reply` — no
+`clonk_video_capture_start_reply` ever came. Required a full `stop mediaserver`/`start mediaserver`
+cycle (not just killing the spawned child) to actually clear this. **Lesson for every future session
+on this device**: never `kill -9` a `media-pipeline.real` test child directly — always call
+`testStopInjectVideo` first and confirm `clonk_close: tearing down session ...` (not `no-op`) in
+`wacall_clonk.log` before considering a session cleanly ended; if a session ever gets stuck (`open`
+succeeds but `capture_start_reply` never arrives), a full `mediaserver` restart is required, a plain
+process kill is not enough.
+
+**With a genuinely clean baseline** (full `mediaserver` + `imlibpurpletransport` restart, confirmed
+via `wacall_clonk.log` showing the complete real chain: `clonk_open` → `clonk_open_reply` →
+`clonk_video_capture_start_reply` → `fire_video_player_start` → `clonk_video_player_start_reply` →
+`TEST: starting real-stream frame injection loop`), immediately dumped all 13 threads of the
+resulting `media-pipeline.real` (confirmed matching PID, `Clonk_9337` ⟷ PID 9337 this time — the
+`Clonk_NNNN` URI number **is** the real spawned PID when the session is healthy, unlike the stale
+`Clonk_27052` case above which never actually pointed at a live process). **None of the 13 threads
+were named after `rtp`/`depay`/`filter`** (the internal `clonkvhsrc` chain confirmed present and
+task-activating in Part 31's `gst_debug_child.log` capture) — only capture-side threads (`Palm Video
+Encoder`, `Video`/`VideoSink Queue` ×3, `Camera Source`) plus unnamed `media-pipeline.` ones
+(`poll_schedule_timeout` ×5, `msm_ioctl_config`, `inet_csk_accept`). Most likely explanation: the
+several seconds of sequential `novacom run` round-trips between triggering the test and reading
+`/proc/<pid>/task` was enough time for the already-known internal auto-teardown (Parts 22/27/28,
+observed as low as 14-40ms in Part 28) to have already torn the VPlay pipeline's threads down before
+the check ran — this is independent, fresh evidence for the *same* already-documented teardown-timing
+issue, not a new bug, but it does confirm that **any live-inspection technique on this device needs
+to either attach before triggering the test, or be fast enough (single round-trip) to beat a teardown
+that can happen in under 50ms** — sequential multi-command `novacom run` probing (this whole
+session's dominant pattern) structurally cannot do that.
+
+**Next session should start here, in this order**:
+1. Read `/media/internal/wacall_clonk.log` first, always — it's unbuffered by construction and gives
+   the true state-machine trace (`clonk_open`/`clonk_open_reply`/`capture_start_reply`/
+   `player_start_reply`) that `imstdout.log` and `gst_debug_child.log` can't reliably show without the
+   Part 31 fixes (and even with them, only *inside* the plugin, not across the mediaserver boundary).
+2. Never `kill -9` a test session's `media-pipeline.real` directly; always `testStopInjectVideo` first
+   and verify the real teardown line.
+3. To catch the VPlay pipeline's threads/sockets alive, either instrument via a *single* combined
+   remote command (one `novacom run` invoking a small on-device script that triggers the test **and**
+   immediately dumps `/proc/<pid>/task/*/wchan` in the same shell invocation, avoiding the multi-
+   round-trip gap entirely), or resolve Part 31/32's real open item first — root-cause and fix the
+   sub-50ms teardown itself (Parts 22/27/28's original open thread) so there's no race to lose at all.
+
+**Device state at end of session**: same as Part 32 (`libpalmgstskype.so` md5
+`8a07e9de65fc9980047bc5668d8016cc`, `media-pipeline.real` md5 `c92458a3c20a06876d6f25f61c5ff3b8`,
+`libwhatsmeow.so` md5 `691f14b3393bde10a8ebe34b3d275cd8` with the `wr_call_lst` error-check kept,
+`/etc/event.d/mediaserver` original content). `mediaserver` and `imlibpurpletransport` both freshly
+restarted and confirmed healthy at session end (`testInjectVideo`/`testStopInjectVideo` round-trip
+verified clean via `wacall_clonk.log`); no test session left open, no stray `strace` processes.
+
+## Part 34 — decisively confirmed the RPC-delivery gap and the teardown-timing bug are two fully independent bugs, using today's improved instrumentation to redo Part 28's decisive test properly
+
+Directly answered a live question this session ("is the video pipeline stable now"): **no.** On a
+clean baseline, `clonk_vplay_h264dec` reaches `GST_STATE_CHANGE_PAUSED_TO_PLAYING` at t=1.153s and is
+torn all the way down to `READY_TO_NULL` by t=1.296s — a **~38ms** window in PLAYING, matching Part
+28's 14-40ms range almost exactly. This is the same still-open bug from Parts 22-28, unchanged.
+
+Reconstructed the Part 22/27/28 experimental no-op-teardown patch from scratch this session (the
+actual binary wasn't preserved across sessions — `/tmp` scratchpad doesn't persist): found
+`ClonkPipeline::stopVPlayPipeline()` (nm `0xb47f0`) and `::teardownVPlayPipeline()` (nm `0xb06e0`) via
+plain `nm -C` on a freshly-pulled `media-pipeline.real` (no Ghidra needed, binary is unstripped),
+confirmed both start with plausible ARM prologues, and patched each entry point to `bx lr` (`E12FFF1E`).
+**The resulting patched binary's md5 (`e61588a512f0a270fdec1639adf96e60`) exactly matches the value
+documented in Part 22/27/28** — byte-for-byte confirmation the reconstruction is identical to what
+worked before.
+
+Deployed this alongside *this session's* logging fixes (bumped `GST_DEBUG` categories +
+`G_MESSAGES_DEBUG=all`, neither of which existed when Part 28 ran its original 40s decisive test) and
+re-ran the exact same experiment: `testInjectVideo` with `realStream=1`, verified the complete healthy
+chain via `wacall_clonk.log` (`clonk_open` → `clonk_open_reply` → `capture_start_reply` →
+`player_start_reply`), then let it run a full 40 seconds untouched.
+
+**Result**: `PAUSED_TO_PLAYING` occurred once, `PLAYING to PAUSED` occurred **zero** times across the
+entire 40s — the no-op patch works exactly as before, teardown is fully suppressed. And even with that
+window wide open and Thread B confirmed actively sending the whole time (`imstdout.log`), **`palm_
+videodecoder_chain`, `RtpPacketReceived`, `gst_skype_video_rtp_submit`, and `gst_skype_rtp_src_write`
+all remained at zero** — identical to every timing-unconstrained test this session. This reconfirms
+Part 28's original finding, but this time with the improved visibility from Part 31/32 in place (which
+didn't exist yet in Part 28) rather than relying on `--gst-debug=4`-level logs that couldn't have shown
+these calls either way. **The teardown-timing bug (Parts 22-28) and the RPC-delivery gap (Parts 30-33)
+are now conclusively two separate, independent bugs** — fixing one will not fix the other, and both
+need to be resolved before video can display end to end.
+
+**Device state at end of session**: `media-pipeline.real` restored to the production build (md5
+`c92458a3c20a06876d6f25f61c5ff3b8`) — the no-op-teardown build was experimental-only for this test and
+is **not** deployed. The reconstructed no-op build is saved this time at
+`scratchpad/libs/media-pipeline.real.noop_teardown` (md5 `e61588a512f0a270fdec1639adf96e60`) in case
+this session's scratchpad happens to survive into the next one — don't count on it, the reconstruction
+recipe above (two `nm -C` symbols, `bx lr` at each) takes under a minute to redo if not. `libpalmgstskype.so`
+and `libwhatsmeow.so` unchanged from Part 32/33. `/etc/event.d/mediaserver` reverted to original (no
+elevated verbosity left running). Both `mediaserver` and `imlibpurpletransport` freshly restarted,
+confirmed healthy, no test session left open.
+
+**Where this leaves the investigation, concretely, for whoever picks this up next**: two independent,
+real, still-open bugs block video display:
+1. **Teardown-timing bug** (Parts 22-28): something tears `clonk_vplay_h264dec`/the VPlay pipeline
+   down ~14-40ms after reaching PLAYING, silently (no error/EOS on the bus), even with `ClonkPipeline`'s
+   own `stopVPlayPipeline`/`teardownVPlayPipeline` confirmed not to be the caller (no-op patching them
+   is a reliable *workaround*, not a fix — something else, not yet identified, still calls
+   `gst_element_set_state(..., NULL)` on the affected elements through some other path). Root cause
+   still unknown; the two known call sites are ruled out, and Part 25's dead-code findings
+   (`audioCaptureStart`/`Stop` type-11/12 events never constructed) remain the only solid lead not yet
+   fully chased down.
+2. **RPC-delivery gap** (Parts 30-33): `VideoHost::RtpPacketReceived`/`gst_skype_video_rtp_submit`
+   never fire despite a fully-verified-correct chain up to that point (client connects, client's RPC
+   write reports success every time, server's internal queue consumer is confirmed running and
+   healthy) and despite arbitrarily long PLAYING windows (this part's finding) ruling out any
+   timing/race explanation. The most concrete unexplored leads (from Part 32) remain: (a) strace the
+   server's `read()`s specifically, attaching *before* triggering the test to avoid the race that
+   defeated every attempt so far — possibly by writing a tiny wrapper that pauses `clonk_open()` behind
+   an env var this session didn't have time to add; (b) byte-for-byte verify our own `skypekit.cpp`'s
+   `send_access_unit()` wire format against `Sid::Protocol::BinServer::rd_command`/`rd_call`'s real
+   disassembly, beyond the existing header-comment analysis, since a subtle framing mismatch would
+   produce exactly this symptom (client succeeds, server never dispatches, no errors either side).
+
+## Part 35 — chased the framing-mismatch lead to ground: the wire protocol is confirmed byte-for-byte correct, not the bug
+
+Decompiled the full chain on both sides via `nm -C`-located symbols (no guessing needed — every
+function below resolved directly by demangled name): `BinClient::wr_call_lst` →
+`BinCommon::wr_preencoded_lst` → `wr_value`/`bl_write_bytes` on the client side;
+`BinServer::rd_command` → `BinCommon::rd_command`, `BinServer::rd_call`, and — critically —
+`AVServer::ProcessCommands()` (the actual caller of `ProcessCall`, not previously decompiled) on the
+server side.
+
+**Traced the real wire format precisely:**
+- `BinCommon::rd_command` reads exactly 2 raw bytes: byte 1 must be `0x5a` ('Z'); byte 2 becomes
+  `Command.type` verbatim (our `0x52`/'R', confirmed correct — this is what tells
+  `AVServer::ProcessCommands` to proceed to `rd_call` at all: `if (local_20 == 0x52) { rd_call(...); }`).
+- `BinServer::rd_call(ci, &cmdId, &arg2, &arg3)` reads **3 LEB128 varints off the wire in the order
+  arg2, arg3, cmdId** (i.e. its own `arg2`-labeled output param is filled first, `arg3`-labeled
+  second, `cmdId`-labeled third) — the *opposite* of what the parameter names suggest, and the
+  opposite of what `skypekit.cpp`'s existing header comment (Part 17-era) assumed.
+- **The critical link**: `AVServer::ProcessCommands()` calls `ProcessCall(this, cmdId, arg3)` — i.e.
+  it forwards `rd_call`'s *first-labeled* output (`cmdId`, which is actually the **third** value read
+  off the wire) as `ProcessCall`'s param_1 (echoed back as the response id, unused here since
+  `RtpPacketReceived` is fire-and-forget), and `rd_call`'s *third-labeled* output (`arg3`, actually
+  the **second** value read off the wire) as `ProcessCall`'s param_2 — **the actual `switch()`
+  dispatch key**.
+
+Net result: the dispatch key `ProcessCall` switches on is the **second** varint read off the wire
+(right after the two-byte `Z`/`R` header), not the third. Our client's header is
+`[0x5a][0x52][0x00][kRtpPacketReceivedCmdId=0x14]` — meaning the second varint read *is* `0x14`,
+landing exactly on `ProcessCall`'s `case 0x14:`, which calls vtable+0x60 (`VideoHost::
+RtpPacketReceived`, confirmed in Part 30). **The framing is correct.** (The third varint we send,
+`responseId`, lands on `ProcessCall`'s param_1 — the echoed-back id — which is irrelevant here since
+this call path never calls `wr_response`.) Also checked `AVServer::Connect()`, on the theory that a
+hidden protocol-level handshake beyond the raw socket accept might be silently failing — it's a
+one-line wrapper straight to `AVTransportWrapper::Connect(isServer=true, timeoutMs)`, no such
+handshake exists, so "Thread B connected to mediaserver" really does mean the RPC layer connection
+(not just the socket) is live.
+
+**This rules out the framing-mismatch hypothesis with certainty**, not just "probably fine" — every
+byte our client sends was traced through the real decompiled reader on the other end and lands
+exactly where it needs to. Combined with everything already established (Parts 30-34: task activates,
+connection completes, client's RPC write reports success every time regardless of how long the
+pipeline stays alive), **all individually-verifiable links in the chain — connect, write, wire
+format, dispatch, and the `RtpPacketReceived`→`gst_skype_video_rtp_submit` call itself — check out
+correct in isolation**, yet the empirical end-to-end result remains zero observed activity past the
+connection. This is now a genuinely narrow mystery: either (a) there's a second, still-unfound
+`VideoHost`/`GstSkypeInstance` instance mismatch (the registered callback object silently pointing at
+a different instance than the one actually processing `ProcessCommands`), or (b) `G_MESSAGES_DEBUG`
+genuinely doesn't reach whatever log path `g_log(NULL, G_LOG_LEVEL_DEBUG, ...)` calls in this binary
+use (worth testing directly: check if GLib's default handler is even installed, vs. a custom
+`g_log_set_default_handler` elsewhere in this process silently swallowing NULL-domain messages
+regardless of `G_MESSAGES_DEBUG`), or (c) the live values really do never arrive and the decompile,
+while structurally sound, is missing some runtime-only condition Ghidra's static analysis can't show
+(e.g. a value read from a global that's legitimately zero/null at runtime for a reason not yet found).
+
+**Next session's highest-value move, given the framing question is now closed**: get a *working*
+live memory/register read on this device. Two ptrace-based tools have now failed here for the same
+underlying reason (ancient `gdbserver`/`strace` build vs. modern host tooling — Part 6 and Part 33) —
+worth trying an OLDER/matched-vintage `gdb`/`strace` client build instead of the current host's
+modern one, or a completely ptrace-free approach: temporarily patch a single `write(2)` syscall (to a
+fixed, always-flushed fd/file) at the entry of `VideoHost::RtpPacketReceived` (nm `0x382c4`) directly
+into the binary — a minimal, low-risk instruction patch (not a cave/trampoline, just enough
+inline `mov`/`svc`/`bl write` sequence if it fits, or a short trampoline into confirmed-dead space)
+that would settle definitively, with zero dependency on GLib/GStreamer logging plumbing, whether this
+function is ever entered at all.
+
+**Device state at end of session**: unchanged from Part 34 (all binaries at their documented
+known-good md5s, no elevated logging left running, no test session left open).

@@ -81,6 +81,16 @@ type RelayMediaChannel struct {
 	assoc    *sctp.Association
 	dc       *datachannel.DataChannel
 	log      zerolog.Logger
+
+	// IceCheckReply is the raw bytes of the first reply received to the pre-DTLS ICE
+	// Binding Request (see ConnectRelayMedia's iceBindingRequest param), or nil if none
+	// arrived within the retry budget. IceCheckAttempts is how many send/wait cycles ran
+	// (1-3). Exported so the caller can classify the reply (BindingSuccess/Error/nothing)
+	// and log it durably -- performIceBindingCheck itself only logs via ephemeral
+	// zerolog.Debug, which is unrecoverable after the fact, and that gap made it
+	// impossible to tell whether a real call's ICE check ever got answered.
+	IceCheckReply    []byte
+	IceCheckAttempts int
 }
 
 // Close tears down the media stack in reverse order of construction.
@@ -163,8 +173,10 @@ func ConnectRelayMedia(relayAddr *net.UDPAddr, iceBindingRequest []byte, opts ..
 
 	// 1b. Real ICE STUN Binding Request/Response connectivity check, on this same UDP
 	// socket, before DTLS starts -- see doc comment above.
+	var iceCheckReply []byte
+	var iceCheckAttempts int
 	if len(iceBindingRequest) > 0 {
-		performIceBindingCheck(udp, relayAddr, iceBindingRequest, lg)
+		iceCheckReply, iceCheckAttempts = performIceBindingCheck(udp, relayAddr, iceBindingRequest, lg)
 	}
 
 	// 2. DTLS client (self-signed cert; skip server-cert verification).
@@ -202,30 +214,35 @@ func ConnectRelayMedia(relayAddr *net.UDPAddr, iceBindingRequest []byte, opts ..
 	}
 	lg.Debug().Str("label", DataChannelLabel).Msg("relay datachannel open")
 
-	return &RelayMediaChannel{udp: udp, dtlsConn: dtlsConn, assoc: assoc, dc: dc, log: lg}, nil
+	return &RelayMediaChannel{
+		udp: udp, dtlsConn: dtlsConn, assoc: assoc, dc: dc, log: lg,
+		IceCheckReply: iceCheckReply, IceCheckAttempts: iceCheckAttempts,
+	}, nil
 }
 
 // performIceBindingCheck sends pkt to relayAddr on udp and waits briefly for any reply, up
-// to 3 attempts. Best effort only (see ConnectRelayMedia's doc comment): logs the outcome
-// but never returns an error, since this is purely about getting the request onto the wire
-// in the right order before DTLS, not about strictly validating a real ICE-conformant
-// response here.
-func performIceBindingCheck(udp *net.UDPConn, relayAddr *net.UDPAddr, pkt []byte, lg zerolog.Logger) {
+// to 3 attempts. Best effort only (see ConnectRelayMedia's doc comment): never returns an
+// error, since this is purely about getting the request onto the wire in the right order
+// before DTLS, not about strictly validating a real ICE-conformant response here. Returns
+// the raw reply bytes (nil if none arrived) and how many send/wait cycles ran, so the
+// caller can log the outcome durably -- see RelayMediaChannel.IceCheckReply's doc comment.
+func performIceBindingCheck(udp *net.UDPConn, relayAddr *net.UDPAddr, pkt []byte, lg zerolog.Logger) ([]byte, int) {
 	buf := make([]byte, 1500)
 	for attempt := 1; attempt <= 3; attempt++ {
 		if _, err := udp.WriteToUDP(pkt, relayAddr); err != nil {
 			lg.Debug().Err(err).Int("attempt", attempt).Msg("ICE binding check: send failed")
-			return
+			return nil, attempt
 		}
 		_ = udp.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		n, _, err := udp.ReadFromUDP(buf)
 		if err == nil {
 			lg.Debug().Int("attempt", attempt).Int("reply_bytes", n).Msg("ICE binding check: got a reply")
 			_ = udp.SetReadDeadline(time.Time{})
-			return
+			return append([]byte(nil), buf[:n]...), attempt
 		}
 		lg.Debug().Err(err).Int("attempt", attempt).Msg("ICE binding check: no reply yet")
 	}
 	_ = udp.SetReadDeadline(time.Time{})
 	lg.Debug().Msg("ICE binding check: no reply after 3 attempts, proceeding to DTLS anyway")
+	return nil, 3
 }

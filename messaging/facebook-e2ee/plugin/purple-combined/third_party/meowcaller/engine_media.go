@@ -195,6 +195,29 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	}
 	defer ch.Close()
 
+	// Durable record of what the pre-DTLS ICE Binding Request actually got back, if
+	// anything -- previously only visible via ephemeral zerolog.Debug inside relay.go,
+	// unrecoverable after the fact. Classify the reply the same way the receive loop below
+	// classifies ALLOCATE-SUCCESS/ALLOCATE-ERROR, so a rejected or malformed ICE check
+	// shows up the same way a rejected Allocate already does.
+	{
+		fields := map[string]any{
+			"event": "ice_binding_check_result", "call_id": callID,
+			"attempts": ch.IceCheckAttempts, "got_reply": ch.IceCheckReply != nil,
+			"reply_bytes": len(ch.IceCheckReply), "reply_hex": hex.EncodeToString(ch.IceCheckReply),
+		}
+		if ch.IceCheckReply != nil {
+			mt, isStun := stun.StunMessageType(ch.IceCheckReply)
+			fields["is_stun"] = isStun
+			fields["msg_type"] = fmt.Sprintf("0x%04x", mt)
+			if stun.IsAllocateError(ch.IceCheckReply) {
+				code, _ := stun.ParseStunErrorCode(ch.IceCheckReply, log)
+				fields["stun_error_code"] = code
+			}
+		}
+		e.c.diag.Emit("stun", fields)
+	}
+
 	// Force-close the channel the instant the context is cancelled (call end), instead of
 	// relying solely on the deferred Close above. The receive loop below only checks
 	// ctx.Err() once per iteration, BEFORE calling the blocking ch.Recv() -- cancelling ctx
