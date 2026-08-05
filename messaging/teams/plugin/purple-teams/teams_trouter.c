@@ -108,6 +108,20 @@ teams_trouter_send_authentication(TeamsAccount *sa)
 	JsonObject *headers = json_object_new();
 	JsonObject *connectparams = json_object_get_object_member(sa->trouter_socket_obj, "connectparams");
 
+	/* webOS: sa->trouter_socket_obj can lack (or have a wrong-type) "connectparams" - a flaky/
+	 * empty trouter-info response, same root cause as the other guards in this file. Don't
+	 * json_object_ref(NULL) below (part of the json_object_get_object_member + hash_table NULL
+	 * flood); bail and let the caller's normal reconnect/retry path pick it up instead of
+	 * sending a malformed authenticate message. */
+	if (connectparams == NULL) {
+		purple_debug_info("teams", "Trouter: no connectparams yet, skipping authenticate\n");
+		json_object_unref(headers);
+		json_object_unref(arg0);
+		json_array_unref(args);
+		json_object_unref(obj);
+		return;
+	}
+
 	json_object_set_string_member(headers, "X-Ms-Test-User", "False");
 	gchar *auth_header = g_strdup_printf("Bearer %s", sa->id_token);
 	json_object_set_string_member(headers, "Authorization", auth_header);
@@ -245,9 +259,13 @@ teams_trouter_websocket_cb(PurpleWebsocket *ws, gpointer user_data, PurpleWebsoc
 			g_free(response_str);
 			g_free(response_msg);
 
+			/* webOS: most 3: frames carry no "headers" object at all (only gzip-encoded ones
+			 * do) - json_object_get_object_member returning NULL here is the NORMAL case, not
+			 * an error. Guard before reading a member off it (part of the json_object_get_
+			 * object_member + hash_table NULL flood otherwise). */
 			JsonObject *headers = json_object_get_object_member(request, "headers");
 			gchar *body = g_strdup(json_object_get_string_member(request, "body"));
-			if (purple_strequal(json_object_get_string_member(headers, "X-Microsoft-Skype-Content-Encoding"), "gzip")) {
+			if (headers != NULL && purple_strequal(json_object_get_string_member(headers, "X-Microsoft-Skype-Content-Encoding"), "gzip")) {
 				gsize body_len;
 				guchar *body_base64_decoded = g_base64_decode(body, &body_len);
 				gchar *body_unzipped = teams_gunzip(body_base64_decoded, &body_len);
@@ -717,14 +735,21 @@ teams_trouter_sessionid_cb(PurpleHttpConnection *http_conn, PurpleHttpResponse *
 	}
 	g_string_append_printf(url, "%ssocket.io/1/websocket/%s?v=v4&", socketio, session_id);
 
+	// webOS: same "obj" as teams_trouter_info_cb (passed through as user_data), which already
+	// guards this exact lookup (connectparams can be absent - guarded macro returns NULL, don't
+	// pass NULL to json_object_get_members, it asserts). This sibling call site read it a
+	// second time without the guard - apply the same fix. No params just yields a bare
+	// (harmless) url.
 	connectparams = json_object_get_object_member(obj, "connectparams");
-	list = json_object_get_members(connectparams);
-	for (iter = list; iter; iter = iter->next) {
-		const gchar *key = iter->data;
-		const gchar *value = json_object_get_string_member(connectparams, key);
-		g_string_append_printf(url, "%s=%s&", key, purple_url_encode(value));
+	if (connectparams != NULL) {
+		list = json_object_get_members(connectparams);
+		for (iter = list; iter; iter = iter->next) {
+			const gchar *key = iter->data;
+			const gchar *value = json_object_get_string_member(connectparams, key);
+			g_string_append_printf(url, "%s=%s&", key, purple_url_encode(value));
+		}
+		g_list_free(list);
 	}
-	g_list_free(list);
 	g_string_append_printf(url, "tc=%s&", purple_url_encode("{\"cv\":\"" TEAMS_TROUTER_TCCV "\",\"ua\":\"TeamsCDL\",\"hr\":\"\",\"v\":\"" TEAMS_CLIENTINFO_VERSION "\"}"));
 	g_string_append_printf(url, "con_num=%" G_GINT64_FORMAT "_%d&", 1234567890123, 1); //TODO sa->trouter_count++
 	g_string_append_printf(url, "epid=%s&", purple_url_encode(sa->endpoint));
