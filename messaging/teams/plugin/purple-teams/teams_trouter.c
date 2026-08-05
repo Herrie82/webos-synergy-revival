@@ -749,7 +749,14 @@ teams_trouter_sessionid_cb(PurpleHttpConnection *http_conn, PurpleHttpResponse *
 	}
 	sa->trouter_surl = g_strdup(json_object_get_string_member(obj, "surl"));
 
-	sa->trouter_registration_timeout = purple_timeout_add_seconds(TEAMS_TROUTER_TTL - 10, teams_trouter_register, sa);
+	/* NOT TEAMS_TROUTER_TTL-10 (~24h): that assumed the registrar honors the 86400s ttl we send in
+	 * the registration body. Real-world testing (2026-08-04) showed otherwise -- a call placed
+	 * ~30 minutes after the last successful registration (with zero renewal in between, since the
+	 * 24h timer never gets close to firing in any real session) failed in ~2s on the caller's side
+	 * with NOTHING reaching our trouter at all: the SkypeSpacesWeb/TFL calling registration had
+	 * gone stale well before 24h. Renewing every 5 minutes gives comfortable margin under that
+	 * observed window without spamming the registrar. */
+	sa->trouter_registration_timeout = purple_timeout_add_seconds(300, teams_trouter_register, sa);
 
 	json_object_unref(obj);
 	g_strfreev(node_parts);

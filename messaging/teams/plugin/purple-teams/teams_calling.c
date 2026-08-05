@@ -132,6 +132,13 @@ typedef struct {
 	 * the initial START). Answering immediately would race and very likely still send the STALE
 	 * pre-restart local creds. */
 	gchar            *pending_reneg_answer_link;
+
+	/* Last remote ice-ufrag we actually applied via RESTART. Teams' trouter redelivers the same
+	 * renegotiation push (observed live: 3 identical-ufrag frames within ~2s of each other) - see
+	 * teams_calling_handle_renegotiation()'s dedup check. Without this, every redelivery tears
+	 * down and rebuilds the ICE agent, so no single ICE session ever gets enough uninterrupted
+	 * time to finish connectivity checks before being restarted again. */
+	gchar            *last_restarted_ufrag;
 } TeamsMediaProc;
 
 static TeamsCallVideoCb g_video_cb = NULL;
@@ -447,17 +454,44 @@ media_send_offer(TeamsMediaProc *mp)
 	if (mp->answered || !mp->our_ufrag || !mp->our_pwd || !mp->our_txkey) return;
 	mp->answered = TRUE;
 
+	/* Derive our OWN connection address for c=/m= from the first UDP host candidate, same as
+	 * build_answer_sdp() - a hardcoded 0.0.0.0:3480 placeholder (the previous version of this
+	 * offer) is not what a real client sends. */
+	gchar *our_ip = NULL; int our_port = 3480;
+	if (mp->our_cands) {
+		gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1); int j;
+		for (j = 0; cl[j]; j++) {
+			if (strstr(cl[j], " UDP ") && strstr(cl[j], "typ host")) {
+				gchar **t = g_strsplit(g_strstrip(cl[j]), " ", -1);
+				if (t[0] && t[1] && t[2] && t[3] && t[4] && t[5]) {
+					our_ip = g_strdup(t[4]); our_port = atoi(t[5]);
+				}
+				g_strfreev(t);
+				break;
+			}
+		}
+		g_strfreev(cl);
+	}
+
 	sdp = g_string_new(mp->want_video
 		? "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nb=CT:4000\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n"
 		: "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nb=CT:4000\r\nt=0 0\r\na=group:BUNDLE 0\r\n");
-	g_string_append(sdp, "m=audio 3480 RTP/SAVP 102 9 0 8\r\nc=IN IP4 0.0.0.0\r\n");
+	g_string_append_printf(sdp, "m=audio %d RTP/SAVP 102 9 0 8\r\n", our_port);
+	g_string_append_printf(sdp, "c=IN IP4 %s\r\n", our_ip ? our_ip : "0.0.0.0");
 	g_string_append(sdp, "a=rtpmap:102 opus/48000/2\r\na=rtpmap:9 G722/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n");
 	g_string_append(sdp, "a=fmtp:102 minptime=10;useinbandfec=1\r\na=rtcp-mux\r\na=mid:0\r\na=sendrecv\r\na=label:main-audio\r\n");
 	g_string_append_printf(sdp, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", mp->our_ufrag, mp->our_pwd);
 	g_string_append_printf(sdp, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
+	/* Emit UDP candidates only - same fix as build_answer_sdp(): Teams' NGC parser can reject the
+	 * WHOLE blob over ICE-TCP lines. This offer previously included every candidate unfiltered
+	 * (TCP included), which is the leading suspect for outgoing calls consistently getting
+	 * "attached" (rung, answered) but then timing out with no signaling ever coming back from the
+	 * callee (code 408) - matches a parser silently rejecting our SDP wholesale, not a real
+	 * connectivity failure. */
 	if (mp->our_cands) { gchar **cl = g_strsplit(mp->our_cands->str, "\n", -1);
-		for (i = 0; cl[i]; i++) if (cl[i][0]) g_string_append_printf(sdp, "a=%s\r\n", cl[i]);
+		for (i = 0; cl[i]; i++) if (cl[i][0] && strstr(cl[i], " UDP ")) g_string_append_printf(sdp, "a=%s\r\n", cl[i]);
 		g_strfreev(cl); }
+	g_string_append(sdp, "a=ice-options:trickle\r\n");
 
 	/* Outgoing video (dial-with-video): add a second m-line matching build_answer_sdp's video
 	 * codec shape - no HAR reference for an outgoing-with-video offer (only incoming was
@@ -465,7 +499,8 @@ media_send_offer(TeamsMediaProc *mp)
 	 * "CONFIRM WITH CAPTURE" status. call->video_active only goes TRUE once the callee's answer
 	 * confirms it (teams_calling_handle_media_answer) - this just reflects our OWN request. */
 	if (mp->want_video) {
-		g_string_append(sdp, "m=video 3480 RTP/SAVP 107 99\r\nc=IN IP4 0.0.0.0\r\n");
+		g_string_append_printf(sdp, "m=video %d RTP/SAVP 107 99\r\n", our_port);
+		g_string_append_printf(sdp, "c=IN IP4 %s\r\n", our_ip ? our_ip : "0.0.0.0");
 		g_string_append(sdp, "a=rtpmap:107 H264/90000\r\na=rtpmap:99 rtx/90000\r\n");
 		g_string_append(sdp, "a=fmtp:107 level-asymmetry-allowed=1;packetization-mode=1;"
 		                     "profile-level-id=42e01f;max-fs=8160;max-mbps=244800;max-fps=3000\r\n");
@@ -476,6 +511,7 @@ media_send_offer(TeamsMediaProc *mp)
 		g_string_append_printf(sdp, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", mp->our_ufrag, mp->our_pwd);
 		g_string_append_printf(sdp, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
 	}
+	g_free(our_ip);
 
 	offer_esc = g_strescape(sdp->str, "");
 	legid = g_strdup_printf("%08X%08X%08X%08X", g_random_int(), g_random_int(), g_random_int(), g_random_int());
@@ -738,6 +774,7 @@ teams_media_stop(void)
 	g_string_free(mp->our_cands, TRUE);
 	g_free(mp->our_ufrag); g_free(mp->our_pwd); g_free(mp->our_txkey); g_free(mp->callagent_id);
 	g_free(mp->pending_reneg_answer_link);
+	g_free(mp->last_restarted_ufrag);
 	g_free(mp);
 	teams_call_log("media stopped");
 }
@@ -1167,22 +1204,34 @@ teams_calling_handle_renegotiation(TeamsAccount *sa, JsonObject *body_obj, const
 		gchar *rpw = sdp_line_val(blob, "a=ice-pwd:");
 		gchar *rxkey = sdp_gcm_key(blob);
 		if (ruf && rpw) {
-			gchar *s = g_strdup_printf("RESTART %s %s %s\n", rxkey ? rxkey : "-", ruf, rpw);
-			if (write(mp->in_fd, s, strlen(s)) < 0) {}
-			g_free(s);
-			{ gchar **rlines = g_strsplit(blob, "\n", -1); int j;
-			  for (j = 0; rlines[j]; j++) {
-				  gchar *l = g_strstrip(rlines[j]);
-				  if (g_str_has_prefix(l, "a=candidate:")) {
-					  gchar *r = g_strdup_printf("RCAND %s\n", l + 2);
-					  if (write(mp->in_fd, r, strlen(r)) < 0) {}
-					  g_free(r);
+			/* Dedup: Teams' trouter can redeliver the identical renegotiation push (same remote
+			 * ufrag) - a real client only actually changes ICE creds when it genuinely moves to a
+			 * new leg. Restarting the ICE agent on every redelivery never lets a session finish
+			 * connectivity checks before being torn down again. Skip the RESTART (but still update
+			 * video_active/answer below) when the ufrag hasn't actually changed. */
+			if (mp->last_restarted_ufrag && !strcmp(mp->last_restarted_ufrag, ruf)) {
+				teams_call_log("renegotiate: same ufrag as last RESTART (uf=%s) - skipping, "
+				               "ICE session already in progress", ruf);
+			} else {
+				gchar *s = g_strdup_printf("RESTART %s %s %s\n", rxkey ? rxkey : "-", ruf, rpw);
+				if (write(mp->in_fd, s, strlen(s)) < 0) {}
+				g_free(s);
+				{ gchar **rlines = g_strsplit(blob, "\n", -1); int j;
+				  for (j = 0; rlines[j]; j++) {
+					  gchar *l = g_strstrip(rlines[j]);
+					  if (g_str_has_prefix(l, "a=candidate:")) {
+						  gchar *r = g_strdup_printf("RCAND %s\n", l + 2);
+						  if (write(mp->in_fd, r, strlen(r)) < 0) {}
+						  g_free(r);
+					  }
 				  }
-			  }
-			  g_strfreev(rlines);
+				  g_strfreev(rlines);
+				}
+				teams_call_log("renegotiate: sent RESTART+cands to engine (uf=%s)", ruf);
+				g_free(mp->last_restarted_ufrag);
+				mp->last_restarted_ufrag = g_strdup(ruf);
+				sent_restart = TRUE;
 			}
-			teams_call_log("renegotiate: sent RESTART+cands to engine (uf=%s)", ruf);
-			sent_restart = TRUE;
 		} else {
 			teams_call_log("renegotiate: offer missing ice-ufrag/pwd, cannot restart ICE (uf=%d pw=%d)",
 			               ruf != NULL, rpw != NULL);

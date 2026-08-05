@@ -1,5 +1,94 @@
 # Teams NGC voice calling — status & morning runway
 
+## ⭐ 2026-08-05 session: video RTP fix, ICE-storm fix, and the real blocker (dual-instance launch race)
+
+Picked up from the 08-01 checkpoint (MediaError-410 fixed, video SDP shape matches a real capture).
+Five real, evidenced fixes this session, plus one still-open gap.
+
+### 1. Video RTP wire-format bug (`skypekit.cpp`) — same class of bug already fixed in
+WhatsApp/Telegram this marathon, ported over: `kRtpPacketReceivedCmdId` was `20`, should be `19`
+(ProcessCall's real dispatch key, traced via VideoHost's ELF-relocation vtable — see
+`messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md` Part 36 for the full trace), and
+`send_one_packet()`'s `wr_call_lst` call used the broken `(&cmdId, "RtpPacketReceived")` calling
+convention (writes the literal debug string onto the wire, never a real protocol header) instead of
+the real `[0x5a]['R'][2 LEB128 varints]` header. Both fixed, built, deployed.
+
+### 2. ICE-restart storm from un-deduplicated renegotiation pushes (`teams_calling.c`)
+Teams' trouter can redeliver the *identical* renegotiation push (confirmed live: 4 of 5
+renegotiation frames in one real call shared the exact same remote ICE ufrag within ~2 seconds).
+`teams_calling_handle_renegotiation()` unconditionally sent a fresh `RESTART` to the media engine
+for every push, tearing down and rebuilding the ICE agent every time — no single ICE session ever
+got long enough uninterrupted to finish connectivity checks before being restarted again. Fixed:
+track `mp->last_restarted_ufrag`, skip the `RESTART` (but still update `video_active`/answer) when
+the ufrag hasn't actually changed. Verified live in a real call: two duplicate pushes correctly
+logged `"same ufrag as last RESTART... skipping"` instead of restarting; the call held stably
+through multiple genuine renegotiations and ended on a normal user hangup.
+
+### 3. Stale call-registration renewal (`teams_trouter.c`)
+`teams_trouter_register()`'s periodic renewal timer was `TEAMS_TROUTER_TTL - 10` (~24h, based on
+the `ttl:86400` value *we* send in the registration body). Real-world evidence: a call placed ~30
+minutes after the last successful registration, with zero renewal in between (the 24h timer never
+gets remotely close to firing in any real session), failed in ~2s on the caller's side with
+*nothing* reaching our trouter at all — the SkypeSpacesWeb/TFL calling registration goes stale well
+under 24h regardless of what TTL we request. Renewal interval changed to 5 minutes.
+
+### 4. Outgoing offer SDP — hardcoded placeholder address + unfiltered ICE-TCP candidates
+(`media_send_offer()`, `teams_calling.c`). This path was always the least-validated one (no HAR
+capture of an outgoing-with-video offer existed before this session). Two bugs, both ported from
+the already-validated `build_answer_sdp()`: (a) `m=`/`c=` hardcoded `0.0.0.0:3480` instead of a
+real address derived from the first gathered UDP host candidate; (b) all candidates were emitted
+unfiltered, including ICE-TCP ones — `build_answer_sdp()` already had a comment explaining Teams'
+NGC parser can reject the *whole* blob over ICE-TCP lines, but the offer never got the same fix.
+Both fixed. Confirmed real improvement live: before, outgoing calls got an instant/silent
+`code=408 "no signaling after attach from callee endpoints"` every time; after, the callee's
+client now actually parses the offer and answers (`mediaAnswer` received, call goes active with
+audio) — never happened before this fix.
+
+### 5. THE REAL BLOCKER: dual-instance transport launch race (found + fixed, cross-connector)
+Most of a night's remaining flakiness (calls "registered" but never receiving `dial`, hours of
+total log silence, a call that seemed to work but the callee never got the signaling) traced to an
+infrastructure bug, not application code: `ls-hubd`'s on-demand activation races independently
+against the upstart-managed resident daemon, and — because all four connectors' own
+`com.palm.<x>.call.service` files bypassed the launch wrapper (`Exec=/usr/bin/imlibpurpletransport`
+directly, skipping the PmLog semaphore self-heal, SSLFIX, and log redirection `imwrap.sh` provides)
+— the losing instance in that race could be a fully-alive, fully-logged-in, permanently
+unresponsive ghost process for hours. Full writeup, fix, and verification steps:
+`messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md` ("Dual-instance
+launch race"). Two-part fix: route all four `.call.service` files through `imwrap.sh`; add a
+`mkdir`-based singleton lock in `imwrap.sh` itself. Both deployed and verified live (single clean
+process tree + clean single registration sequence, confirmed after this fix by killing the
+transport and checking `ps` + the log for the rejected-duplicate-launch message).
+
+### Still open
+- **Outgoing calls: `408 "Call Controller timed out while waiting for acknowledgement"`.** Now
+  gets much further (mediaAnswer received, active with audio — fix #4 above) but still fails after
+  the callee's `acceptance` push. Ruled out: a missing HTTP ack (mined a real outgoing-call HAR's
+  decoded trouter WebSocket frames — `/home/herrie/Downloads/teams.live.com-outgoing.har` has a
+  `_webSocketMessages` array with the full real signaling sequence — the real client does nothing
+  beyond the same generic trouter-level `3:::{id,status:200}` push-ack our code already sends
+  unconditionally for every frame). Current best guess: a genuine ICE/media end-to-end connectivity
+  gap on the callee's side against our offered candidates (`teams-media.log` does show `ICE state
+  connected`/`ready` reachable in general, but the specific failing call went silent for 32s with
+  no further renegotiation after `acceptance`, unlike working calls). Not yet root-caused with a
+  clean, isolated test (every outgoing attempt this session was confounded by either the
+  dual-instance bug or overlapping-call testing artifacts — see below).
+- **Video over a real, clean single call**: not yet cleanly confirmed either direction. Every test
+  that showed "connects then drops in ~7s, no video" this session turned out to have a confounding
+  factor once traced: either (a) a trouter reconnect landing mid-call (self-inflicted, from a
+  redeploy moments earlier), (b) two overlapping calls racing on the same account (our code only
+  tracks one `TeamsCall` per account — a second call's teardown can collaterally kill state a first,
+  still-active call was relying on), or (c) a one-off network I/O error on the `attach` POST
+  (`Error reading from api.flightproxy.skype.com: Input/output error`, trouter's own WebSocket
+  dropped within the same second) — not an application bug. A genuinely clean, single, isolated
+  call (no recent redeploy, no second call anywhere near it) hasn't been tested since the
+  dual-instance fix landed. That's the highest-value next test.
+- **Real HAR captures now available** for future digging: `~/Downloads/teams.live.com.har`,
+  `teams.live.com-outgoing.har`, `teams.live.com-incoming.har`, `teams.live.com-incoming-video.har`
+  — each has a decoded `_webSocketMessages` array with the real trouter push/ack sequence, not just
+  WebRTC-level SDP/ICE stats (which `calling/captures/rtcstats_dump` +`webrtc_internals_dump`
+  already cover). Use these before guessing at any further signaling-shape questions.
+
+
 ## ⭐ 2026-07-29 overnight: FULL PATH BUILT + DEPLOYED (signaling verified, media = first attempt)
 
 **Verified working on device:** incoming personal-Teams call is delivered → parsed → **rings the
