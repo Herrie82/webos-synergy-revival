@@ -707,29 +707,50 @@ pub async fn handle_received<S: presage::store::Store + Clone + 'static>(
     manager: &mut presage::Manager<S, presage::manager::Registered>,
     account: *mut crate::bridge_structs::PurpleAccount,
     received: presage::model::messages::Received,
+    first_connect: &mut bool,
 ) {
     match received {
         presage::model::messages::Received::QueueEmpty => {
-            // this happens once after all old messages have been received and processed
+            // webOS CORRECTION (2026-08-05): this fires far more often than "once after all old
+            // messages have been received and processed" (the upstream comment's claim, kept below
+            // for context) - CAPTURED LIVE: roughly every 30-90s during otherwise-idle, fully-online
+            // operation, not just after a stream reconnect. Anything unconditional in this branch
+            // runs on that same cadence for the life of the connection.
             crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("finished catching up.\n"));
 
-            // webOS chatthread fix: prime every stored contact's phone_number attribute from the
-            // persistent store BEFORE reporting connected, so the transport's getFullBuddyList (fired
-            // on connected) writes each Signal buddy's ims.value as +E.164 rather than the raw ACI.
-            // Otherwise phone-addressed messages fail Person.findByIM(type_signal) in the chatthreader
-            // and spawn duplicate "+<number>" conversations. Queued before connected:1 so these run
-            // first on the main thread. See prime_contact_phone_numbers().
-            crate::contacts::prime_contact_phone_numbers(account, manager).await;
+            if *first_connect {
+                *first_connect = false;
+                // webOS chatthread fix: prime every stored contact's phone_number attribute from the
+                // persistent store BEFORE reporting connected, so the transport's getFullBuddyList
+                // (fired on connected) writes each Signal buddy's ims.value as +E.164 rather than the
+                // raw ACI. Otherwise phone-addressed messages fail Person.findByIM(type_signal) in the
+                // chatthreader and spawn duplicate "+<number>" conversations. Queued before connected:1
+                // so these run first on the main thread. See prime_contact_phone_numbers().
+                // MOVED INSIDE first_connect (2026-08-05): this was previously unconditional on the
+                // (wrong) assumption that QueueEmpty fires once and that re-priming on every
+                // recurrence was cheap. It isn't - prime_contact_phone_numbers() calls
+                // presage_handle_contact() per stored contact, which unconditionally calls
+                // presage_blist_set_online() (blist.c) for EVERY one of them, i.e. exactly the same
+                // full-buddy-list presence re-broadcast connected:1 was fixed to stop sending, just
+                // via a second path this fix missed the first time. CAPTURED LIVE: with only the
+                // connected:1 gate in place, a ~59-buddy account still logged 50-60 status-change
+                // lines roughly every 30-90s, unchanged from before that fix. The E.164 data doesn't
+                // change after the first priming in practice, so gating this too is safe.
+                crate::contacts::prime_contact_phone_numbers(account, manager).await;
 
-            // now that the initial sync has completed, the account can be regarded as "connected" since it is ready to send messages
-            // see https://github.com/whisperfish/presage/blob/3f55d5f/presage/src/manager/registered.rs#L574 which says:
-            // „As a client, it is heavily recommended to process incoming messages and wait for the Received::QueueEmpty messages before giving the ability for users to send messages.“
-            // NOTE: if an error occurs between login and here, libpurple does not automatically close the connection
-            crate::bridge::append_message(crate::bridge::Message {
-                account: account,
-                connected: 1,
-                ..Default::default()
-            });
+                // now that the initial sync has completed, the account can be regarded as "connected" since it is ready to send messages
+                // see https://github.com/whisperfish/presage/blob/3f55d5f/presage/src/manager/registered.rs#L574 which says:
+                // „As a client, it is heavily recommended to process incoming messages and wait for the Received::QueueEmpty messages before giving the ability for users to send messages.“
+                // NOTE: if an error occurs between login and here, libpurple does not automatically close the connection
+                crate::bridge::append_message(crate::bridge::Message {
+                    account: account,
+                    connected: 1,
+                    ..Default::default()
+                });
+            } else {
+                crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO,
+                    format!("already connected - skipping the phone-number priming + buddy re-broadcast.\n"));
+            }
         }
         presage::model::messages::Received::Contacts => {
             // this happens in response to manager.request_contacts()

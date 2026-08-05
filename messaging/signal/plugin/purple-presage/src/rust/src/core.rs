@@ -617,6 +617,18 @@ async fn receive<S: presage::store::Store + Clone + 'static>(
         crate::call_bridge::set_ice_servers(ice);
     }
     let mut consecutive_errors: u32 = 0;
+    // webOS: the underlying stream ends spuriously on ordinary network hiccups (see this fn's own
+    // top comment) and the loop below transparently re-opens it - each re-open re-drains to a fresh
+    // Received::QueueEmpty, which used to re-send connected:1 every single time. On the C side that
+    // fans out into presage_blist_buddies_all_set_online(), a full re-broadcast of EVERY buddy's
+    // presence (CAPTURED 2026-08-05: a ~59-buddy account logged 50+ status-change lines in under a
+    // second, repeating every couple of minutes as the stream flapped) - pure log/CPU churn since
+    // nothing about the buddies actually changed, and one of several loads implicated in a
+    // transport crash-loop that day. connected:1 only needs to fire once per login (libpurple's
+    // connection state never actually leaves CONNECTED across these transparent reconnects, so
+    // re-sending it was never doing anything besides the broadcast). Scoped here, not as a static,
+    // so a genuinely fresh login (new receive() call) still gets its one legitimate broadcast.
+    let mut first_connect = true;
     loop {
         match manager.receive_messages().await {
             Err(err) => {
@@ -635,7 +647,7 @@ async fn receive<S: presage::store::Store + Clone + 'static>(
                 futures::pin_mut!(messages);
                 while let Some(received) = futures::StreamExt::next(&mut messages).await {
                     crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("received: {received:?}\n"));
-                    crate::receive::handle_received(&mut manager, account, received).await;
+                    crate::receive::handle_received(&mut manager, account, received, &mut first_connect).await;
                 }
                 crate::bridge::purple_debug(account, crate::bridge_structs::PURPLE_DEBUG_INFO, format!("receive stream ended; reconnecting…\n"));
             }
