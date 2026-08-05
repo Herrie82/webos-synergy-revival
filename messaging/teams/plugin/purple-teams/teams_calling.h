@@ -75,6 +75,16 @@ typedef struct _TeamsCall {
 	 * answer actually confirms it - see TeamsMediaProc.want_video in teams_calling.c. */
 	gboolean video_active;
 
+	/* Video intent, known from the moment the call starts (unlike video_active above, which is
+	 * confirmed-late: only true once actually negotiated). Incoming: whether the initial offer's
+	 * SDP has a non-inactive m=video line, checked at parse_call_notification() time. Outgoing:
+	 * the dial()'s own video param, set at call creation. This is what the webOS UI's video
+	 * marker/switch-to-video affordance should be driven by - using video_active for this (as
+	 * this file originally did, mirroring an equivalent bug already found and fixed in the
+	 * Telegram/WhatsApp mediators) means an incoming ring or an outgoing dial never shows a video
+	 * marker, since video_active only flips true well after answer/negotiation completes. */
+	gboolean video_requested;
+
 	/* CAPTURED LIVE (2026-08-01): TRUE when media_send_answer() has decided the call starts with
 	 * video active (offer already wanted it) but has deliberately NOT yet fired g_video_cb() -
 	 * doing so synchronously before the attach POST blocked the event loop long enough (bringing
@@ -96,7 +106,8 @@ void teams_calling_handle_trouter(TeamsAccount *sa, JsonObject *body_obj, const 
  * "incoming"/"dialing"/"active"/"disconnected"/"" (idle). Kept as a hook (rather than a direct
  * call) so this module compiles/links without luna-service2 present. */
 typedef void (*TeamsCallStateCb)(TeamsAccount *sa, const char *state, const char *peerAddress,
-                                 const char *peerName, gboolean isOutgoing, const char *cause);
+                                 const char *peerName, gboolean isOutgoing, const char *cause,
+                                 gboolean isVideo);
 void teams_calling_set_state_cb(TeamsCallStateCb cb);
 
 /* Phone-app-facing actions (called by the LS2 bridge). Return FALSE if no such call / not

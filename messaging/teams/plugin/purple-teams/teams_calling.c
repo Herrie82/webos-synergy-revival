@@ -924,7 +924,8 @@ push_state(TeamsCall *call, const char *cause)
 	if (!g_state_cb || !call) return;
 	g_state_cb(call->sa, state_str(call->state),
 	           call->peer_mri ? teams_strip_user_prefix(call->peer_mri) : NULL,
-	           call->peer_name, call->is_outgoing, cause);
+	           call->peer_name, call->is_outgoing, cause,
+	           call->video_requested);
 }
 
 static void
@@ -1036,6 +1037,11 @@ parse_call_notification(TeamsAccount *sa, JsonObject *body_obj)
 	if (media) {
 		call->sdp_offer    = g_strdup(sget(media, "blob"));
 		call->media_leg_id = g_strdup(sget(media, "mediaLegId"));
+		if (call->sdp_offer) {
+			gchar *dir = sdp_video_direction(call->sdp_offer);
+			call->video_requested = dir && strcmp(dir, "inactive") != 0;
+			g_free(dir);
+		}
 	}
 	if (udpKey) {
 		call->session_key_b64 = g_strdup(sget(udpKey, "sessionKey"));
@@ -1481,6 +1487,7 @@ teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri, gboolean video)
 	call->is_outgoing = TRUE;
 	call->state = TEAMS_CALL_DIALING;
 	call->peer_mri = g_str_has_prefix(peer_mri, "8:") ? g_strdup(peer_mri) : g_strdup_printf("8:%s", peer_mri);
+	call->video_requested = video;
 	set_current(sa, call);
 
 	mp = g_new0(TeamsMediaProc, 1);

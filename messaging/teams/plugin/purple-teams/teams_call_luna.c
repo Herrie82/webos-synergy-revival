@@ -25,6 +25,13 @@ static gchar   *g_peerAddr = NULL;
 static gchar   *g_peerName = NULL;
 static gchar   *g_cause    = NULL;
 static gboolean g_outgoing = FALSE;
+/* Call's video INTENT (TeamsCall.video_requested - known from ring/dial time), distinct from
+ * g_videoActive below (the clonk/skypekit bridge's own streaming-active state, confirmed-late).
+ * See TeamsCall.video_requested's comment in teams_calling.h for why using g_videoActive alone
+ * for the UI's video marker (this file's original approach, mirroring an equivalent bug already
+ * found and fixed in the Telegram/WhatsApp mediators) left the Phone app never seeing a video
+ * marker while incoming/dialing, only after answer. */
+static gboolean g_callIsVideo = FALSE;
 
 /* Native SkypeKit video bridge state (see the clonk lifecycle functions near the end of this
  * file). g_clonkUri = the open clonk session's palm:// LS2 URI, if any; g_videoActive mirrors
@@ -48,6 +55,17 @@ setstr(gchar **slot, const char *v)
 static gchar *
 build_payload(void)
 {
+	/* ActiveCall.js reads outgoingVideo/incomingVideo/incomingVideoState directly off the LINE
+	 * object (activeLines[0].outgoingVideo etc.), NOT off calls[] - confirmed against the
+	 * WhatsApp mediator (call.go), the one known to actually drive the Phone app's video UI. A
+	 * plain per-call "video" bool (this file's original approach, still emitted below for
+	 * completeness/robustness) is simply never read by the UI on its own. incomingVideoState is
+	 * CallSynergizer's tri-state: "unavailable" (not a video call) / "available" (video call,
+	 * not yet streaming - e.g. still ringing/dialing) / "streaming" (the clonk/skypekit bridge is
+	 * actually up). */
+	const char *videoState = g_videoActive ? "streaming" : (g_callIsVideo ? "available" : "unavailable");
+	const char *videoBool  = g_videoActive ? "true" : "false";
+
 	GString *p = g_string_new("{\"returnValue\":true,\"allowVideoCalls\":true,\"videoURI\":\"");
 	if (g_clonkUri) {
 		gchar *uri = g_strescape(g_clonkUri, "");
@@ -63,10 +81,13 @@ build_payload(void)
 		g_string_append_printf(p, "{\"state\":\"%s\",", g_state);
 		if (g_strcmp0(g_state, "disconnected") == 0)
 			g_string_append_printf(p, "\"disconnectDetails\":{\"cause\":\"%s\"},", cause);
+		g_string_append_printf(p, "\"incomingVideo\":%s,\"outgoingVideo\":%s,\"incomingVideoState\":\"%s\",",
+			videoBool, videoBool, videoState);
 		g_string_append_printf(p,
-			"\"calls\":[{\"id\":\"teams\",\"origin\":\"%s\",\"video\":%s,"
+			"\"calls\":[{\"id\":\"teams\",\"origin\":\"%s\","
+			"\"incomingVideo\":%s,\"outgoingVideo\":%s,\"incomingVideoState\":\"%s\","
 			"\"transport\":\"com.palm.teams\",\"address\":\"%s\",\"displayName\":\"%s\"}]}",
-			g_outgoing ? "outgoing" : "incoming", g_videoActive ? "true" : "false", addr, name);
+			g_outgoing ? "outgoing" : "incoming", videoBool, videoBool, videoState, addr, name);
 		g_free(addr); g_free(name); g_free(cause);
 	}
 	g_string_append(p, "]}");
@@ -214,7 +235,8 @@ static void push_to(LSHandle *h, const char *payload)
  * private = the stock Phone app), and drive call audio on active/idle. */
 static void
 on_call_state(TeamsAccount *sa, const char *state, const char *peerAddress,
-              const char *peerName, gboolean isOutgoing, const char *cause)
+              const char *peerName, gboolean isOutgoing, const char *cause,
+              gboolean isVideo)
 {
 	gchar *payload;
 	(void) sa;
@@ -223,6 +245,7 @@ on_call_state(TeamsAccount *sa, const char *state, const char *peerAddress,
 	setstr(&g_peerName, peerName);
 	setstr(&g_cause, cause);
 	g_outgoing = isOutgoing;
+	g_callIsVideo = isVideo;
 	teams_call_log("pushState state=%s addr=%s pub=%p prv=%p", g_state, g_peerAddr, (void*)g_pub, (void*)g_prv);
 
 	if (g_strcmp0(g_state, "active") == 0)      teams_call_luna_set_audio(TRUE);
