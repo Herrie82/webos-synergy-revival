@@ -131,7 +131,15 @@ echo "=== STAGE 3: link libwhatsmeow.so ==="
 # DT_RUNPATH so it finds libpalmgstskype.so at runtime on-device without needing
 # LD_LIBRARY_PATH set by whatever launches this plugin (unlike the standalone test tools in
 # messaging/whatsapp/calling/, which do need it set manually each run).
-$CC -shared -fPIC $LDFLAGS -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
+# -Bsymbolic-functions: this plugin and Teams' (purple-teams) both dlopen into the SAME
+# imlibpurpletransport process, and both define the identically-named skypekit_video_start/
+# _receive_frame/_stop/_wait_thread_b bridge symbols (Teams' copy was ported verbatim from this
+# one). Neither .so hides these symbols, so without this flag, GModule's default global symbol
+# export lets ELF interposition redirect one plugin's calls into the OTHER plugin's copy depending
+# on dlopen order -- confirmed live: this plugin's own calls into skypekit_video_start were
+# silently not running this plugin's code at all. -Bsymbolic-functions makes intra-.so calls to
+# these bind to the LOCAL definition first, regardless of what else is loaded.
+$CC -shared -fPIC $LDFLAGS -Wl,-Bsymbolic-functions -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
 	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" "$BUILD/libwarns.a" \
 	-L"$PURPLE/lib" -L"$GLIB_STAGING/lib" $(pkg-config --libs purple glib-2.0) \
 	"$LSSTUB" -lasound \

@@ -61,7 +61,15 @@ $CXX -fPIC -O2 -g -fno-rtti $CFLAGS_COMMON -c teams_video_relay.cpp -o teams_vid
 OBJS=$(echo $FILES | tr ' ' '\n' | sed -E 's#(.*/)?([^/]+)\.c#\2.o#' | tr '\n' ' ')
 
 echo "== linking libteams-personal.so =="
-$CC -fPIC -O2 -g -shared -o libteams-personal.so \
+# -Bsymbolic-functions: this plugin and the WhatsApp/FB combined plugin (purple-combined) both
+# dlopen into the SAME imlibpurpletransport process, and both define the identically-named
+# skypekit_video_start/_receive_frame/_stop/_wait_thread_b bridge symbols (the Teams bridge was
+# ported verbatim from WhatsApp's). Neither .so hides these symbols, so without this flag, GModule's
+# default global symbol export lets ELF interposition redirect one plugin's calls into the OTHER
+# plugin's copy depending on dlopen order -- confirmed live: WhatsApp's calls into its own
+# skypekit_video_start were silently not running WhatsApp's code at all. -Bsymbolic-functions makes
+# intra-.so calls to these bind to the LOCAL definition first, regardless of what else is loaded.
+$CC -fPIC -O2 -g -shared -Wl,-Bsymbolic-functions -o libteams-personal.so \
   $OBJS skypekit.o teams_video_relay.o \
   `pkg-config purple glib-2.0 json-glib-1.0 zlib --libs` \
   "$LSSTUB" \

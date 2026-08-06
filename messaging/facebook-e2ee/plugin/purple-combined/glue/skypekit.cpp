@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cstdarg>
 #include <ctime>
 #include <sys/time.h>
 #include <unistd.h>
@@ -40,6 +41,26 @@ extern "C" {
 // Implemented in call.go: forwards one complete peer-bound... no, CAMERA-bound access unit
 // (decoded from mediaserver's own capture pipeline) to Call.SendVideoWithDuration.
 void gowhatsapp_call_video_frame_out(const char *data, int len);
+}
+
+// Dedicated diagnostic log, same fopen-per-line/fclose pattern as glue/call.c's
+// clonk_diag_log -- guaranteed to actually land on disk (each line is its own open/write/close),
+// unlike fprintf(stderr,...) whose delivery to imstdout.log has been observed to silently stall
+// after some transport respawns (still-unexplained, see WHATSAPP_VIDEO_STATUS.md Part 36's
+// "Also noted" item). This bridge is exactly the layer prior investigation (Parts 30-35)
+// repeatedly needed real visibility into and didn't have, so give it its own durable trail.
+static void skypekit_diag_log(const char *fmt, ...) {
+	FILE *f = fopen("/media/internal/wacall_skypekit.log", "a");
+	if (!f) return;
+	struct timeval tv;
+	gettimeofday(&tv, nullptr);
+	fprintf(f, "[%lld] ", (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000);
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(f, fmt, ap);
+	va_end(ap);
+	fprintf(f, "\n");
+	fclose(f);
 }
 
 // ---------------- SkypeKit bindings (see skypekit_send_test.cpp / skypekit_decode_test.cpp
@@ -127,6 +148,13 @@ static unsigned char *g_pending_data = nullptr;
 static unsigned int g_pending_len = 0;
 static int g_pending_ready = 0;
 
+// Diagnostic counters (see skypekit_video_receive_frame / send_access_unit) -- reset in
+// skypekit_video_start, summarized in skypekit_video_stop.
+static unsigned g_recv_count = 0;
+static unsigned g_recv_dropped_not_running = 0;
+static unsigned g_recv_overwritten = 0;
+static unsigned g_au_sent_count = 0;
+
 // ---------------- Thread A: capture -> peer ----------------
 
 static void *thread_a_main(void *) {
@@ -155,6 +183,7 @@ static void *thread_a_main(void *) {
 			continue;
 		}
 		fprintf(stderr, "wa-call: skypekit thread A accepted a connection\n");
+		skypekit_diag_log("thread A accepted a connection");
 
 		memset(binserver, 0, sizeof(binserver));
 		binserver_ctor(binserver, nullptr, transport);
@@ -283,6 +312,7 @@ static void send_rtp_packet_raw(void *binclient, const unsigned char *pkt, unsig
 	                        kRtpPacketReceivedFieldIndex, sebinary);
 	if (wr_rc != 0) {
 		fprintf(stderr, "wa-call: send_rtp_packet_raw wr_call_lst FAILED rc=%d len=%u\n", wr_rc, len);
+		skypekit_diag_log("send_rtp_packet_raw wr_call_lst FAILED rc=%d len=%u", wr_rc, len);
 	}
 }
 
@@ -308,6 +338,13 @@ static void emit_rtp_packet(void *ctx_v, const unsigned char *payload, size_t le
 }
 
 static void send_access_unit(void *binclient, const unsigned char *data, unsigned len) {
+	g_au_sent_count++;
+	if (g_au_sent_count <= 5 || g_au_sent_count % 30 == 0) {
+		skypekit_diag_log("send_access_unit #%u len=%u first_bytes=%02x%02x%02x%02x%02x",
+		                   g_au_sent_count, len,
+		                   len > 0 ? data[0] : 0, len > 1 ? data[1] : 0, len > 2 ? data[2] : 0,
+		                   len > 3 ? data[3] : 0, len > 4 ? data[4] : 0);
+	}
 	if (!g_tx_ts_init) {
 		gettimeofday(&g_tx_ts_start, nullptr);
 		g_tx_ts_init = 1;
@@ -347,6 +384,7 @@ static void *thread_b_main(void *) {
 		}
 		if (!connected) { avtw_dtor(transport); continue; }
 		fprintf(stderr, "wa-call: skypekit thread B connected to mediaserver\n");
+		skypekit_diag_log("thread B connected to mediaserver");
 		pthread_mutex_lock(&g_start_mx);
 		g_thread_b_connected = 1;
 		pthread_cond_broadcast(&g_start_cv);
@@ -396,10 +434,16 @@ static void *thread_b_main(void *) {
 // ---------------- public entry points ----------------
 
 void skypekit_video_start(void) {
+	skypekit_diag_log("skypekit_video_start ENTRY g_running=%d", g_running);
 	if (g_running) return;
 	g_running = 1;
 	g_thread_a_started = 0;
 	g_thread_b_connected = 0;
+	g_au_sent_count = 0;
+	g_recv_count = 0;
+	g_recv_dropped_not_running = 0;
+	g_recv_overwritten = 0;
+	skypekit_diag_log("skypekit_video_start");
 	pthread_create(&g_thread_a, nullptr, thread_a_main, nullptr);
 
 	// Best-effort ordering guarantee (Part 17): wait for thread A to at least start running
@@ -442,10 +486,14 @@ int skypekit_video_wait_thread_b(int timeoutMs) {
 	}
 	int connected = g_thread_b_connected;
 	pthread_mutex_unlock(&g_start_mx);
+	skypekit_diag_log("skypekit_video_wait_thread_b(%d) -> connected=%d", timeoutMs, connected);
 	return connected;
 }
 
 void skypekit_video_stop(void) {
+	skypekit_diag_log("skypekit_video_stop ENTRY g_running=%d recv accepted=%u "
+	                   "dropped_not_running=%u overwritten=%u sent=%u", g_running, g_recv_count,
+	                   g_recv_dropped_not_running, g_recv_overwritten, g_au_sent_count);
 	if (!g_running) return;
 	g_running = 0;
 
@@ -476,12 +524,28 @@ void skypekit_video_stop(void) {
 }
 
 void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int len) {
-	if (!g_running || !access_unit || len == 0) return;
+	if (!g_running || !access_unit || len == 0) {
+		if (!g_running && access_unit && len > 0) {
+			g_recv_dropped_not_running++;
+			if (g_recv_dropped_not_running <= 5 || g_recv_dropped_not_running % 30 == 0) {
+				skypekit_diag_log("skypekit_video_receive_frame DROPPED (bridge not running) "
+				                   "#%u len=%u", g_recv_dropped_not_running, len);
+			}
+		}
+		return;
+	}
+	g_recv_count++;
+	if (g_recv_count <= 5 || g_recv_count % 30 == 0) {
+		skypekit_diag_log("skypekit_video_receive_frame accepted #%u len=%u", g_recv_count, len);
+	}
 	unsigned char *copy = (unsigned char *)malloc(len);
 	if (!copy) return;
 	memcpy(copy, access_unit, len);
 
 	pthread_mutex_lock(&g_pending_mx);
+	if (g_pending_ready) {
+		g_recv_overwritten++;
+	}
 	free(g_pending_data); // drop any not-yet-sent previous frame — see skypekit.h
 	g_pending_data = copy;
 	g_pending_len = len;
