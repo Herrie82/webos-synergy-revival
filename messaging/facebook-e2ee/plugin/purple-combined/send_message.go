@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -127,7 +129,7 @@ func (handler *Handler) send_text_message(recipient types.JID, isGroup bool, mes
 			msgID := send_response.ID
 			purple_display_text_message(handler.account, recipientJid, isGroup, true, ownJid, nil, send_response.Timestamp, message, &msgID, "", "", "")
 		}
-		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Sender, true, isGroup, send_response.Timestamp)
 		// webOS outbox-id: hand the server id of this app-sent message to the transport so its Outbox
 		// row becomes reactable (react-to-your-own-message).
 		purple_handle_outbox_id(handler.account, send_response.ID, message)
@@ -193,6 +195,130 @@ func (handler *Handler) send_reaction(peer string, targetId string, emoji string
 		handler.log.Warnf("Failed to send reaction to %s (target %s): %v", chat.String(), targetId, err)
 		purple_display_system_message(handler.account, chat.ToNonAD().String(), false, fmt.Sprintf("Failed to send reaction: %v", err))
 	}
+}
+
+// pollVoteSenderCandidates returns the sender JIDs to try for a poll's message-secret lookup, most
+// likely first. The secret is keyed by the EXACT sender whatsmeow saw when the poll arrived, and
+// SQLStore.GetMessageSecret matches `sender.ToNonAD()` EXACTLY - unlike the privacy-token query
+// right beside it in that same file, it has NO LID<->PN fallback, and a miss returns
+// (nil, nil) rather than an error. So handing it the wrong form of the same person's JID fails
+// SILENTLY. db8 only ever stores the phone-number form (from.addr), so for a LID-identified
+// contact the PN we get back is the wrong key and voting on any non-cached poll dies here.
+func (handler *Handler) pollVoteSenderCandidates(ctx context.Context, sender types.JID) []types.JID {
+	candidates := []types.JID{sender}
+	var other types.JID
+	var err error
+	if sender.Server == types.HiddenUserServer {
+		other, err = handler.client.Store.LIDs.GetPNForLID(ctx, sender)
+	} else {
+		other, err = handler.client.Store.LIDs.GetLIDForPN(ctx, sender)
+	}
+	if err == nil && !other.IsEmpty() && other.ToNonAD() != sender.ToNonAD() {
+		candidates = append(candidates, other)
+	}
+	return candidates
+}
+
+// send_poll_vote sends (or replaces) the user's vote on a poll they received. optionNames is the
+// FULL current selection (not a delta) - whatsmeow's BuildPollVote/PollVoteMessage always carries
+// the complete set of selected options, same as a real WhatsApp client re-sending the whole
+// selection on every tap. peer = the chat the poll lives in; pollMessageID = the poll creation
+// message's serviceMessageId (== info.ID at receive time).
+//
+// Prefers the in-memory cache (it has the exact RawSender whatsmeow used); on a miss - i.e. any
+// poll from before the last transport restart - falls back to senderJid (db8's stored sender, the
+// same db8-fallback pattern send_reaction uses) and PROBES the message-secret store for each
+// plausible JID form before building, rather than assuming one. See pollVoteSenderCandidates.
+//
+// Logging goes to stderr, NOT handler.log: purple_debug output (which is what waLog/purpleLogger
+// funnels into) never reaches imstdout.log on this device - confirmed live, zero "[Handler]"/
+// "[Client]" lines and zero hits for known-firing Infof calls - so every diagnostic here was
+// invisible while this was being debugged. stderr is the channel the wa-call engine already uses
+// successfully.
+func (handler *Handler) send_poll_vote(peer string, pollMessageID string, optionNames []string, senderJid string) {
+	ctx := context.Background()
+	chat, err := parseJID(peer)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wa-poll: invalid peer %q: %v\n", peer, err)
+		purple_display_system_message(handler.account, peer, false, fmt.Sprintf("Cannot vote: invalid recipient: %v", err))
+		return
+	}
+	var msgSource types.MessageSource
+	var timestamp time.Time
+	cached := handler.lookup_cached_message_by_id(pollMessageID)
+	if cached != nil {
+		msgSource = types.MessageSource{
+			Chat: cached.Chat,
+			// RawSender (not the LID-resolved Sender): the per-message secret was stored under the
+			// EXACT sender whatsmeow saw - see CachedMessage.RawSender's comment.
+			Sender:   cached.RawSender,
+			IsFromMe: cached.IsFromMe,
+			IsGroup:  cached.IsGroup,
+		}
+		timestamp = cached.Timestamp
+	} else if senderJid != "" {
+		sender, perr := parseJID(senderJid)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "wa-poll: unparseable senderJid %q: %v\n", senderJid, perr)
+			purple_display_system_message(handler.account, chat.ToNonAD().String(), false, "Cannot vote: poll not found (try reopening the conversation).")
+			return
+		}
+		isFromMe := handler.client.Store.ID != nil && sender.ToNonAD() == handler.client.Store.ID.ToNonAD()
+		isGroup := chat.Server == types.GroupServer
+		// Probe the secret store for each JID form and use whichever actually holds the secret -
+		// that is exactly what BuildPollVote will look up, so this turns a silent failure into a
+		// resolved sender (or an explicit, logged diagnosis).
+		resolved := sender
+		found := false
+		for _, cand := range handler.pollVoteSenderCandidates(ctx, sender) {
+			secret, realSender, serr := handler.client.Store.MsgSecrets.GetMessageSecret(ctx, chat, cand, pollMessageID)
+			fmt.Fprintf(os.Stderr, "wa-poll: secret probe chat=%s cand=%s -> found=%v realSender=%s err=%v\n",
+				chat, cand, len(secret) > 0, realSender, serr)
+			if serr == nil && len(secret) > 0 {
+				resolved = cand
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "wa-poll: NO message secret for poll %s in chat %s (tried %v) - vote cannot be encrypted\n",
+				pollMessageID, chat, handler.pollVoteSenderCandidates(ctx, sender))
+			purple_display_system_message(handler.account, chat.ToNonAD().String(), false,
+				"Cannot vote: this poll's encryption key is not on this device (it arrived before this device was linked).")
+			return
+		}
+		msgSource = types.MessageSource{
+			Chat:     chat,
+			Sender:   resolved,
+			IsFromMe: isFromMe,
+			IsGroup:  isGroup,
+		}
+		timestamp = time.Now()
+	} else {
+		fmt.Fprintf(os.Stderr, "wa-poll: poll %s not cached and no senderJid supplied (%d cached)\n", pollMessageID, len(handler.cachedMessages))
+		purple_display_system_message(handler.account, chat.ToNonAD().String(), false, "Cannot vote: poll not found (try reopening the conversation).")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "wa-poll: voting poll=%s cached=%v chat=%s sender=%s isFromMe=%v isGroup=%v options=%v\n",
+		pollMessageID, cached != nil, msgSource.Chat, msgSource.Sender, msgSource.IsFromMe, msgSource.IsGroup, optionNames)
+	pollInfo := types.MessageInfo{
+		ID:            types.MessageID(pollMessageID),
+		Timestamp:     timestamp,
+		MessageSource: msgSource,
+	}
+	voteMsg, err := handler.client.BuildPollVote(ctx, &pollInfo, optionNames)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wa-poll: BuildPollVote FAILED for %s: %v\n", pollMessageID, err)
+		purple_display_system_message(handler.account, chat.ToNonAD().String(), false, fmt.Sprintf("Failed to vote: %v", err))
+		return
+	}
+	resp, err := handler.client.SendMessage(ctx, chat, voteMsg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wa-poll: SendMessage FAILED for %s: %v\n", pollMessageID, err)
+		purple_display_system_message(handler.account, chat.ToNonAD().String(), false, fmt.Sprintf("Failed to send vote: %v", err))
+		return
+	}
+	fmt.Fprintf(os.Stderr, "wa-poll: SENT poll=%s vote OK server_id=%s ts=%s\n", pollMessageID, resp.ID, resp.Timestamp)
 }
 
 /*
@@ -341,7 +467,7 @@ func (handler *Handler) send_link_message(recipient types.JID, isGroup bool, lin
 	} else {
 		purple_display_system_message(handler.account, recipient.ToNonAD().String(), isGroup, fmt.Sprintf("%s has been forwarded.", link)) // TODO: do not omit message ID in this particular case
 		msg.Conversation = &link                                                                                                           // hack to preserve link in cache
-		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+		handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Sender, true, isGroup, send_response.Timestamp)
 		// webOS outbox-id: make this app-sent media message reactable (react-to-your-own-message).
 		purple_handle_outbox_id(handler.account, send_response.ID, link)
 		return true

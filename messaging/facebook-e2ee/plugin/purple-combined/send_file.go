@@ -46,6 +46,10 @@ func (handler *Handler) send_file_bytes(recipient types.JID, isGroup bool, data 
 	switch mimetype {
 	case "image/jpeg":
 		msg, err = handler.send_file_image(data, mimetype)
+	case "image/webp":
+		// A .webp picked from the compose attachment picker is a sticker in WhatsApp's world (not a
+		// regular Image message) - the same distinction real WhatsApp clients make purely by format.
+		msg, err = handler.send_file_sticker(data, mimetype)
 	case "application/ogg", "audio/ogg":
 		opusfile_info := C.opusfile_get_info(C.CBytes(data), C.size_t(len(data)))
 		seconds := int64(opusfile_info.length_seconds)
@@ -80,7 +84,7 @@ func (handler *Handler) send_file_bytes(recipient types.JID, isGroup bool, data 
 	if err != nil {
 		return fmt.Errorf("error sending file: %v", err)
 	}
-	handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Timestamp)
+	handler.add_to_cache(msg, send_response.ID, recipient, send_response.Sender, send_response.Sender, true, isGroup, send_response.Timestamp)
 	// webOS outbox-id: make this app-sent file reactable (react-to-your-own-message).
 	purple_handle_outbox_id(handler.account, send_response.ID, filepath.Base(filename))
 	return nil
@@ -99,6 +103,30 @@ func (handler *Handler) send_file_image(data []byte, mimetype string) (*waE2E.Me
 		FileEncSHA256: uploaded.FileEncSHA256,
 		FileSHA256:    uploaded.FileSHA256,
 		FileLength:    proto.Uint64(uint64(len(data))),
+	}}
+	return msg, nil
+}
+
+// send_file_sticker uploads a .webp as a sticker (the "WhatsApp Image Keys" media bucket - whatsmeow
+// has no separate media type for a single sticker send, only for sticker PACKS). Width/Height are
+// hardcoded to WhatsApp's standard 512x512 sticker canvas rather than parsed from the webp, which
+// is good enough for the server/receiving clients to render it - stock clients always send square
+// stickers on that canvas anyway.
+func (handler *Handler) send_file_sticker(data []byte, mimetype string) (*waE2E.Message, error) {
+	uploaded, err := handler.client.Upload(context.Background(), data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, err
+	}
+	msg := &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		Mimetype:      proto.String(mimetype),
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Width:         proto.Uint32(512),
+		Height:        proto.Uint32(512),
 	}}
 	return msg, nil
 }

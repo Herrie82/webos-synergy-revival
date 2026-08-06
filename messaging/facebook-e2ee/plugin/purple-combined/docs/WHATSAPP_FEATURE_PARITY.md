@@ -27,10 +27,17 @@ new subsystems or UI paradigms not yet present in the app.
 | Media (image/video/doc/voice) | ✅ Done | — | — | — |
 | Media: GIF as animated media | ❌ Gap | S | S | **S-M** |
 | Voice calls | ✅ Done (+video, beyond scope) | — | — | — |
+| Location messages (incl. live location) — receive | ✅ Done | — | — | — |
+| Contact / vCard messages — receive | ✅ Done | — | — | — |
+| "Delete for everyone" (revoke) — receive | ✅ Done | — | — | — |
+| Stickers — send (receive already worked) | ✅ Done | — | — | — |
+| Events — receive + add to Calendar | ✅ Done | — | — | — |
+| **Polls — display *and* vote** | ✅ Done | — | — | — |
+| Status posts — **receive** (own Servers-tab channel per sender) | ✅ Done | — | — | — |
 | Groups: create/admin/invite | ❌ Gap | S (calls exist) | M-L (new screens) | **M-L** |
 | Communities (subgroup linking) | ❌ Gap | S-M (calls + blist filing) | S (nav concept already exists) | **M** |
 | Newsletters: create | ⚠️ Follow-only | S | S-M | **S-M** |
-| Status posts | ❌ Gap | M (audience logic) | L-XL (new UI paradigm) | **L-XL** |
+| Status posts — **send** (post your own) | ❌ Gap | M (audience logic) | L-XL (new UI paradigm) | **L-XL** |
 | Contacts: phone lookup | ❌ Gap | S | S | **S** |
 | Contacts: business profile | ❌ Gap | S | S | **S** |
 | Presence: outgoing typing | ❌ Gap | S | S | **S** |
@@ -40,6 +47,61 @@ new subsystems or UI paradigms not yet present in the app.
 | Privacy settings (last-seen, photo, receipts, etc.) | ❌ Gap | S | S-M | **S-M** |
 | Disappearing messages (usable) | ⚠️ Backend-only, no UI | S (calls exist) | M (needs local expiry/purge job) | **M** |
 | Modular / native plugins / runtime-agnostic | N/A | — | — | N/A — describes a different library's build-time architecture, not applicable to this single combined `.so` |
+
+---
+
+## Recently closed (rich message types)
+
+A batch of "special message" types that `handle_message.go` previously either ignored silently or
+rendered as placeholder text. All of these are **receive**-side except sticker send and poll
+voting. The shared UI pattern: the plugin encodes the payload into the message body as a compact
+token, and `ConversationItem.js` turns that token into a real widget (a tappable chip, or for
+polls an interactive control), stripping the token from the displayed text.
+
+| Type | Backend (`purple-combined`) | UI (`com.palm.app.messaging`) |
+|---|---|---|
+| **Location** | `LocationMessage` + `LiveLocationMessage` → `formatLocationMessage` emits a `geo:<lat>,<lng>` URI (RFC 5870-ish) plus name/address | `geoUrlRe`/`buildLocationChip` → tappable pin chip; opens `com.palm.app.maps` at the coordinates |
+| **Contact / vCard** | `ContactMessage` + `ContactsArrayMessage` → vCard written to a real `.vcf` in the account's attachment dir; body is the `file://` URL with `?name=` | `mediaKind` → `"contact"`; renders as a named chip, opens `com.palm.app.contacts` |
+| **Delete for everyone** | `ProtocolMessage` type `REVOKE` → `purple_handle_message_delete` → new `webos-im-delete` signal → transport's `DeleteHandler` merges the tombstone onto the original db8 row | Original bubble becomes *"This message was deleted."* in place (same in-place-edit pattern as `EditHandler`) |
+| **Stickers (send)** | `.webp` from the attachment picker routes to `send_file_sticker` (a `StickerMessage`, not an `ImageMessage` — the same format-based distinction real clients make) | Existing picker; no new UI |
+| **Stickers (receive)** | Incoming stickers are **transcoded webp→PNG** in `download_attachment` | Needed because this WebKit can't render webp at all — was the "stickers don't display" symptom |
+| **Events** | `EventMessage` → `formatEventMessage` emits an `event:<base64url-json>` token (name/location/note/start/end) | `buildEventChip` → "Add to Calendar" chip; launches the Calendar app's pre-filled new-event flow |
+| **Polls** | `PollCreationMessage*` → `formatPollMessage` emits a `poll:<base64url-json>` token; **voting** goes back out via `send_poll_vote` (`BuildPollVote` + `SendMessage`) | `buildPollBlock` renders real radio buttons (single-select) or checkboxes (multi), tappable; taps are swallowed before the reaction picker so polls aren't reactable |
+
+### Polls — the interesting one
+
+This is the only item here that is genuinely **two-way**, and it closes the upstream plugin's own
+documented limitation (its README still reads *"Displaying polls (but no participating in them)"*).
+Three things made it more than a display feature:
+
+- **Vote encryption keying.** `EncryptPollVote` looks up a per-message secret that whatsmeow stored
+  under the exact `(chat, sender, id)` it saw internally — with **no LID/PN fallback**. The rest of
+  the codebase resolves senders through `lidToPn()` for display, so voting with that resolved JID
+  silently looks up the wrong key whenever the two forms differ. `CachedMessage.RawSender` keeps
+  the un-resolved original alongside the display one specifically for this.
+- **Surviving a transport restart.** The in-memory message cache is wiped on every restart, which
+  made any poll from a previous session permanently unvotable ("poll not found in cache"). Fixed by
+  reusing the **db8-fallback pattern already proven for reactions**: the app sends the poll's
+  original sender (`senderJid`) from its own stored row, the transport stashes it on the account as
+  an out-of-band string right before the (synchronous) signal emit, and the Go side reconstructs the
+  `MessageSource` from it on a cache miss. The per-message *secret* lives in whatsmeow's own
+  persistent store, not the cache, so this works for arbitrarily old polls.
+- **Optimistic local state.** Votes are debounced (600 ms) before transmit so a rapid multi-select
+  burst sends only the final selection — each send is its own goroutine with no ordering guarantee,
+  so one send per tap let an older selection land after a newer one. Locally the pending selection
+  is overlaid in a wrapper around `list.queryResponse`, which is the one choke point *every*
+  re-render path funnels through (`list.punt()`/`reset()` from the db8 watch bypass the app's own
+  `gotMessages` handler entirely). `myPollVote` also had to be added to the query's `select`
+  whitelist or db8 drops it on every fresh query, losing the vote across an app restart.
+
+### Status posts (receive)
+
+Distinct from the **send** gap still listed above. A contact's status update arrives on
+`types.StatusBroadcastJID`; rather than masquerading as an ordinary 1:1 chat from that contact
+(which made each one show up as a random new chat thread), it's re-tagged with a synthetic
+`<phone>@broadcast` JID so `LibpurpleAdapter`'s `isWhatsAppStatus` can bucket it into its own
+per-sender channel under a "Status Updates" server — the same Servers-tab mechanism followed
+Channels already use.
 
 ---
 
@@ -197,7 +259,12 @@ long pole here.
 
 ## Suggested prioritization
 
-**Quick wins** (small, contained, no new UI paradigms) — do these first:
+**Done since this doc was first written** (see "Recently closed" above): the rich message types —
+location, contact/vCard, delete-for-everyone, events, sticker send, status *receive*, and poll
+display **+ voting**. These were the cheapest remaining wins: all receive-side except sticker send
+and poll voting, and all riding message plumbing that already existed.
+
+**Quick wins** (small, contained, no new UI paradigms) — do these next:
 IsOnWhatsApp lookup, business profile display, outgoing typing indicator, block/unblock action,
 own profile (name/status/photo), GIF send.
 
@@ -207,6 +274,7 @@ messages (incl. the local purge job), basic group create/admin/invite, communiti
 existing Servers/Rooms `imserver`/`imchannel` infrastructure — see correction above).
 
 **Large, architecture-touching** (save for last, or scope as its own mini-project):
-status posts — needs a genuinely new full-screen UI paradigm (story viewer, capture flow, 24h
-expiry, view tracking) with no existing analog in the app. This is the one item on the whole list
-that's closer to building a new feature than extending an existing one.
+status **posting** — receiving is done, but posting your own needs a genuinely new full-screen UI
+paradigm (story viewer, capture flow, 24h expiry, view tracking) with no existing analog in the
+app. This is the one item on the whole list that's closer to building a new feature than extending
+an existing one.

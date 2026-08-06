@@ -138,6 +138,25 @@ func gowhatsapp_go_send_reaction(account *PurpleAccount, targetId *C.char, emoji
 	go handler.send_reaction(C.GoString(peer), C.GoString(targetId), C.GoString(emoji), C.GoString(targetSender), remove)
 }
 
+//export gowhatsapp_go_send_poll_vote
+// webOS polls (SEND): vote on a poll. pollMessageId = the poll creation message's server id; peer =
+// the chat JID; optionNamesJoined = the FULL current selection, "\x1f"-separated (empty string =
+// clear my vote); senderJid = the poll creation message's ORIGINAL sender (db8 fallback, same as
+// gowhatsapp_go_send_reaction's targetSender, so we can build the vote without a message-cache
+// entry; "" if unknown). Runs the actual send on a goroutine.
+func gowhatsapp_go_send_poll_vote(account *PurpleAccount, peer *C.char, pollMessageId *C.char, optionNamesJoined *C.char, senderJid *C.char) {
+	handler, ok := handlers[account]
+	if !ok {
+		return
+	}
+	joined := C.GoString(optionNamesJoined)
+	var optionNames []string
+	if joined != "" {
+		optionNames = strings.Split(joined, "\x1f")
+	}
+	go handler.send_poll_vote(C.GoString(peer), C.GoString(pollMessageId), optionNames, C.GoString(senderJid))
+}
+
 //export gowhatsapp_go_send_file
 func gowhatsapp_go_send_file(account *PurpleAccount, who *C.char, filename *C.char) *C.char {
 	err := "Not connected."
@@ -632,6 +651,22 @@ func purple_handle_message_edit(account *PurpleAccount, targetId string, newText
 		msgtype:   C.char(C.gowhatsapp_message_type_edit),
 		messageId: C.CString(targetId),
 		text:      C.CString(newText),
+	}
+	C.gowhatsapp_process_message_bridge(cmessage)
+}
+// purple_handle_message_delete: the sender deleted a previously-sent message "for everyone"
+// (targetId = that message's server id == serviceMessageId). The transport finds the stored bubble
+// by serviceMessageId and replaces its text with a "This message was deleted." placeholder in
+// place - the same find-by-serviceMessageId + merge-messageText mechanism as an edit, just with a
+// canned body instead of a new one (see gowhatsapp_message_type_delete in glue/process_message.c).
+func purple_handle_message_delete(account *PurpleAccount, targetId string) {
+	if targetId == "" {
+		return
+	}
+	cmessage := C.struct_gowhatsapp_message{
+		account:   account,
+		msgtype:   C.char(C.gowhatsapp_message_type_delete),
+		messageId: C.CString(targetId),
 	}
 	C.gowhatsapp_process_message_bridge(cmessage)
 }

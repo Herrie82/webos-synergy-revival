@@ -6,15 +6,19 @@ package main
 import "C"
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
+	"image/png"
 	"mime"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/image/webp"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waConsumerApplication"
@@ -123,9 +127,15 @@ func (handler *Handler) handle_attachment(message *waE2E.Message, id string, sou
 		if sm != nil {
 			downloadable = sm
 			hash = hex.EncodeToString(sm.GetFileSHA256())
-			extension = extension_from_mimetype(sm.Mimetype)
+			// webOS: a sticker is WhatsApp's own .webp - this device's WebKit predates WebP (2010) and
+			// has no decoder for it, and the fallback pixbuf-mimetype gate (pixbuf.c, built without GDK
+			// pixbuf loader detection) only allow-lists jpeg/png, so a sticker attachment posted no
+			// message body at all ("stickers don't display"). download_attachment transcodes the
+			// downloaded bytes to PNG (golang.org/x/image/webp decode -> image/png encode) before
+			// writing the file, so always claim PNG here regardless of the source's real mimetype.
+			extension = ".png"
 			data_type = C.gowhatsapp_attachment_type_sticker
-			mimetype = sm.GetMimetype()
+			mimetype = "image/png"
 			length = sm.GetFileLength()
 		}
 	}
@@ -234,6 +244,21 @@ func (handler *Handler) download_attachment(local_file_path string, message what
 	}
 	if err != nil {
 		return err
+	}
+	// webOS stickers: this device's WebKit has no WebP decoder, so transcode a sticker's native .webp
+	// to PNG before writing (see the extension=".png"/mimetype="image/png" override in the caller's
+	// StickerMessage branch, which already chose a .png local_file_path to match). x/image/webp only
+	// decodes the first frame of an animated sticker - animated stickers show as a static image.
+	if _, isSticker := message.(*waE2E.StickerMessage); isSticker {
+		img, decErr := webp.Decode(bytes.NewReader(data))
+		if decErr != nil {
+			return fmt.Errorf("sticker webp decode failed: %v", decErr)
+		}
+		var pngBuf bytes.Buffer
+		if encErr := png.Encode(&pngBuf, img); encErr != nil {
+			return fmt.Errorf("sticker png encode failed: %v", encErr)
+		}
+		data = pngBuf.Bytes()
 	}
 	if err := os.WriteFile(local_file_path, data, 0o644); err != nil {
 		return err

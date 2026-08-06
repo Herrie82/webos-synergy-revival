@@ -16,9 +16,18 @@ import (
 )
 
 type CachedMessage struct {
-	ID        types.MessageID
+	ID types.MessageID
+	// Sender is the LID-resolved (phone-number, display-friendly) form (see handler.lidToPn) used for
+	// reactions/quotes/UI. RawSender is whatsmeow's own ORIGINAL sender for this message (possibly a
+	// LID) - only send_poll_vote uses it, because whatsmeow.storeMessageSecret keys the per-message
+	// encryption secret it needs for BuildPollVote by the exact (chat, sender, id) it saw internally,
+	// with no LID/PN fallback (unlike e.g. GetPrivacyToken); voting with the resolved Sender would
+	// look up the wrong key and fail for a LID-identified contact whenever the two forms differ.
 	Chat      types.JID
 	Sender    types.JID
+	RawSender types.JID
+	IsFromMe  bool
+	IsGroup   bool
 	Timestamp time.Time
 	Message   waE2E.Message
 }
@@ -27,7 +36,7 @@ type CachedMessage struct {
  * Add a message to the message cache to it can be looked up later.
  * Useful for replying to a specific message and for displaying relevant information when dealing with reactions.
  */
-func (handler *Handler) add_to_cache(message *waE2E.Message, id types.MessageID, chat types.JID, sender types.JID, timestamp time.Time) {
+func (handler *Handler) add_to_cache(message *waE2E.Message, id types.MessageID, chat types.JID, sender types.JID, rawSender types.JID, isFromMe bool, isGroup bool, timestamp time.Time) {
 	if message.GetReactionMessage() != nil {
 		// ReactionMessage cannot be referred to, do not cache
 		return
@@ -57,8 +66,10 @@ func (handler *Handler) add_to_cache(message *waE2E.Message, id types.MessageID,
 		ID:        id,
 		Chat:      chat,
 		Sender:    sender,
+		RawSender: rawSender,
+		IsFromMe:  isFromMe,
+		IsGroup:   isGroup,
 		Timestamp: timestamp,
-		// TODO: also add FromMe and IsGroup since they are necessary for BuildPollVote
 	})
 	// from https://www.delftstack.com/howto/go/queue-implementation-in-golang/
 	// webOS: the "message-cache-size" account option defaults to 0 (cache disabled) upstream, and it is

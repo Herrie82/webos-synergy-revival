@@ -196,6 +196,15 @@ gowhatsapp_process_message(gowhatsapp_message_t *gwamsg)
                 g_free(html);
             }
             break;
+        case gowhatsapp_message_type_delete:
+            // webOS "delete for everyone": the sender revoked a previously-sent message. messageId =
+            // that message's server id (== serviceMessageId). Forward to the transport's
+            // "webos-im-delete" signal, which replaces the stored bubble's text with a placeholder
+            // in place (same find-by-serviceMessageId + merge mechanism as webos-im-edit above, just
+            // with a canned body instead of a new one). Runs on the libpurple main thread.
+            purple_signal_emit(purple_conversations_get_handle(), "webos-im-delete",
+                    gwamsg->account, gwamsg->messageId ? gwamsg->messageId : "");
+            break;
         case gowhatsapp_message_type_profile_picture:
             gowhatsapp_handle_profile_picture(gwamsg);
             break;

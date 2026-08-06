@@ -29,6 +29,7 @@
     MESSAGE_TYPE(receipt) \
     MESSAGE_TYPE(receipt_hwm) \
     MESSAGE_TYPE(edit) \
+    MESSAGE_TYPE(delete) \
     MESSAGE_TYPE(profile_picture) \
     MESSAGE_TYPE(group) \
     MESSAGE_TYPE(max) \

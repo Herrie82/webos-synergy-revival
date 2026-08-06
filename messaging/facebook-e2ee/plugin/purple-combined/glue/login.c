@@ -31,6 +31,29 @@ static void webos_send_reaction_cb(PurpleAccount *account, const char *targetId,
     }
 }
 
+// webOS polls (SEND): the transport emits "webos-im-send-poll-vote" when the user taps a poll
+// option. Params (4): account, peer (chat id), pollMessageId, optionNamesJoined ("\x1f"-separated,
+// "" clears the vote). Polls are WhatsApp-only (gometa/Facebook has no polls), so only that prpl id
+// is handled here.
+static void webos_send_poll_vote_cb(PurpleAccount *account, const char *peer, const char *pollMessageId,
+                                    const char *optionNamesJoined, void *data)
+{
+    (void)data;
+    if (!account || !pollMessageId || !*pollMessageId) {
+        return;
+    }
+    const char *proto = purple_account_get_protocol_id(account);
+    if (g_strcmp0(proto, GOWHATSAPP_PRPL_ID) == 0) {
+        // db8 fallback: the transport stashed the poll's ORIGINAL sender on the account right before
+        // this (synchronous) emit, same as webos-reaction-target-sender - lets whatsmeow build+encrypt
+        // the vote without a live message-cache entry (survives transport restart / very old polls).
+        const char *senderJid = purple_account_get_string(account, "webos-pollvote-sender", "");
+        gowhatsapp_go_send_poll_vote(account, (char *)(peer ? peer : ""), (char *)pollMessageId,
+                                     (char *)(optionNamesJoined ? optionNamesJoined : ""),
+                                     (char *)(senderJid ? senderJid : ""));
+    }
+}
+
 // Connect once (process-wide) to the transport's send-reaction signal. The signal lives on
 // purple_conversations_get_handle(), so a single connect covers every account of both prpls in this
 // process. Called from BOTH login paths (gowhatsapp_login here and gometa_login) so it fires whether
@@ -45,6 +68,11 @@ void webos_connect_send_reaction_once(void)
     s_connected = TRUE;
     purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-reaction",
                           purple_get_core(), PURPLE_CALLBACK(webos_send_reaction_cb), NULL);
+    // Polls are WhatsApp-only, but connecting here (alongside reactions) means it's covered by the
+    // same idempotent guard and the same "called from both login paths" arrangement, so it's ready
+    // before an instant-reconnect (saved-session) WhatsApp login can race it.
+    purple_signal_connect(purple_conversations_get_handle(), "webos-im-send-poll-vote",
+                          purple_get_core(), PURPLE_CALLBACK(webos_send_poll_vote_cb), NULL);
 }
 
 void
