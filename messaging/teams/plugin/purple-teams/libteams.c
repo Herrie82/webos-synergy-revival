@@ -562,6 +562,20 @@ teams_login(PurpleAccount *account)
 	const gchar *tenant;
 	const gchar *password = purple_connection_get_password(pc);
 
+	/* Found+fixed 2026-08-05: libpurple core's own auto-away (driven by the SAME physical
+	 * touchscreen/keyboard idle clock teams_set_idle's comment already documents as idle almost
+	 * permanently on this always-on-bridge device) periodically fires the standard
+	 * prpl_info->set_status callback (teams_set_status) with an "Away" status, independent of and
+	 * in addition to anything this plugin does on its own. CAPTURED LIVE: even with
+	 * teams_idle_update's 120s periodic re-publish of "Available" already in place (see
+	 * teams_messages.c), the account still visibly flipped back to "Away" ~40s after a periodic
+	 * refresh - core auto-away firing in the gap between our own refreshes and undoing them, with
+	 * up to ~80s of real "Away" exposure to peers (and, per teams_set_idle's own comment, broken
+	 * incoming call routing) each cycle. This is a process-global libpurple pref, not
+	 * Teams-specific, but harmless to set redundantly if another connector later does the same;
+	 * setting it here (once per Teams login) is enough to stop it firing for this account. */
+	purple_prefs_set_bool("/purple/away/away_when_idle", FALSE);
+
 	purple_connection_set_protocol_data(pc, sa);
 	teams_account_mark_live(sa);
 
