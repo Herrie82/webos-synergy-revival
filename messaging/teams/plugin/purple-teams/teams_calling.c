@@ -279,12 +279,12 @@ sdp_gcm_key(const char *sdp)
 static gchar *
 sdp_video_direction(const char *sdp)
 {
-	gchar **lines; int i; gboolean in_video = FALSE; gchar *ret = NULL;
+	gchar **lines; int i; gboolean in_video = FALSE, found_video = FALSE; gchar *ret = NULL;
 	if (!sdp) return NULL;
 	lines = g_strsplit(sdp, "\n", -1);
 	for (i = 0; lines[i]; i++) {
 		gchar *l = g_strstrip(lines[i]);
-		if (g_str_has_prefix(l, "m=video")) { in_video = TRUE; continue; }
+		if (g_str_has_prefix(l, "m=video")) { in_video = TRUE; found_video = TRUE; continue; }
 		if (l[0] == 'm' && l[1] == '=') { if (in_video) break; continue; }
 		if (!in_video) continue;
 		if (!strcmp(l, "a=sendrecv") || !strcmp(l, "a=recvonly") ||
@@ -293,6 +293,14 @@ sdp_video_direction(const char *sdp)
 		}
 	}
 	g_strfreev(lines);
+	/* RFC 3264 3.7: an m-line with no explicit direction attribute defaults to sendrecv - it does
+	 * NOT mean "no video". CAPTURED LIVE (2026-08-05): real Android/Teams mediaRenegotiation pushes
+	 * routinely omit this line despite fully negotiating H.264 codecs/ICE/crypto for the video
+	 * m-line (callModalities explicitly listing "video"), which every caller of this function was
+	 * silently reading as "peer doesn't want video" - call->video_active never flipped, our video
+	 * RTP bridge never activated, while the peer believed video was live and kept escalating until
+	 * it gave up with MediaError/410. Only fall back to NULL when there's truly no m=video section. */
+	if (!ret && found_video) ret = g_strdup("sendrecv");
 	return ret;
 }
 
@@ -512,6 +520,11 @@ media_send_offer(TeamsMediaProc *mp)
 		g_string_append_printf(sdp, "a=crypto:4 AEAD_AES_256_GCM inline:%s|2^31\r\n", mp->our_txkey);
 	}
 	g_free(our_ip);
+
+	/* Dump the exact bytes we sent, mirroring build_answer_sdp()'s teams-answer.sdp - lets a real
+	 * test call be checked for whether the video m-line actually went out as intended, instead of
+	 * inferring it from the want_video bool + byte count alone. */
+	g_file_set_contents("/media/internal/teams-offer.sdp", sdp->str, -1, NULL);
 
 	offer_esc = g_strescape(sdp->str, "");
 	legid = g_strdup_printf("%08X%08X%08X%08X", g_random_int(), g_random_int(), g_random_int(), g_random_int());
@@ -789,7 +802,17 @@ static void answer_err_cb(TeamsAccount *sa, const gchar *data, gssize len, gpoin
 { (void)sa;(void)len;(void)u; teams_call_log("ANSWER POST: REJECTED/err resp=%.260s", data ? data : "(no body)"); }
 
 /* Step 2: POST the accept (with our SDP answer) to the acceptance link parsed from the attach
- * response. Body = callAcceptance{acceptedBy, acceptedCallModalities, caps, mediaContent{blob,...}}. */
+ * response. Body = callAcceptance{acceptedBy, acceptedCallModalities, caps, mediaContent{blob,...}}.
+ * acceptedCallModalities was hardcoded to ["Audio"] always (found+fixed 2026-08-05): once
+ * sdp_video_direction()'s missing-direction-defaults-to-sendrecv fix started making media_send_answer
+ * correctly build an active m=video line (call->video_active TRUE) for offers that want video from the
+ * start, this POST's own SDP blob and its acceptedCallModalities list contradicted each other - video
+ * active in the SDP, but only "Audio" declared accepted. CAPTURED LIVE: every incoming call that
+ * reached this path with call->video_active TRUE died within the same second with "Call Controller
+ * timed out while waiting for acknowledgement" (408), while plain audio-only accepts (video_active
+ * FALSE, so this mismatch didn't exist) continued working - matches Teams' backend treating a
+ * modalities/SDP mismatch as a malformed acceptance rather than acknowledging it. Mirrors the same
+ * conditional already used for the OUTGOING offer's callModalities in media_send_offer(). */
 static void
 teams_calling_post_accept(TeamsCall *call, const gchar *acceptance_url)
 {
@@ -813,7 +836,7 @@ teams_calling_post_accept(TeamsCall *call, const gchar *acceptance_url)
 		"{\"callAcceptance\":{"
 		  "\"acceptedBy\":{\"id\":\"8:%s\",\"displayName\":\"webOS\",\"endpointId\":\"%s\","
 		    "\"participantId\":\"%s\",\"languageId\":\"en-us\"},"
-		  "\"acceptedCallModalities\":[\"Audio\"],"
+		  "\"acceptedCallModalities\":[%s],"
 		  "\"capabilities\":null,\"endpointCapabilities\":73463,\"clientEndpointCapabilities\":42876960,"
 		  "\"links\":{\"mediaRenegotiation\":\"%s\",\"transfer\":\"%s\",\"replacement\":\"%s\","
 		    "\"balanceUpdate\":\"%s\",\"retargetCompletion\":\"%s\",\"controlVideoStreaming\":\"%s\","
@@ -828,6 +851,7 @@ teams_calling_post_accept(TeamsCall *call, const gchar *acceptance_url)
 		sa->username ? sa->username : "",
 		call->our_endpoint_id ? call->our_endpoint_id : "",
 		call->our_participant_id ? call->our_participant_id : "",
+		call->video_active ? "\"Audio\",\"Video\"" : "\"Audio\"",
 		l_reneg, l_xfer, l_repl, l_bal, l_retgt, l_ctlvid, l_updmd, cc_ctlvid, cc_csrc,
 		esc, legid);
 	teams_call_log("accept -> POST %d-byte body to acceptance link", (int) strlen(body));

@@ -123,11 +123,26 @@ extern "C" int teams_video_relay_connect(void)
 	addr.sun_family = AF_UNIX;
 	strncpy(addr.sun_path, TM_RELAY_SOCK, sizeof(addr.sun_path) - 1);
 
-	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd < 0) { fprintf(stderr, "tm-call: video relay socket() failed\n"); return 0; }
-	if (connect(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
-		fprintf(stderr, "tm-call: video relay connect() failed (is teams_media up?)\n");
-		close(fd);
+	/* Found+fixed 2026-08-05: this was a SINGLE connect() attempt with no retry at all, racing
+	 * teams_media's own relay_listen_start() - for the CALLER role that's deferred until
+	 * tm_apply_answer() fires, triggered by the SAME mediaAnswer event that also kicks off this
+	 * whole clonk video chain in the plugin process, with no synchronization between the two
+	 * processes. CAPTURED LIVE: "video relay connect() failed (is teams_media up?)" still fired on
+	 * real test calls even after skypekit_video_wait_thread_b() was added (that only orders the
+	 * plugin<->mediaserver bridge, not this separate plugin<->teams_media one) - meaning every
+	 * outgoing video frame silently had nowhere to go for the whole call. Retry briefly instead of
+	 * giving up on the first attempt; a short blocking retry here is consistent with this same
+	 * call chain already blocking up to 3s in skypekit_video_wait_thread_b() right after this. */
+	int fd = -1;
+	for (int attempt = 0; attempt < 20; attempt++) {
+		fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (fd < 0) { fprintf(stderr, "tm-call: video relay socket() failed\n"); return 0; }
+		if (connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0) break;
+		close(fd); fd = -1;
+		usleep(100000); /* 100ms */
+	}
+	if (fd < 0) {
+		fprintf(stderr, "tm-call: video relay connect() failed after retries (is teams_media up?)\n");
 		return 0;
 	}
 

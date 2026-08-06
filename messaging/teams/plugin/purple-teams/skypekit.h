@@ -39,6 +39,15 @@ void skypekit_set_frame_out_callback(void (*cb)(const unsigned char *access_unit
 // the inbound accept succeeds — the capture->peer listener must be up first so that dial lands).
 void skypekit_video_start(void);
 
+// Blocks (up to timeoutMs) until Thread B's own connect to mediaserver actually succeeds; returns
+// nonzero if connected, zero on timeout. Call this AFTER skypekit_video_start() and BEFORE firing
+// videoPlayerStart — mediaserver's RunVideoHost() outbound dial to Thread A (WHATSAPP_VIDEO_STATUS.md
+// Part 17) is a single, non-retried attempt, so any timing slop here silently drops every outgoing
+// video frame for the rest of the call with no error anywhere in the logs (found+fixed 2026-08-05:
+// this file was missing this call entirely, matching a confirmed live capture where Android's
+// video reached webOS fine but webOS sent none back).
+int skypekit_video_wait_thread_b(int timeoutMs);
+
 // Signals both bridge threads to stop and joins them. Idempotent; safe to call even if
 // skypekit_video_start was never called or already stopped.
 void skypekit_video_stop(void);

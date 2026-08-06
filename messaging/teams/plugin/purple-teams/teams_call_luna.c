@@ -11,6 +11,9 @@
 #include <lunaservice.h>
 #include <glib.h>
 #include <string.h>
+#include <stdlib.h>
+#include <dirent.h>
+#include <sys/resource.h>
 
 /* One service per process (whichever Teams account logs in first owns it). */
 static LSPalmService *g_service = NULL;
@@ -35,9 +38,21 @@ static gboolean g_callIsVideo = FALSE;
 
 /* Native SkypeKit video bridge state (see the clonk lifecycle functions near the end of this
  * file). g_clonkUri = the open clonk session's palm:// LS2 URI, if any; g_videoActive mirrors
- * whether that session/bridge is currently up. */
+ * whether that session/bridge is currently up. g_clonkOpening guards teams_call_luna_open_clonk()
+ * against a real, documented race (found+fixed 2026-08-05, ported from
+ * WHATSAPP_VIDEO_STATUS.md's glue/call.c): g_clonkUri alone isn't enough, since it's only
+ * populated inside clonk_open_reply_cb()'s ASYNC reply - two triggers close together (e.g. this
+ * call's own video_active flipping true via both the mediaAnswer path and a near-simultaneous
+ * renegotiation) can both see it still empty and both fire a real LSCallOneReply, opening/starting
+ * the SAME session multiple times over, each with its own videoCaptureStart/videoPlayerStart.
+ * WhatsApp's own investigation found mediaserver's pipeline construction is not safe against
+ * overlapping start calls for one session - exactly matching this being the one thing broken here
+ * that isn't shared, connector-agnostic firmware (WhatsApp already carries this same fix; this
+ * file didn't). Set synchronously, before the async call goes out; cleared in
+ * clonk_open_reply_cb() once that reply lands, success or failure. */
 static gchar   *g_clonkUri    = NULL;
 static gboolean g_videoActive = FALSE;
+static gboolean g_clonkOpening = FALSE;
 
 #define SUBKEY "callState"
 
@@ -315,10 +330,33 @@ audiod_send(const char *uri, const char *payload)
 	}
 }
 
+/* Raise (or restore) the scheduling priority of EVERY thread in this process. Ported from
+ * WhatsApp's wa_renice_all_threads() (glue/call.c) - same TouchPad, same ~2x-oversubscribed
+ * contention (chatthreader, mojodb, WebAppMgr fighting for 2 cores), same failure mode: this
+ * process's skypekit Thread A/B and the relay reader thread need to hand off frames within
+ * mediaserver's own tight deadlines, and losing a core mid-handoff silently drops the frame
+ * rather than erroring. WhatsApp needed this to get video actually flowing on this hardware;
+ * Teams never had it. Per-thread because Linux nice is per-task - renice all of /proc/self/task. */
+static void
+teams_renice_all_threads(int nice_val)
+{
+	DIR *d = opendir("/proc/self/task");
+	if (!d) return;
+	struct dirent *e;
+	int n = 0;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+		if (setpriority(PRIO_PROCESS, (id_t) atoi(e->d_name), nice_val) == 0) n++;
+	}
+	closedir(d);
+	teams_call_log("reniced %d threads to %d", n, nice_val);
+}
+
 void
 teams_call_luna_set_audio(gboolean active)
 {
 	teams_call_log("set_audio active=%d prv=%p", (int) active, (void*)g_prv);
+	teams_renice_all_threads(active ? -15 : 0);
 	/* NOTE: teams_media routes call audio through the Atlas qspkd/qmicd daemons (media speaker + mic),
 	 * NOT the pvoip phone path - because the new-glibc wpe-gst engine can't reach PulseAudio's pvoip.
 	 * We deliberately do NOT call setCurrentScenario("phone_back_speaker") - that scenario suppresses
@@ -391,6 +429,17 @@ clonk_capture_start_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 	skypekit_video_start();
 	if (!teams_video_relay_connect())
 		teams_call_log("video relay connect failed (is teams_media up?) - continuing anyway");
+	/* MUST wait for Thread B to actually connect to mediaserver before firing videoPlayerStart -
+	 * see skypekit_video_wait_thread_b()'s comment (WHATSAPP_VIDEO_STATUS.md Part 17). This file
+	 * was missing this call entirely (found+fixed 2026-08-05): mediaserver's RunVideoHost() only
+	 * gets ONE non-retried attempt to dial our capture thread, and without this wait that attempt
+	 * routinely lands before Thread B has finished connecting - the call proceeds looking totally
+	 * healthy (Thread A still logs "accepted a connection" since our own listen socket is fine)
+	 * but silently sends zero outgoing video for the rest of the call. Confirmed via a live
+	 * packet capture: Android's video correctly reached webOS, but webOS sent nothing back, on a
+	 * call where SDP/ICE/modalities had already been verified fully correct. */
+	if (!skypekit_video_wait_thread_b(3000))
+		teams_call_log("skypekit thread B did not connect within 3s, firing videoPlayerStart anyway");
 	clonk_uri_call("videoPlayerStart", "{\"args\":[320,240]}", clonk_player_start_reply_cb, NULL);
 	return TRUE;
 }
@@ -409,6 +458,7 @@ clonk_open_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 	const char *p = LSMessageGetPayload(msg);
 	gchar *uri;
 	(void) sh; (void) ctx;
+	g_clonkOpening = FALSE; /* the open attempt this reply belongs to is no longer in flight */
 	uri = get_field(p, "location");
 	if (uri && *uri) {
 		g_free(g_clonkUri);
@@ -443,12 +493,14 @@ static void
 teams_call_luna_open_clonk(void)
 {
 	LSError err; LSMessageToken tok;
-	if (g_clonkUri || !g_prv) return;
+	if (g_clonkUri || g_clonkOpening || !g_prv) return;
+	g_clonkOpening = TRUE; /* set BEFORE the async call goes out - see g_clonkOpening's comment */
 	g_videoActive = TRUE;
 	LSErrorInit(&err);
 	if (!LSCallOneReply(g_prv, "palm://com.palm.mediad/service/clonk", "{}",
 	                    clonk_open_reply_cb, NULL, &tok, &err)) {
 		teams_call_log("clonk open call failed: %s", err.message);
+		g_clonkOpening = FALSE; /* the reply that would have cleared this never fires now */
 		LSErrorFree(&err);
 	}
 }

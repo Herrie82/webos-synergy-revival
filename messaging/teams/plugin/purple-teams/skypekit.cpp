@@ -128,6 +128,19 @@ static int rtp_parse_header(const unsigned char *pkt, size_t len, int *marker,
 static pthread_t g_thread_a, g_thread_b;
 static volatile int g_running = 0;
 static volatile int g_thread_a_started = 0; // set the moment thread A enters, before it blocks
+// Set once Thread B's own avtw_connect() to mediaserver's /tmp/vidrtp_from_skypekit_key actually
+// succeeds (not just once the thread starts). PORTED FROM WHATSAPP'S skypekit.cpp (found+fixed
+// 2026-08-05): this codebase's copy was missing both this flag and skypekit_video_wait_thread_b()
+// below, so teams_call_luna.c fired videoPlayerStart immediately after skypekit_video_start()
+// with no wait at all. CAPTURED LIVE: mediaserver's RunVideoHost() (triggered by videoPlayerStart)
+// does a SINGLE, non-retried 500ms-timeout outbound dial to reach Thread A once its own inbound
+// side (what Thread B connects to) is satisfied - miss that one window and no video frame we
+// capture ever leaves the device for the rest of the call, with no error anywhere in our own
+// logs (Thread A still logs "accepted a connection" since OUR listen socket is fine - confirmed
+// via a live packet capture: Android's video correctly arrived at webOS, but webOS sent zero
+// video bytes back, for a call where every other step - SDP negotiation, ICE, acceptedCallModalities
+// - had already been fixed and verified working). See WHATSAPP_VIDEO_STATUS.md Part 17.
+static volatile int g_thread_b_connected = 0;
 static pthread_mutex_t g_start_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_start_cv = PTHREAD_COND_INITIALIZER;
 
@@ -294,6 +307,10 @@ static void *thread_b_main(void *) {
 		}
 		if (!connected) { avtw_dtor(transport); continue; }
 		fprintf(stderr, "tm-call: skypekit thread B connected to mediaserver\n");
+		pthread_mutex_lock(&g_start_mx);
+		g_thread_b_connected = 1;
+		pthread_cond_broadcast(&g_start_cv);
+		pthread_mutex_unlock(&g_start_mx);
 
 		memset(binclient, 0, sizeof(binclient));
 		binclient_ctor(binclient, transport);
@@ -351,6 +368,7 @@ void skypekit_video_start(void) {
 	if (g_running) return;
 	g_running = 1;
 	g_thread_a_started = 0;
+	g_thread_b_connected = 0;
 	pthread_create(&g_thread_a, nullptr, thread_a_main, nullptr);
 
 	// Best-effort ordering guarantee (Part 17): wait for thread A to at least start running
@@ -373,6 +391,27 @@ void skypekit_video_start(void) {
 	usleep(150000); // small additional margin, see comment above
 
 	pthread_create(&g_thread_b, nullptr, thread_b_main, nullptr);
+}
+
+// Blocks until Thread B's own connect to mediaserver's /tmp/vidrtp_from_skypekit_key actually
+// succeeds, up to timeoutMs. Returns nonzero if connected, zero on timeout (the caller logs and
+// proceeds anyway rather than hanging the mainloop indefinitely - a best-effort ordering
+// guarantee, not a hard requirement, matching skypekit_video_start()'s own Thread A wait
+// philosophy above). PORTED FROM WHATSAPP - see g_thread_b_connected's comment for why this
+// exists: unlike Thread A's near-instant bind+listen, Thread B must wait for Thread A to already
+// be listening and then complete its own connect-retry loop (up to 500ms per attempt), which a
+// fixed short delay before videoPlayerStart cannot reliably outlast.
+int skypekit_video_wait_thread_b(int timeoutMs) {
+	struct timespec deadline;
+	deadline.tv_sec = time(nullptr) + (timeoutMs / 1000);
+	deadline.tv_nsec = (long)(timeoutMs % 1000) * 1000000L;
+	pthread_mutex_lock(&g_start_mx);
+	while (!g_thread_b_connected) {
+		if (pthread_cond_timedwait(&g_start_cv, &g_start_mx, &deadline) != 0) break;
+	}
+	int connected = g_thread_b_connected;
+	pthread_mutex_unlock(&g_start_mx);
+	return connected;
 }
 
 void skypekit_video_stop(void) {
