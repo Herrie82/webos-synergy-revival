@@ -113,8 +113,20 @@ fi
 rm -f "$APPLIED"
 
 log "removing imlibpurpleservice + backend files..."
-rm -f /usr/bin/imlibpurpletransport /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh \
-      /var/provision-im-reactions.sh /var/provision-person-search.sh /etc/event.d/imtransport
+# NOT listed here: /usr/bin/imlibpurpletransport, /var/imwrap.sh and
+# /etc/event.d/imtransport. All three are staged through the overwrite mechanism, so
+# they are already in $APPLIED and the restore loop above has just dealt with them --
+# putting stock back where stock existed, removing ours where it did not.
+#
+# Deleting them here on top of that was destructive, not redundant. restore_or_remove
+# uses `mv`, which CONSUMES the backup, so for imlibpurpletransport the sequence was:
+# restore stock -> backup now gone -> rm the file we just restored. Stock ships that
+# binary (see stage.sh's own note), and com.palm.imlibpurple.service is restored
+# pointing at it -- so an uninstall left a live D-Bus activation record aimed at a
+# deleted binary, with no backup left to recover from. Stock IM was broken until a
+# reflash.
+rm -f /var/imdaemon.sh /var/provision-im-db.sh \
+      /var/provision-im-reactions.sh /var/provision-person-search.sh
 rm -f /usr/sbin/bt-a2dp-fix.sh /etc/event.d/bt-a2dp-fix /usr/local/bin/db8-clean.sh
 # /usr/lib/purple-2 and /usr/lib/synergy-runtime are BIND MOUNTS onto /media/cryptofs (see
 # postinst/imwrap.sh) -- unmount FIRST, or `rm -rf` here would recurse through the mount and
