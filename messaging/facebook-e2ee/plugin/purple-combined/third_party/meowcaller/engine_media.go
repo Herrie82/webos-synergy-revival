@@ -464,8 +464,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		e.mu.Unlock()
 	}()
-	var videoDepack rtp.H264Depacketizer
-	var videoAU []byte
+	var videoAssembler rtp.H264AccessUnitAssembler
 	var appDataRx appDataReceiver
 
 	// Video send: a second WARP pipeline on our video SSRC, registered on the call so
@@ -541,6 +540,20 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		defer ticker.Stop()
 		var sent uint64
 		var firSeqNr uint8
+		// Grace window (found live 2026-08-06): our own clonk DISPLAY pipeline opens ~200ms after
+		// the first inbound video RTP arrives (OnVideoState -> videoCaptureStart/videoPlayerStart,
+		// async), but skypekit's Thread B silently DROPS every frame handed to it before that
+		// pipeline is up. If the peer sends its first IDR fast -- before our ~200ms startup -- that
+		// IDR is dropped, and because gotPeerVideo flips true on that very first packet we then STOP
+		// requesting keyframes, leaving the decoder stuck on P-frames referencing an IDR it never
+		// saw (blank/frozen video until the peer volunteers another IDR, or the user toggles a
+		// camera). Symptom seen live: video occasionally never displays on an incoming call until a
+		// manual camera toggle. Fix: keep sending PLI/FIR for a couple ticks AFTER first video too,
+		// so a fresh IDR is requested once our display pipeline is guaranteed ready. The extra 1-2
+		// PLIs are harmless (real clients send them routinely on decode gaps).
+		const pliGraceTicks = 2
+		var firstVideoTick uint64
+		var haveFirstVideo bool
 		doTick := func(now time.Time) bool {
 			audioPacket, err := audioRtcp.senderReport(txPipe.SenderStats(), uint64(now.UnixMilli()))
 			if err != nil {
@@ -559,12 +572,20 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					return false
 				}
 			}
-			if !gotPeerVideo.Load() {
+			gv := gotPeerVideo.Load()
+			if gv && !haveFirstVideo {
+				haveFirstVideo = true
+				firstVideoTick = sent
+			}
+			// Request a keyframe while no video has arrived, AND for pliGraceTicks afterward, to
+			// survive the clonk-display-startup drop window (see the pliGraceTicks comment above).
+			inGraceWindow := haveFirstVideo && sent < firstVideoTick+pliGraceTicks
+			if !gv || inGraceWindow {
 				pliPacket, err := videoRtcp.pli(peerVideoSsrc)
 				if err == nil {
 					_, _ = ch.Send(pliPacket)
 					e.c.diag.Emit("rtcp", map[string]any{
-						"event": "pli_sent", "peer_video_ssrc": peerVideoSsrc,
+						"event": "pli_sent", "peer_video_ssrc": peerVideoSsrc, "in_grace": inGraceWindow,
 					})
 				}
 				firSeqNr++
@@ -572,10 +593,10 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if ferr == nil {
 					_, _ = ch.Send(firPacket)
 				}
-				if sent%4 == 0 {
+				if sent%4 == 0 || inGraceWindow {
 					log.Info().Uint32("peer_video_ssrc", peerVideoSsrc).Uint8("fir_seq", firSeqNr).
-						Bool("pli_ok", err == nil).Bool("fir_ok", ferr == nil).
-						Msg("still no peer video -- sent PLI+FIR keyframe request")
+						Bool("pli_ok", err == nil).Bool("fir_ok", ferr == nil).Bool("post_video_grace", inGraceWindow).
+						Msg("sent PLI+FIR keyframe request")
 				}
 			}
 			sent++
@@ -615,9 +636,6 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 
 	buf := make([]byte, 1500)
 	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, allocOK, allocErr, pongIn uint64
-	var haveLastVideoSeq bool
-	var lastVideoSeq uint16
-	var lostSincePrevFrame uint32
 	var hexCaptured uint64
 	for {
 		if ctx.Err() != nil {
@@ -781,22 +799,6 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			// Any video RTP at all, unprotected or not, means the peer's encoder is
 			// running -- stop sending PLIs once that's established.
 			gotPeerVideo.Store(true)
-			// Track sequence-number continuity: a gap here means lost RTP packets, which
-			// (if they carried a reference frame) corrupts the decoder's reference buffer
-			// until the next IDR -- a real mechanism for self-correcting visual flicker,
-			// unlike anything in the depacketizer/wire-format itself (already verified clean).
-			if haveLastVideoSeq {
-				gap := vh.SequenceNumber - lastVideoSeq - 1 // wraps correctly for uint16
-				if gap != 0 && gap < 60000 {
-					lostSincePrevFrame += uint32(gap)
-					e.c.diag.Emit("video", map[string]any{
-						"event": "seq_gap", "ssrc": vh.Ssrc,
-						"expected": lastVideoSeq + 1, "got": vh.SequenceNumber, "lost": gap,
-					})
-				}
-			}
-			haveLastVideoSeq = true
-			lastVideoSeq = vh.SequenceNumber
 			_, vpayload, vunok := rxVideoPipe.UnprotectAudio(pkt)
 			if !vunok {
 				if videoUnprotectFail++; videoUnprotectFail == 1 {
@@ -808,31 +810,34 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				e.c.diag.Emit("video", map[string]any{"event": "unprotect_failed", "ssrc": vh.Ssrc, "seq": vh.SequenceNumber})
 				continue
 			}
-			for _, nalu := range videoDepack.Depacketize(vpayload) {
-				videoAU = append(videoAU, 0x00, 0x00, 0x00, 0x01)
-				videoAU = append(videoAU, nalu...)
+			// H264AccessUnitAssembler (upstream purpshell/meowcaller, rtp/h264.go) replaces our
+			// previous manual depacketize-and-concatenate loop, which had NO loss/reorder recovery
+			// at all: a single dropped or reordered RTP packet mid-frame silently corrupted the
+			// reassembled access unit (wrong NAL boundaries / missing reference data) and handed
+			// it straight to mediaserver's decoder anyway -- previously only logged via the
+			// seq_gap diagnostic, never actually acted on. Matches the exact empirically-found
+			// symptom this session: video sometimes never displays after a call connects, and
+			// forcing the peer to toggle their camera (a fresh, guaranteed-clean IDR) is what
+			// recovers it. The assembler now discards a corrupted access unit and withholds every
+			// subsequent frame until a real IDR arrives, instead of ever handing the decoder
+			// something broken -- self-healing the same way the camera-toggle workaround does,
+			// but automatically and without user intervention.
+			frame, complete, recoveryNeeded := videoAssembler.Push(vh.SequenceNumber, vh.Marker, vpayload)
+			if recoveryNeeded {
+				e.c.diag.Emit("video", map[string]any{
+					"event": "recovery", "ssrc": vh.Ssrc, "seq": vh.SequenceNumber,
+				})
 			}
-			if vh.Marker && len(videoAU) > 0 {
-				frame := videoAU
-				videoAU = nil
+			if complete && len(frame) > 0 {
 				fields := map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame)}
-				if lostSincePrevFrame > 0 {
-					fields["lost_pkts"] = lostSincePrevFrame
-				}
 				// Dump reassembled access units in full so a real corruption (bad NAL types,
 				// missing/garbled SPS-PPS, wrong start codes) can be inspected directly instead
-				// of inferred. Also captures any frame immediately following a detected RTP
-				// sequence gap: a dropped reference-frame packet corrupts the decoder's
-				// reference buffer until the next IDR, the leading hypothesis for flicker that
-				// shows up mid-call rather than at call start. Capped so a long call cannot
-				// blow up the log.
-				dueToGap := lostSincePrevFrame > 0
-				if (videoFrameIn < 8 || dueToGap) && hexCaptured < 60 {
+				// of inferred. Capped so a long call cannot blow up the log.
+				if (videoFrameIn < 8 || recoveryNeeded) && hexCaptured < 60 {
 					fields["frame_hex"] = hex.EncodeToString(frame)
 					fields["nal_types"] = h264NalTypes(frame)
 					hexCaptured++
 				}
-				lostSincePrevFrame = 0
 				e.c.diag.Emit("video", fields)
 				if sink := callVideoSink(call); sink != nil {
 					if err := sink.WriteVideo(frame); err != nil {
@@ -1083,16 +1088,27 @@ func (vs *videoSender) protectAccessUnitLocked(au []byte, duration time.Duration
 	// decoder at all. Keep tracking keyframeRequired (cleared below once an IDR gets through)
 	// purely for the mediaFrameInfo IDR/Delta marking -- just stop using it to withhold frames.
 	nalus := rtp.SplitAnnexB(au)
-	var payloads [][]byte
+	var packedAccessUnit []byte
 	for _, n := range nalus {
 		if len(n) == 0 || n[0]&0x1f == 9 {
 			continue
 		}
-		payloads = append(payloads, rtp.PackageH264NALU(n)...)
+		if len(packedAccessUnit) > 0 {
+			packedAccessUnit = append(packedAccessUnit, 0, 0, 0, 1)
+		}
+		packedAccessUnit = append(packedAccessUnit, n...)
 	}
-	if len(payloads) == 0 {
+	if len(packedAccessUnit) == 0 {
 		return nil
 	}
+	// WhatsApp fragments the WHOLE Annex-B access unit as one RTP NAL unit (STAP/FU-A over
+	// the combined SPS+PPS+IDR blob), not one RTP unit per NALU. Found by diffing against
+	// upstream purpshell/meowcaller@2d1c5bfe ("match WhatsApp access unit packetization"):
+	// our previous per-NALU packetization sent real, valid H.264 (confirmed via our own
+	// wire diagnostics -- every frame reached the relay with no errors) in a framing a real
+	// WhatsApp client's depacketizer never reassembles correctly, so nothing ever decoded
+	// on the peer's end despite our own send-side reporting success the whole time.
+	payloads := rtp.PackageH264NALU(packedAccessUnit)
 	vs.stream.SetTimestampStride(videoRtpDurationSamples(duration))
 	mediaFrameInfo := rtp.VideoMediaFrameInfoDelta
 	if idr {

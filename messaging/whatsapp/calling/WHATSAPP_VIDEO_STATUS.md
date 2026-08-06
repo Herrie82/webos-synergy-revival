@@ -2637,3 +2637,76 @@ function is ever entered at all.
 
 **Device state at end of session**: unchanged from Part 34 (all binaries at their documented
 known-good md5s, no elevated logging left running, no test session left open).
+
+## Part 36 — RESOLVED end-to-end: three real meowcaller video bugs fixed, WhatsApp video now works both directions (2026-08-06)
+
+Video calling now works reliably in **both** directions (webOS→Android and Android→webOS),
+user-confirmed live across a batch of test calls. The remaining native RPC-delivery investigation
+from Parts 28–35 turned out **not** to be the blocker for real calls — that entire thread was
+chasing a synthetic-test-harness artifact. The real bugs were all in the `meowcaller` Go video
+media path (our local vendored fork at
+`messaging/facebook-e2ee/plugin/purple-combined/third_party/meowcaller/`), found by diffing our
+pinned revision (`9769d5aaaeca`, 2026-07-17) against ~10 days of upstream `purpshell/meowcaller`
+commits we were behind.
+
+**Three fixes applied (all in the vendored meowcaller fork):**
+
+1. **RTP packetization (the outgoing-direction fix).** Our `protectAccessUnitLocked`
+   (`engine_media.go`) RTP-packetized each NAL unit (SPS, PPS, IDR) as a *separate* RTP packet.
+   Real WhatsApp fragments the **whole Annex-B access unit as one RTP NAL unit** (STAP/FU-A over the
+   combined SPS+PPS+IDR blob). Ported from upstream `2d1c5bfe` ("match WhatsApp access unit
+   packetization"). Our send-side never errored — every frame reached the relay fine — but Android's
+   depacketizer could never reassemble our per-NALU framing, so nothing decoded. This is why
+   webOS→Android showed no video despite our own diagnostics reporting healthy sends. Deterministic
+   (every frame malformed, every call) — explains why the earlier "always broken outgoing / always
+   working incoming" looked like a caller/callee asymmetry but was really just wire-format.
+
+2. **Frame-info markers + extension encoding + sequence start.** `VideoMediaFrameInfoIDR`/`Delta`
+   were `0x09`/`0x01`; real values are `0x08`/`0x20`, with a restructured `VideoRtpExtension.encode()`
+   TLV layout and video RTP sequence starting at 1 (not 0). Verified byte-for-byte against upstream's
+   captured reference (`rtp.go` wholesale-replaced from upstream `6d9b7b2c`; standalone test confirmed
+   our output matches `32080001510000610000910000000000` etc. exactly).
+
+3. **Receive-side loss/reorder recovery + PLI grace window (the incoming-direction reliability
+   fix).** Our receive loop used the plain `H264Depacketizer` with **zero** loss/reorder recovery —
+   a single dropped/reordered RTP packet mid-frame silently corrupted the reassembled access unit and
+   handed it straight to mediaserver's decoder. Replaced with upstream's `H264AccessUnitAssembler`,
+   which discards a corrupted access unit and withholds subsequent frames until a real IDR restores
+   decoder state. PLUS a **PLI grace window**: the RTCP ticker previously stopped requesting keyframes
+   the instant the *first* video RTP arrived (`gotPeerVideo`), but our clonk display pipeline opens
+   ~200 ms **after** that first packet (async `videoCaptureStart`/`videoPlayerStart`), and skypekit's
+   Thread B silently drops every frame handed to it before the pipeline is up. So if the peer's first
+   IDR arrived fast (before our ~200 ms startup), it was dropped and we'd never ask for another →
+   frozen/blank video until the peer volunteered a fresh IDR or the user toggled a camera. Fix
+   (`engine_media.go`, `doTick`): keep sending PLI/FIR for `pliGraceTicks` (2 ticks, ~1.5 s) *after*
+   first video too, guaranteeing a fresh IDR request lands once the display is ready. Symptom before
+   fix: incoming video occasionally never displayed until a manual camera toggle. After: always
+   displays.
+
+**Deployed:** `libwhatsmeow.so` md5 `7f2ef9a1f6b9031d37d2b63bc3bc0568` (final build with all three
+fixes). Confirmed loaded/mapped into the running transport.
+
+### Follow-up (deferred — "always works" is good enough for now)
+
+**Startup-latency optimization for incoming video.** The first keyframe request currently waits for
+the RTCP ticker's first tick (fires on relay ALLOCATE-SUCCESS, then every 1500 ms). Most incoming
+calls get Android's first keyframe after ~1 request (~5–6 s incl. call setup), but some take 2–3
+requests (~12–20 s) — the variance is entirely in how fast Android's encoder responds to our PLI/FIR
+(network + Android scheduling), confirmed from the per-call `fir_seq` escalation cadence (logged
+every 4th tick = every ~6 s) in `imstdout.log`. **Proposed tweak:** fire PLI/FIR *immediately* when
+video activates, plus a couple more in quick succession over the first ~1–2 s (instead of one every
+1.5 s), to prompt Android's encoder sooner and shrink the slow-path tail. Cost: a few extra request
+packets early on (real clients send these routinely). This is a latency nicety, not a correctness
+fix — video already always displays.
+
+**Also noted (minor, unrelated):** after the last `kill -9`/respawn of the transport during this
+session's redeploys, the freshly-respawned instance stopped appending to `/media/cryptofs/imstdout.log`
+even though its fd 1/2 still point there and the correct `.so` is mapped — a logging-plumbing quirk of
+that specific restart, not a functional problem (calls still worked). A single clean transport restart
+resumes normal logging; worth a quick look if it recurs, but it does not affect calling.
+
+**Not the bug (closing out Parts 28–35):** the native SkypeKit RPC-delivery question — whether
+`VideoHost::RtpPacketReceived` is ever entered — was a synthetic-test-harness artifact. Real calls
+now round-trip video end to end through the exact same skypekit/clonk bridge, so that path
+demonstrably works in production; the earlier dead end was in the injection test rig, not the live
+pipeline.
