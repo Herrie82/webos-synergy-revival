@@ -31,12 +31,21 @@ L=$H/log
 mkdir -p "$ST" "$L" "$H/src"
 
 # ---------------------------------------------------------------- prerequisites
-# gperf/lemon are build-time generators for pbnjson; libpurple-dev is the one piece with no
-# source on disk (messaging/libpurple is ARM staging: headers are portable, the .so is not).
+# Checked up front, all at once: a half-built staging tree is worse than a clean refusal.
+#   gperf/lemon/flex/bison  build-time generators for pbnjson
+#   leveldb/icu             db8's storage engine and collation
+#   libpurple-dev           the one dependency with no source on disk (messaging/libpurple is
+#                           ARM staging -- portable headers, non-portable .so)
+# Boost is deliberately absent: pbnjson references it only from the pbnjson_validate CLI tool,
+# and that subdir is already commented out in the audiod-port tree, so it is never configured.
 MISSING=""
-command -v gperf >/dev/null || MISSING="$MISSING gperf"
-command -v lemon >/dev/null || MISSING="$MISSING lemon"
+command -v gperf >/dev/null           || MISSING="$MISSING gperf"
+command -v lemon >/dev/null           || MISSING="$MISSING lemon"
+command -v flex  >/dev/null           || MISSING="$MISSING flex"
+command -v bison >/dev/null           || MISSING="$MISSING bison"
 pkg-config --exists purple 2>/dev/null || MISSING="$MISSING libpurple-dev"
+[ -e /usr/include/leveldb/db.h ]      || MISSING="$MISSING libleveldb-dev"
+pkg-config --exists icu-uc 2>/dev/null || MISSING="$MISSING libicu-dev"
 if [ -n "$MISSING" ]; then
   echo "!! missing build prerequisites:$MISSING"
   echo "   sudo apt install$MISSING"
