@@ -11,7 +11,7 @@
  */
 
 #include "presage.h"
-#include <lunaservice.h>
+#include "webos-ls2-compat.h"   /* legacy split-bus API on either luna-service2 */
 #include <glib.h>
 #include <string.h>
 #include <stdbool.h>

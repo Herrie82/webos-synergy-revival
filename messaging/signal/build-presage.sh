@@ -79,7 +79,7 @@ GLIB_CFLAGS=$(pkg-config --cflags glib-2.0 gobject-2.0)
 # NB: gdk-pixbuf deliberately NOT on the include path -> pixbuf.c uses its jpeg/png fallback.
 CFLAGS="-fPIC -O2 -march=armv7-a -mfloat-abi=soft --sysroot=$SR -DPURPLE_PLUGINS
   -DPLUGIN_VERSION=\"0.0.0-webos\" -I$C -I$PURPLE/include/libpurple -I$PURPLE/include $GLIB_CFLAGS
-  -I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC"
+  -I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC -I$REPO/messaging/common"
 
 SRCS="init.c bridge.c connection.c qrcode.c receive_text.c send_text.c blist.c status.c groups.c \
       receive_attachment.c send_file.c profile.c options.c attachment_common.c pixbuf.c call.c"

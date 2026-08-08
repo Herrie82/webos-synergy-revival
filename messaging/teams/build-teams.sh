@@ -41,7 +41,7 @@ teams_calling.c teams_call_luna.c h264_rtp.c \
 purple2compat/http.c purple2compat/purple-socket.c"
 
 CFLAGS_COMMON="`pkg-config purple glib-2.0 json-glib-1.0 zlib --cflags` \
-  -I$LUNAINC -I$LUNAINC/luna-service2 -I$PMLOGINC -Ipurple2compat"
+  -I$LUNAINC -I$LUNAINC/luna-service2 -I$PMLOGINC -Ipurple2compat -I$REPO/messaging/common"
 
 rm -f libteams-personal.so libteams-personal.stripped.so *.o
 

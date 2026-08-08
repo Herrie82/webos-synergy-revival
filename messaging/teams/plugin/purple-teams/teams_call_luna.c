@@ -8,7 +8,7 @@
 #include "skypekit.h"
 #include "teams_video_relay.h"
 
-#include <lunaservice.h>
+#include "webos-ls2-compat.h"   /* legacy split-bus API on either luna-service2 */
 #include <glib.h>
 #include <string.h>
 #include <stdlib.h>

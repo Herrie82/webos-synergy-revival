@@ -54,7 +54,7 @@ echo "  -> $(ls -la "$BUILD/libwhatsmeow.a" | awk '{print $5}') bytes"
 echo "=== STAGE 2: compile C glue (whatsmeow + gometa_init) ==="
 GCFLAGS="$CFLAGS $CPPFLAGS -fPIC -DPURPLE_PLUGINS -DPLUGIN_VERSION=$VERSION \
 	-I$GLUE -I$SRC -I$BUILD -I$PURPLE/include $(pkg-config --cflags purple glib-2.0) -I$GLIB_STAGING/include -I$GLIB_STAGING/include/opus \
-	-I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC -I$WEBRTC_DSP"
+	-I$LUNA_INC -I$LUNA_INC/luna-service2 -I$PMLOG_INC -I$WEBRTC_DSP -I$REPO/messaging/common"
 OBJS=()
 for s in init login qrcode bridge process_message display_message groups blist \
          send_message handle_attachment send_file presence options receipt pixbuf commands \

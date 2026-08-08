@@ -40,7 +40,7 @@ if [ "$1" = "-r" ] || [ "$1" = "--reconfigure" ] || [ ! -f "$BUILD/build.ninja" 
 		-Dtgvoip_NO_DSP=TRUE \
 		-Dtgvoip_INCLUDE_DIRS="$TGVOIP/include/tgvoip" \
 		-Dtgvoip_LIBRARIES="$TGVOIP/lib/libtgvoip.a;$GLIB_STAGING/lib/libopus.so;$GLIB_STAGING/lib/libasound.so;$GLIB_STAGING/lib/libcrypto.so" \
-		-Dlunaservice_INCLUDE_DIRS="$LUNAINC;$LUNAINC/luna-service2;$PMLOGINC" \
+		-Dlunaservice_INCLUDE_DIRS="$LUNAINC;$LUNAINC/luna-service2;$PMLOGINC;$REPO/messaging/common" \
 		-Dlunaservice_LIBRARIES="$LSSTUB/liblunaservice.so" \
 		-DSkypeKitFwRootfs="$FW_ROOTFS"
 fi
