@@ -15,7 +15,19 @@ TGVOIP=$REPO/messaging/telegram/plugin/libtgvoip/install/usr  # libtgvoip (build
 LUNAINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/include/public  # luna-service2 headers (external dep)
 PMLOGINC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic  # PmLogLib.h (pulled in by lunaservice.h)
 LSSTUB=$REPO/build-output/imtransport/lib                     # device link stubs (liblunaservice.so; gitignored)
-FW_ROOTFS=/home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs  # firmware rootfs (libpalmgstskype.so; same as build-skypekit-send-test.sh)
+# Firmware rootfs supplying libpalmgstskype.so (the legacy-only voipkit backend). Resolved from a
+# candidate list rather than one hardcoded path -- the doctor extraction under ~/Downloads this
+# used to point at is long gone. topaz first: that is the TouchPad, and the mantaray build of this
+# library is a different binary. Same resolution as build-teams.sh and build-combined.sh.
+FW_ROOTFS=${FW_ROOTFS:-}
+if [ -z "$FW_ROOTFS" ]; then
+  for c in /home/herrie/webos/305att/nova-cust-image-topaz.rootfs-att \
+           /home/herrie/webos/224/nova-cust-image-mantaray.rootfs \
+           /home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs; do
+    [ -f "$c/usr/lib/gstreamer-0.10/libpalmgstskype.so" ] && { FW_ROOTFS=$c; break; }
+  done
+fi
+[ -n "$FW_ROOTFS" ] || { echo "!! libpalmgstskype.so not found; set FW_ROOTFS=/path/to/rootfs"; exit 1; }
 
 OUT=$BUILD/libtelegram-tdlib.so
 STRIPPED=$BUILD/libtelegram-tdlib.stripped.so
@@ -31,7 +43,9 @@ if [ "$1" = "-r" ] || [ "$1" = "--reconfigure" ] || [ ! -f "$BUILD/build.ninja" 
 	rm -rf "$BUILD"; mkdir -p "$BUILD"
 	# Voice calls ON (libtgvoip, DSP-off first pass); no webp/lottie/translations.
 	# libtgvoip.a resolves opus/asound/openssl from the same glibc staging as the prpl.
-	cmake -S "$SRC" -B "$BUILD" -G Ninja \
+	# CMAKE_POLICY_VERSION_MINIMUM: tdlib-purple asks for cmake_minimum_required(3.2), below the
+	# floor CMake 4 enforces. Nothing here depends on pre-3.5 policy behaviour.
+	cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
 		-DCMAKE_PREFIX_PATH="$TDLIB;$PURPLE" \

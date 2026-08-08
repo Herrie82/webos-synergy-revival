@@ -80,8 +80,8 @@ add_library(telegram-tdlib SHARED
     call-luna.cpp
     identifiers.cpp
     secret-chat.cpp
-    skypekit.cpp
-    skypekit-tgvoip.cpp
+    voipkit.cpp
+    voipkit-tgvoip.cpp
     h264_rtp.c
 )
 
@@ -171,7 +171,7 @@ if (NOT NoVoip)
         target_compile_definitions(telegram-tdlib PRIVATE TGVOIP_NO_DSP)
     endif (tgvoip_NO_DSP)
 
-    # skypekit.cpp/skypekit-tgvoip.cpp (native SkypeKit video bridge) link directly against the
+    # voipkit.cpp/voipkit-tgvoip.cpp (native SkypeKit video bridge) link directly against the
     # real, headerless libpalmgstskype.so on the device firmware image -- see
     # messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md and
     # messaging/whatsapp/calling/build-skypekit-send-test.sh for the technique this mirrors.
