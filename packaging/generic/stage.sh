@@ -97,7 +97,7 @@ stage_root_file "$IM/files/dbus-1/system-services/com.palm.imlibpurple.service" 
 
 echo "== generic: shared libpurple 2.14 + ssl-openssl engine (overwrites real /usr/lib) =="
 # libpurple.so.0.14.13 here has its 3 compiled-in absolute paths (plugin dir, sysconfdir,
-# datadir) binary-patched from the old com.palm.app.teams (renamed org.webosports.app.teams)/backend nesting to the real /usr/lib
+# datadir) binary-patched from the old com.palm.app.teams/backend nesting to the real /usr/lib
 # locations (/usr/lib/purple-2, /etc, /usr/share) -- same technique as the existing
 # device-setup/webkit-webm-mime string patch. This is genuine stock Palm IM infrastructure
 # (com.palm.imlibpurple) being modernized in place, so it's staged to OVERWRITE (postinst backs up
