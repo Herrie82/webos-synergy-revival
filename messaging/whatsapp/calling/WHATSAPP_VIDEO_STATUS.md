@@ -1436,13 +1436,13 @@ text in the session transcript; summary here). New files, all in
   sequence/timestamp/SSRC state across the call.
 - **`glue/call.c`** — `clonk_open`/`clonk_close` deepened from bare session tracking into the
   real sequence: session create -> `videoCaptureStart` (Part 16's field-shift-compensated args)
-  -> `skypekit_video_start()` (binds Thread A) -> `videoPlayerStart` (triggers `RunVideoHost()`) ->
+  -> `voipkit_video_start()` (binds Thread A) -> `videoPlayerStart` (triggers `RunVideoHost()`) ->
   Thread B's connect loop. Teardown mirrors it in reverse.
 - **`call.go`** (plugin-level) — `attachMedia` now also wires `Call.ReceiveVideo` to
-  `skypekit_video_receive_frame` (peer video -> native display), and a new exported
+  `voipkit_video_receive_frame` (peer video -> native display), and a new exported
   `gowhatsapp_call_video_frame_out` (native capture -> `Call.SendVideoWithDuration`) routes to
   whichever call is currently live, matching this file's existing single-live-call convention.
-- **`build-combined.sh`** — compiles `skypekit.cpp` with g++ (`-fno-rtti`) and `h264_rtp.c`
+- **`build-combined.sh`** — compiles `voipkit.cpp` with g++ (`-fno-rtti`) and `h264_rtp.c`
   alongside the existing glue objects, links `-lpalmgstskype`, and — unlike every standalone test
   tool this session, which needed `LD_LIBRARY_PATH` set manually — bakes
   `-Wl,-rpath,/usr/lib/gstreamer-0.10` into the built plugin so it finds the real `.so` at
@@ -1454,14 +1454,14 @@ plugin.** First version cancelled both bridge threads on stop via `pthread_cance
 process down to one thread blocked in `futex_wait_queue_me` — cancelling a thread blocked in
 `pthread_cond_wait`/`cond_timedwait` re-locks the mutex as part of POSIX's cancellation cleanup,
 and without a `pthread_cleanup_push` to release it, that mutex stays locked forever once the
-thread exits, deadlocking `skypekit_video_stop()`'s own later lock of it. Fixed by making Thread
+thread exits, deadlocking `voipkit_video_stop()`'s own later lock of it. Fixed by making Thread
 B fully cooperative instead: every blocking call it makes is naturally bounded (`avtw_connect`'s
 own timeout, or `pthread_cond_timedwait` with an explicit `g_running` check), so it always exits
 on its own and is never cancelled. Thread A still uses `pthread_cancel` (safe — it never touches
 that mutex).
 
 **Confirmed live, end to end, before wiring the rest.** Built a standalone smoke-test harness
-(`skypekit_bridge_selftest.c` — stands in for meowcaller, logging frames from Thread A and
+(`voipkit_bridge_selftest.c` — stands in for meowcaller, logging frames from Thread A and
 pushing a synthetic access unit into Thread B) and ran it alongside `clonk_probe` (already
 carrying the Part 16 fix) against a `--gst-debug=4` `mediaserver`:
 ```
@@ -1487,21 +1487,21 @@ sustained WhatsApp video call (as opposed to this synthetic, short-lived `clonk_
 test) is unconfirmed — a real call may keep the session alive differently. **This is the most
 important thing to check first during real end-to-end call testing.**
 
-**Verified:** the full `build-combined.sh` build succeeds — `skypekit.cpp`/`h264_rtp.c` compile
+**Verified:** the full `build-combined.sh` build succeeds — `voipkit.cpp`/`h264_rtp.c` compile
 cleanly, the final `libwhatsmeow.so` link succeeds, `NEEDED` correctly lists
 `libpalmgstskype.so`, `RPATH` is `/usr/lib/gstreamer-0.10` as intended, and both the Go export
 (`gowhatsapp_call_video_frame_out`) and the new C entry points
-(`skypekit_video_start`/`_stop`/`_receive_frame`) are present and correctly typed in the final
+(`voipkit_video_start`/`_stop`/`_receive_frame`) are present and correctly typed in the final
 binary, with every SkypeKit symbol showing as an unresolved `U` deferred to the real `.so` at
 runtime — the plugin itself has not yet been deployed and exercised through a real WhatsApp video
 call.
 
-**Device state:** all test processes (`skypekit_bridge_selftest`, `clonk_probe`) killed; manually
+**Device state:** all test processes (`voipkit_bridge_selftest`, `clonk_probe`) killed; manually
 started `--gst-debug=4` `mediaserver` killed; normal upstart-managed instance restored via
 `start mediaserver`; confirmed healthy via `luna-send` afterward.
 
 **Files added:** `messaging/facebook-e2ee/plugin/purple-combined/glue/{h264_rtp.h,h264_rtp.c,
-skypekit.h,skypekit.cpp}`, `messaging/whatsapp/calling/{skypekit_bridge_selftest.c,
+skypekit.h,voipkit.cpp}`, `messaging/whatsapp/calling/{voipkit_bridge_selftest.c,
 build-skypekit-bridge-selftest.sh}`. **Files changed:** `glue/call.c`, `call.go`,
 `build-combined.sh`.
 
@@ -1525,7 +1525,7 @@ intact; restarted the transport (SIGTERM + clear the PmLog semaphore, matching
 
 **Confirmed the new plugin loads correctly**: `callStateQuery` responded immediately after
 restart, meaning `whatsapp_call_luna_init()` — and therefore the whole plugin, including the new
-`skypekit.cpp`/`h264_rtp.c` code linked into it — initialized without crashing. The
+`voipkit.cpp`/`h264_rtp.c` code linked into it — initialized without crashing. The
 `-Wl,-rpath,/usr/lib/gstreamer-0.10` link flag (Part 19) worked exactly as intended: no
 `LD_LIBRARY_PATH` was set for this launch (confirmed by reading the actual launch chain,
 `/etc/event.d/imtransport` -> `/var/imdaemon.sh` -> `/var/imwrap.sh`, none of which reference
@@ -1580,7 +1580,7 @@ Placed a second real call (same live device, `--gst-debug=4` `mediaserver` this 
 visibility). Two things this run confirmed that the "hook it up properly" plan had left as open
 risks:
 
-- **Reconnect resilience already worked, without any new code.** `skypekit.cpp`'s Thread A and
+- **Reconnect resilience already worked, without any new code.** `voipkit.cpp`'s Thread A and
   Thread B both retry in their own outer loops after any disconnect (Thread A re-binds/listens,
   Thread B re-connects) — this was already in the Part 19 code, just not yet exercised by a real
   disconnect. This call logged `thread B connected` -> `disconnected, retrying` -> `connected`
@@ -1614,7 +1614,7 @@ Follow-up session, driven by the still-open "audio works, incoming video never d
 even after Parts 1–21's fixes. Built a local reproduction harness (`testInjectVideo`/
 `testStopInjectVideo` debug LS2 methods added to `glue/call.c`, reusing the production
 `clonk_open`→`videoCaptureStart`→`videoPlayerStart` path and injecting a real captured H.264
-SPS+PPS+IDR access unit via `skypekit_video_receive_frame()` on a timer) to iterate without needing
+SPS+PPS+IDR access unit via `voipkit_video_receive_frame()` on a timer) to iterate without needing
 a live call. Discovered along the way that the actual per-session GStreamer worker is **not**
 `mediaserver` itself but a child it `--spawn`s per call: `/usr/bin/media-pipeline.real` (`mediaserver`
 just supervises). Both bugs below live in that binary. Ghidra project (auto-analysis, no manual
@@ -2340,8 +2340,8 @@ the AVServer/AVTransportWrapper connection Thread B makes doesn't actually reach
 on both processes during a fresh test, watching the exact socket-level handshake, rather than
 inferring success from "Thread B says it's sending" alone; (c) worth re-examining whether
 `RtpPacketReceived`'s dispatch inside `ProcessCall`'s case `0x14` (Part 30) is really reached given
-the *exact* command byte our own `skypekit.cpp` sends — cross-check the literal `cmdId`/field-index
-constants in `skypekit.cpp` (`kRtpPacketReceivedCmdId = 20`, `kRtpPacketReceivedFieldIndex = 91`)
+the *exact* command byte our own `voipkit.cpp` sends — cross-check the literal `cmdId`/field-index
+constants in `voipkit.cpp` (`kRtpPacketReceivedCmdId = 20`, `kRtpPacketReceivedFieldIndex = 91`)
 against `ProcessCall`'s real switch-case decode logic byte-for-byte, since a field-index or framing
 mismatch there would produce exactly this symptom (client "successfully" writes bytes, server's
 `ProcessCommands()` loop never recognizes them as a valid call) with zero errors on either side.
@@ -2368,7 +2368,7 @@ triggering the test (e.g. via a wrapper `exec` if one can be inserted), not afte
 find a freshly-spawned PID is inherently too slow to catch the first ~1s of a short-lived process's
 socket setup.
 
-**Read `skypekit.cpp`'s `send_access_unit()` (glue/skypekit.cpp:236) closely while chasing this**,
+**Read `voipkit.cpp`'s `send_access_unit()` (glue/voipkit.cpp:236) closely while chasing this**,
 and found the real client-side send call's return value was being silently discarded:
 `binclient_wr_call_lst(...)` returns `int` and the call site never checked it. Added error logging
 (`if (wr_rc != 0) fprintf(stderr, "wa-call: send_access_unit wr_call_lst FAILED rc=%d len=%u\n", ...)`),
@@ -2384,7 +2384,7 @@ no lasting impact.)
   Thread B was still holding a handle to an already-dead `media-pipeline.real`): every single
   `send_access_unit` call logged `wr_call_lst FAILED rc=2`. This **proves the error-check mechanism
   is real and correctly distinguishes failure from success** — it isn't a no-op or always-zero stub.
-  It also is very likely a distinct, real, second bug in `skypekit.cpp` in its own right: Thread B's
+  It also is very likely a distinct, real, second bug in `voipkit.cpp` in its own right: Thread B's
   data-send loop never checks this return value for reconnection purposes, so once connected it never
   notices its peer died and never re-attempts `avtw_connect` — worth fixing separately (retry/backoff
   on repeated `wr_call_lst` failure) since this exact scenario (`media-pipeline.real` dying/restarting
@@ -2418,7 +2418,7 @@ Thread B logs sending. If reads return 0 bytes despite a successful client write
 mismatched/wrong fd or socket-level issue; if reads return the right byte count but `RtpPacketReceived`
 still never fires, the bug is in `BinServer::rd_command`/`rd_call`'s parsing of our client's exact
 byte sequence (worth a byte-for-byte comparison against what `Sid::Protocol::BinServer`'s real
-disassembly expects, beyond the header comment's existing analysis in `skypekit.cpp:207-235`).
+disassembly expects, beyond the header comment's existing analysis in `voipkit.cpp:207-235`).
 
 **Device state at end of session**: `libpalmgstskype.so` unchanged (md5 `8a07e9de65fc9980047bc5668d8016cc`,
 caps-fix only), `media-pipeline.real` unchanged (md5 `c92458a3c20a06876d6f25f61c5ff3b8`, production
@@ -2566,7 +2566,7 @@ real, still-open bugs block video display:
    timing/race explanation. The most concrete unexplored leads (from Part 32) remain: (a) strace the
    server's `read()`s specifically, attaching *before* triggering the test to avoid the race that
    defeated every attempt so far — possibly by writing a tiny wrapper that pauses `clonk_open()` behind
-   an env var this session didn't have time to add; (b) byte-for-byte verify our own `skypekit.cpp`'s
+   an env var this session didn't have time to add; (b) byte-for-byte verify our own `voipkit.cpp`'s
    `send_access_unit()` wire format against `Sid::Protocol::BinServer::rd_command`/`rd_call`'s real
    disassembly, beyond the existing header-comment analysis, since a subtle framing mismatch would
    produce exactly this symptom (client succeeds, server never dispatches, no errors either side).
@@ -2587,7 +2587,7 @@ server side.
 - `BinServer::rd_call(ci, &cmdId, &arg2, &arg3)` reads **3 LEB128 varints off the wire in the order
   arg2, arg3, cmdId** (i.e. its own `arg2`-labeled output param is filled first, `arg3`-labeled
   second, `cmdId`-labeled third) — the *opposite* of what the parameter names suggest, and the
-  opposite of what `skypekit.cpp`'s existing header comment (Part 17-era) assumed.
+  opposite of what `voipkit.cpp`'s existing header comment (Part 17-era) assumed.
 - **The critical link**: `AVServer::ProcessCommands()` calls `ProcessCall(this, cmdId, arg3)` — i.e.
   it forwards `rd_call`'s *first-labeled* output (`cmdId`, which is actually the **third** value read
   off the wire) as `ProcessCall`'s param_1 (echoed back as the response id, unused here since

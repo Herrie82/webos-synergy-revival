@@ -1,5 +1,5 @@
 // skypekit_send_burst — like skypekit_send_test, but sends MULTIPLE RtpPacketReceived calls
-// over ONE persistent connection, mimicking glue/skypekit.cpp's real Thread B usage pattern
+// over ONE persistent connection, mimicking glue/voipkit.cpp's real Thread B usage pattern
 // (a single long-lived BinClient connection carrying many calls over the call's lifetime)
 // rather than skypekit_send_test's one-shot connect-send-exit. Written to rule out session/
 // connection-scoped state inside VideoHost (e.g. a "first packet primes the pipe" gate) that
@@ -40,7 +40,7 @@ extern "C" {
 		asm("_ZN3Sid5Field31M_SkypeVideoRTPInterface_fieldsE");
 	// Sid::Protocol::BinClient::rd_response_id(CommandInitiator*, unsigned int&) -> int.
 	// Reads back the server's ack for the most recently sent call. Neither this test tool
-	// (until now) nor glue/skypekit.cpp's real Thread B ever called this -- theory: wr_call_lst
+	// (until now) nor glue/voipkit.cpp's real Thread B ever called this -- theory: wr_call_lst
 	// leaves an unread response queued, and the SECOND call on the same connection then fails
 	// (observed: returns 2, not 0) because of that backlog, not because of anything wrong with
 	// the call itself.

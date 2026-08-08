@@ -23,12 +23,36 @@ LUNA_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/luna-service2/i
 PMLOG_INC=/home/herrie/webos/touchpad-kernel/doctor305/build-deps/woce-build-support/staging/arm-none-linux-gnueabi/include/PmLogLib/IncsPublic
 LSSTUB=$REPO/build-output/imtransport/lib/liblunaservice.so
 
-# glue/skypekit.cpp links directly against the real, headerless libpalmgstskype.so (SkypeKit's
+# glue/voipkit.cpp links directly against the real, headerless libpalmgstskype.so (SkypeKit's
 # native RTP transport — see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md) using the
 # asm-mangled-symbol trick proven in that directory's skypekit_send_test.cpp/
 # skypekit_decode_test.cpp. FW_ROOTFS/SOLIB_DIR match those scripts exactly.
-FW_ROOTFS=/home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs
+# Resolved from a candidate list rather than one hardcoded path -- the doctor extraction under
+# ~/Downloads this used to point at is long gone. topaz first: that is the TouchPad, and the
+# mantaray build of this library is a different binary. libpalmgstskype is LEGACY-ONLY, so
+# WA_VOIPKIT=0 builds without the video bridge for targets that lack it (LuneOS).
+FW_ROOTFS=${FW_ROOTFS:-}
+if [ -z "$FW_ROOTFS" ]; then
+  for c in /home/herrie/webos/305att/nova-cust-image-topaz.rootfs-att \
+           /home/herrie/webos/224/nova-cust-image-mantaray.rootfs \
+           /home/herrie/Downloads/webosdoctorp305hstnhatt/resources/webOS/nova-cust-image-topaz.rootfs; do
+    [ -f "$c/usr/lib/gstreamer-0.10/libpalmgstskype.so" ] && { FW_ROOTFS=$c; break; }
+  done
+fi
 SOLIB_DIR=$FW_ROOTFS/usr/lib/gstreamer-0.10
+
+WA_VOIPKIT=${WA_VOIPKIT:-1}
+if [ "$WA_VOIPKIT" = "1" ]; then
+  if [ ! -f "$SOLIB_DIR/libpalmgstskype.so" ]; then
+    echo "!! libpalmgstskype.so not found (looked under the candidate rootfs list)."
+    echo "   Set FW_ROOTFS=/path/to/rootfs, or WA_VOIPKIT=0 to build without the video bridge."
+    exit 1
+  fi
+  VOIPKIT_LDFLAGS="-L$SOLIB_DIR -lpalmgstskype
+                   -Wl,-rpath-link,$FW_ROOTFS/usr/lib -Wl,-rpath,/usr/lib/gstreamer-0.10"
+else
+  VOIPKIT_LDFLAGS=""
+fi
 
 source /home/herrie/webos/wpe/env-glibc-gcc125.sh 2>/dev/null || true
 export PATH=$TC/bin:$PATH
@@ -66,12 +90,19 @@ for s in bridge constants gometabridge; do
 	echo "  CC $s.c"; $CC $GCFLAGS -c "$SRC/$s.c" -o "$BUILD/root_$s.o"; OBJS+=("$BUILD/root_$s.o")
 done
 
-# glue/skypekit.cpp: C++ (asm-mangled SkypeKit symbol bindings need extern "C" from C++, see
+# glue/voipkit.cpp: C++ (asm-mangled SkypeKit symbol bindings need extern "C" from C++, see
 # above) — compiled separately with $CXX, otherwise same include set as the C glue.
-echo "  CXX glue/skypekit.cpp"
+# WA_VOIPKIT=0 swaps the palmgstskype backend for the null one, same seam as Teams.
+if [ "$WA_VOIPKIT" = "1" ]; then
+echo "  CXX glue/voipkit.cpp"
 $CXX $CFLAGS $CPPFLAGS -fPIC -fno-rtti -I"$GLUE" -I"$SRC" -I"$BUILD" \
-	-c "$GLUE/skypekit.cpp" -o "$BUILD/glue_skypekit.o"
-OBJS+=("$BUILD/glue_skypekit.o")
+	-c "$GLUE/voipkit.cpp" -o "$BUILD/glue_voipkit.o"
+else
+echo "  CC  glue/voipkit_none.c (no libpalmgstskype: video bridge disabled)"
+$CC $CFLAGS $CPPFLAGS -fPIC -I"$GLUE" -I"$SRC" -I"$BUILD" \
+	-c "$GLUE/voipkit_none.c" -o "$BUILD/glue_voipkit.o"
+fi
+OBJS+=("$BUILD/glue_voipkit.o")
 
 echo "=== STAGE 2b: WebRTC float noise-suppression static lib (libwarns.a) ==="
 # The proven source set libtgvoip compiles for its float NS (signal_processing + fft4g + ns), built
@@ -126,25 +157,24 @@ arm-unknown-linux-gnueabi-ar rcs "$BUILD/libwarns.a" "${WOBJS[@]}"
 echo "  -> libwarns.a $(ls -la "$BUILD/libwarns.a" | awk '{print $5}') bytes"
 
 echo "=== STAGE 3: link libwhatsmeow.so ==="
-# -lpalmgstskype/-L$SOLIB_DIR/-rpath-link resolve glue/skypekit.cpp's real SkypeKit symbols at
+# -lpalmgstskype/-L$SOLIB_DIR/-rpath-link resolve glue/voipkit.cpp's real SkypeKit symbols at
 # link time; -rpath (not just -rpath-link) bakes /usr/lib/gstreamer-0.10 into the built .so's own
 # DT_RUNPATH so it finds libpalmgstskype.so at runtime on-device without needing
 # LD_LIBRARY_PATH set by whatever launches this plugin (unlike the standalone test tools in
 # messaging/whatsapp/calling/, which do need it set manually each run).
 # -Bsymbolic-functions: this plugin and Teams' (purple-teams) both dlopen into the SAME
-# imlibpurpletransport process, and both define the identically-named skypekit_video_start/
+# imlibpurpletransport process, and both define the identically-named voipkit_video_start/
 # _receive_frame/_stop/_wait_thread_b bridge symbols (Teams' copy was ported verbatim from this
 # one). Neither .so hides these symbols, so without this flag, GModule's default global symbol
 # export lets ELF interposition redirect one plugin's calls into the OTHER plugin's copy depending
-# on dlopen order -- confirmed live: this plugin's own calls into skypekit_video_start were
+# on dlopen order -- confirmed live: this plugin's own calls into voipkit_video_start were
 # silently not running this plugin's code at all. -Bsymbolic-functions makes intra-.so calls to
 # these bind to the LOCAL definition first, regardless of what else is loaded.
 $CC -shared -fPIC $LDFLAGS -Wl,-Bsymbolic-functions -Wl,-soname,libwhatsmeow.so -o "$BUILD/libwhatsmeow.so" \
 	"${OBJS[@]}" "$BUILD/libwhatsmeow.a" "$BUILD/libwarns.a" \
 	-L"$PURPLE/lib" -L"$GLIB_STAGING/lib" $(pkg-config --libs purple glib-2.0) \
 	"$LSSTUB" -lasound \
-	-L"$SOLIB_DIR" -lpalmgstskype -Wl,--allow-shlib-undefined \
-	-Wl,-rpath-link,"$FW_ROOTFS/usr/lib" -Wl,-rpath,/usr/lib/gstreamer-0.10 \
+	$VOIPKIT_LDFLAGS -Wl,--allow-shlib-undefined \
 	-lopusfile -lopus -logg -lpthread -ldl -lm -lresolv -lstdc++
 
 echo "=== Stripping ==="
@@ -154,4 +184,4 @@ ls -la "$BUILD/libwhatsmeow.stripped.so"
 echo ""
 echo "=== NEEDED ===" && arm-unknown-linux-gnueabi-readelf -d "$BUILD/libwhatsmeow.so" | grep NEEDED
 echo "purple_init_plugin: $(arm-unknown-linux-gnueabi-nm -D "$BUILD/libwhatsmeow.so" | grep -c purple_init_plugin)"
-echo "prpl ids: $(arm-unknown-linux-gnueabi-strings "$BUILD/libwhatsmeow.so" | grep -mE1 'prpl-hehoe-whatsmeow'); $(arm-unknown-linux-gnueabi-strings "$BUILD/libwhatsmeow.so" | grep -m1 'prpl-gometa')"
+echo "prpl ids: $(arm-unknown-linux-gnueabi-strings "$BUILD/libwhatsmeow.so" | grep -m1 -E 'prpl-hehoe-whatsmeow'); $(arm-unknown-linux-gnueabi-strings "$BUILD/libwhatsmeow.so" | grep -m1 'prpl-gometa')"

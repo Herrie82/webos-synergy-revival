@@ -11,8 +11,8 @@
 
 #include "call-luna.h"
 #include "config.h"
-#include "skypekit.h"
-#include <lunaservice.h>
+#include "voipkit.h"
+#include "webos-ls2-compat.h"   /* legacy split-bus API on either luna-service2 */
 #include <glib.h>
 #include <string>
 #include <cstdio>
@@ -51,6 +51,8 @@ GMainLoop     *g_loopRef  = NULL;   // wraps the default context libpurple runs
 std::string    g_state, g_peerAddr, g_peerName, g_cause;
 bool           g_outgoing = false;
 bool           g_videoActive = false; // clonk session open + skypekit bridge running
+bool           g_callIsVideo = false; // this call negotiated video (TDLib call.is_video_), known
+                                       // from ring/dial time -- distinct from g_videoActive above
 std::string    g_clonkUri;            // the open clonk session's palm:// LS2 URI, if any
 
 const char *SUBKEY = "callState";
@@ -75,12 +77,24 @@ std::string jsonEscape(const char *s)
 // (handleIncoming/handleActive/handleDisconnected); an empty state => idle (no lines).
 std::string buildPayload()
 {
+    // ActiveCall.js reads outgoingVideo/incomingVideo/incomingVideoState directly off the LINE
+    // object (activeLines[0].outgoingVideo etc.), NOT off calls[] -- confirmed against the
+    // WhatsApp mediator (call.go:190-192), which is the one known to actually drive the Phone
+    // app's video UI. incomingVideoState is CallSynergizer's tri-state:
+    // "unavailable" (not a video call) / "available" (video call, not yet streaming, e.g. still
+    // ringing/dialing) / "streaming" (the native clonk/skypekit bridge is actually up). A plain
+    // per-call "video" bool (this file's original approach) is simply never read by the UI.
+    const char *videoState = g_videoActive ? "streaming" : (g_callIsVideo ? "available" : "unavailable");
+    const char *videoBool  = g_videoActive ? "true" : "false";
+
     std::string p = std::string("{\"returnValue\":true,\"allowVideoCalls\":true,\"videoURI\":\"") +
                      jsonEscape(g_clonkUri.c_str()) + "\",\"lines\":[";
     if (!g_state.empty()) {
         p += "{\"state\":\"" + jsonEscape(g_state.c_str()) + "\",";
         if (g_state == "disconnected")
             p += "\"disconnectDetails\":{\"cause\":\"" + jsonEscape(g_cause.c_str()) + "\"},";
+        p += std::string("\"incomingVideo\":") + videoBool + ",\"outgoingVideo\":" + videoBool +
+             ",\"incomingVideoState\":\"" + videoState + "\",";
         // CallSynergizer reads call.address / call.displayName DIRECTLY off each call
         // (new CallSynergyContact({address: call.address, displayName: call.displayName})), and
         // CallSynergyContact.create() does enyo.require(address != undefined) which THROWS if
@@ -91,7 +105,8 @@ std::string buildPayload()
         // Phone app's (service-agnostic) _isImTransport()/callNetworkName treat it as the IM it is
         // and show the id/@handle verbatim under the network's name.
         p += "\"calls\":[{\"id\":\"tg\",\"origin\":\"" + std::string(g_outgoing ? "outgoing" : "incoming") + "\","
-             "\"video\":" + (g_videoActive ? "true" : "false") + ","
+             "\"incomingVideo\":" + videoBool + ",\"outgoingVideo\":" + videoBool + ","
+             "\"incomingVideoState\":\"" + videoState + "\","
              "\"transport\":\"com.palm.telegram\","
              "\"address\":\"" + jsonEscape(g_peerAddr.c_str()) + "\","
              "\"displayName\":\"" + jsonEscape(g_peerName.empty() ? g_peerAddr.c_str() : g_peerName.c_str()) + "\"}]}";
@@ -240,13 +255,14 @@ void callLunaShutdown(PurpleAccount *account)
 }
 
 void callLunaPushState(const char *state, const char *peerAddress, const char *peerName,
-                       bool isOutgoing, const char *cause)
+                       bool isOutgoing, const char *cause, bool isVideo)
 {
     g_state    = state       ? state       : "";
     g_peerAddr = peerAddress  ? peerAddress : "";
     g_peerName = peerName     ? peerName    : "";
     g_cause    = cause        ? cause       : "";
     g_outgoing = isOutgoing;
+    g_callIsVideo = isVideo;
     tgcLog("pushState state=%s addr=%s g_pub=%p g_prv=%p", g_state.c_str(), g_peerAddr.c_str(), (void*)g_pub, (void*)g_prv);
     if (!g_pub && !g_prv) return;
     std::string payload = buildPayload();
@@ -271,7 +287,7 @@ void callLunaPushState(const char *state, const char *peerAddress, const char *p
 // reverse-engineering trail this is built against, and glue/call.c in the WhatsApp plugin
 // (messaging/facebook-e2ee/plugin/purple-combined) for the exact pattern this mirrors -- same
 // LS2 sequence, same Part 16 field-shift-compensated videoCaptureStart args, same Part 17
-// ordering constraint (skypekit_video_start() must run before videoPlayerStart's LS2 call).
+// ordering constraint (voipkit_video_start() must run before videoPlayerStart's LS2 call).
 
 bool clonkOpenReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
 bool clonkCaptureStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx);
@@ -296,7 +312,17 @@ bool clonkCaptureStartReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
     tgcLog("clonk videoCaptureStart: %s", LSMessageGetPayload(msg));
     // Thread A (capture->peer) must be bound+listening before videoPlayerStart triggers
     // mediaserver's RunVideoHost() -- WHATSAPP_VIDEO_STATUS.md Part 17.
-    skypekit_video_start();
+    voipkit_video_start();
+    // Block for a real "Thread B connected" signal before firing videoPlayerStart, rather than
+    // relying on voipkit_video_start()'s own short margin (which only proves Thread A's
+    // near-instant bind+listen happened, not that Thread B's own connect-retry loop -- up to
+    // 500ms per attempt -- has actually succeeded). Ported from WhatsApp's identical bridge
+    // (glue/call.c's clonk_video_capture_start_reply): firing too early there made the peer-video
+    // playback pipeline fail its READY->PAUSED state change and tear itself down within ~300ms,
+    // every time, including on the very first videoPlayerStart of a call.
+    if (!voipkit_video_wait_thread_b(3000)) {
+        tgcLog("skypekit thread B did not connect within 3s, firing videoPlayerStart anyway");
+    }
     clonkUriCall("videoPlayerStart", "{\"args\":[320,240]}", clonkPlayerStartReplyCb, NULL);
     return true;
 }
@@ -327,7 +353,7 @@ bool clonkOpenReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
     return true;
 }
 
-// Opens a clonk session and drives it through videoCaptureStart -> skypekit_video_start() ->
+// Opens a clonk session and drives it through videoCaptureStart -> voipkit_video_start() ->
 // videoPlayerStart. Call once per video call, from activateCall() when call.is_video_.
 void callLunaOpenClonk()
 {
@@ -354,7 +380,7 @@ bool clonkStopReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
 void callLunaCloseClonk()
 {
     if (g_clonkUri.empty()) { g_videoActive = false; return; }
-    skypekit_video_stop(); // stop our own socket threads before telling mediaserver to stop
+    voipkit_video_stop(); // stop our own socket threads before telling mediaserver to stop
     clonkUriCall("videoPlayerStop", "{\"args\":[]}", clonkStopReplyCb, (void*)"videoPlayerStop");
     clonkUriCall("videoCaptureStop", "{\"args\":[]}", clonkStopReplyCb, (void*)"videoCaptureStop");
     g_clonkUri.clear();
@@ -372,12 +398,12 @@ bool clonkKeyframeStopReplyCb(LSHandle *sh, LSMessage *msg, void *ctx)
     (void)sh; (void)ctx;
     tgcLog("clonk keyframe-restart videoCaptureStop: %s", LSMessageGetPayload(msg));
     // Thread A/B and the clonk session itself stay up throughout -- only the capture pipeline
-    // restarts, so no skypekit_video_start()/videoPlayerStart() here.
+    // restarts, so no voipkit_video_start()/videoPlayerStart() here.
     clonkUriCall("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonkKeyframeStartReplyCb, NULL);
     return true;
 }
 
-// Called from SkypeKitVideoSource::RequestKeyFrame() (VoIPController's real PLI-equivalent
+// Called from VoipKitVideoSource::RequestKeyFrame() (VoIPController's real PLI-equivalent
 // signal). No LS2-exposed keyframe trigger exists on the clonk surface, so this restarts
 // capture instead -- every capture start emits a real SPS/PPS/IDR opening sequence.
 void callLunaRequestKeyframe()

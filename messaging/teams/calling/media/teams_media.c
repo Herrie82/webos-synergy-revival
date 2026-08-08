@@ -16,7 +16,7 @@
  *
  * H.264 video (BUNDLE'd onto the SAME ICE/SRTP transport+key as audio, PT 107, RFC 6184 FU-A):
  * this process does NOT depacketize/decode H.264 or talk to skypekit/clonk at all - that bridge
- * (h264_rtp.c/skypekit.cpp) now lives in the main plugin process (libteams-personal.so), which has
+ * (h264_rtp.c/voipkit.cpp) now lives in the main plugin process (libteams-personal.so), which has
  * the LS2 access the clonk session needs and, critically, is the ONLY process whose runtime
  * environment can satisfy libpalmgstskype.so's transitive libmedia-clonk/libpbnjson_cpp/
  * liblunaservice dependency chain (that chain needs the OLD system libstdc++/libc; this process's

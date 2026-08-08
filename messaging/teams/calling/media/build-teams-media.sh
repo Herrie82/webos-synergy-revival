@@ -8,7 +8,7 @@
 # same recipe as messaging/signal/calling/media/RUNTIME_STATUS.reference.md.
 #
 # Pure C, gstreamer/nice only - no libpalmgstskype.so dependency here. The H.264/skypekit-clonk
-# video bridge (h264_rtp.c/skypekit.cpp/teams_video_relay.cpp) lives in the plugin process
+# video bridge (h264_rtp.c/voipkit.cpp/teams_video_relay.cpp) lives in the plugin process
 # (libteams-personal.so, built by ../build-teams.sh) instead: this process's runtime environment
 # (patched wpe-glibc interpreter, needed for gst-1.20/libnice) can't simultaneously satisfy
 # libpalmgstskype.so's transitive libmedia-clonk/libpbnjson_cpp/liblunaservice dependency chain

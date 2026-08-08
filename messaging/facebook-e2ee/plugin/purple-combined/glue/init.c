@@ -25,6 +25,7 @@
 #include "constants.h"       // GOWHATSAPP_CREDENTIALS_KEY (for locating the device to unlink on delete)
 #include "../gometabridge.h" // GOMETA_PLUGIN_ID (branch account-removed by protocol id)
 #include "libwhatsmeow.h" // for gowhatsapp_go_init + gowhatsapp_go_account_removed / gometa_go_account_removed
+#include "call.h"         // whatsapp_call_luna_init -- register at plugin load, not per-account login
 #include <gmodule.h>      // g_module_make_resident - pin the Go .so so libpurple can't dlclose/unmap it
 
 #ifndef PLUGIN_VERSION
@@ -97,6 +98,19 @@ static GList * actions(PurplePlugin *plugin, gpointer context) {
 static gboolean
 libpurple2_plugin_load(PurplePlugin *plugin)
 {
+    // webOS: register com.palm.whatsapp.call HERE (plugin load), not inside gowhatsapp_login
+    // (per-account login callback). Registering at login left a real window -- from transport
+    // startup until this account's login() callback actually fires -- where the LS2 service
+    // didn't exist yet. A dial attempt during that window doesn't get our own graceful
+    // "not ready" reply (see m_dial's mcClient==nil check in call.c): ls-hubd's on-demand
+    // service activation instead SILENTLY QUEUES the LS2 call and delivers it once some
+    // instance registers the name, with no UI ever attached to that now-stale caller context
+    // -- the call would eventually go out for real (once mcClient is ready) but with no
+    // calling screen ever shown. Registering here, at plugin load, means the service exists
+    // essentially as soon as the transport starts (independent of any account's login
+    // progress), closing that window. Idempotent either way (g_registered guard in
+    // whatsapp_call_luna_init), so this is safe even with multiple accounts/reconnects.
+    whatsapp_call_luna_init();
     return TRUE;
 }
 

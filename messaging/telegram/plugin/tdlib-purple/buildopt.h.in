@@ -13,4 +13,6 @@
 
 #cmakedefine NoVoip
 
+#cmakedefine NoTgcallsLite
+
 #endif

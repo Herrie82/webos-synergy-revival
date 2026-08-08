@@ -34,7 +34,7 @@ void callLunaSetCallAudio(bool active);
 /* Native SkypeKit video bridge (see skypekit.h and WHATSAPP_VIDEO_STATUS.md). Call
  * callLunaOpenClonk() from activateCall() when call.is_video_, callLunaCloseClonk() from
  * deactivateCall() if video was active. callLunaRequestKeyframe() is wired to
- * SkypeKitVideoSource::RequestKeyFrame() (call.cpp). */
+ * VoipKitVideoSource::RequestKeyFrame() (call.cpp). */
 void callLunaOpenClonk();
 void callLunaCloseClonk();
 void callLunaRequestKeyframe();
@@ -44,8 +44,13 @@ void callLunaRequestKeyframe();
  * NOTE: these strings must match the stock Phone app CallSynergizer STATES enum exactly
  * (incoming/dialing/active/disconnected) or the call card won't render the state.
  * peerAddress = the Telegram user's +E.164 / id; peerName = resolved display name (may be NULL).
+ * isVideo = call.is_video_ from TDLib -- whether THIS call was negotiated as video, known from the
+ * moment it starts ringing/dialing. Distinct from the clonk/skypekit bridge's own streaming-active
+ * state (callLunaOpenClonk()'s internal flag), which only flips true once the call is answered and
+ * the native video pipeline actually starts -- using that for the pushed "video" field left the
+ * Phone app never seeing a video marker while incoming/dialing (only after answer).
  * cause is only meaningful for "disconnected" (e.g. "rejected", "normal", "missed"). */
 void callLunaPushState(const char *state, const char *peerAddress, const char *peerName,
-                       bool isOutgoing, const char *cause);
+                       bool isOutgoing, const char *cause, bool isVideo);
 
 #endif

@@ -1,6 +1,6 @@
 // h264_rtp.h — minimal RFC 6184 (H.264 over RTP) depacketizer/packetizer.
 //
-// Pure byte-buffer logic, no sockets, no SkypeKit dependency — used by glue/skypekit.cpp to
+// Pure byte-buffer logic, no sockets, no SkypeKit dependency — used by glue/voipkit.cpp to
 // convert between mediaserver's local SkypeKit RTP packets and meowcaller's Annex-B access
 // units (see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md Part 18 for the RTP framing
 // this was reverse-engineered against, and the plan this implements).

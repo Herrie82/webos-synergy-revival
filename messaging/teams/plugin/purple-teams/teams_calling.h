@@ -122,8 +122,8 @@ gboolean teams_calling_dial(TeamsAccount *sa, const gchar *peer_mri, gboolean vi
 /* The LS2 bridge registers this to learn when TeamsCall.video_active flips, in either direction
  * (an inbound renegotiation, video already active in the initial offer/answer, or the callee's
  * answer to an outgoing dial-with-video request). Drives teams_call_luna.c's clonk video bridge
- * lifecycle (teams_call_luna_open_clonk/close_clonk), which calls skypekit_video_start/stop()
- * directly - skypekit.cpp lives in this same process/library, not a separate subprocess. */
+ * lifecycle (teams_call_luna_open_clonk/close_clonk), which calls voipkit_video_start/stop()
+ * directly - voipkit.cpp lives in this same process/library, not a separate subprocess. */
 typedef void (*TeamsCallVideoCb)(TeamsAccount *sa, gboolean active);
 void teams_calling_set_video_cb(TeamsCallVideoCb cb);
 

@@ -21,6 +21,15 @@ namespace tgvoip {
 }
 #endif
 
+#ifndef NoTgcallsLite
+#include "../tgcalls-lite/call_engine.h"
+#else
+
+namespace tgcalls_lite {
+    struct CallEngine {};
+}
+#endif
+
 bool        isPhoneNumber(const char *s);
 const char *getCanonicalPhoneNumber(const char *s);
 UserId      purpleBuddyNameToUserId(const char *s);
@@ -414,6 +423,11 @@ public:
     void                       setActiveCall(int32_t id);
     int32_t                    getActiveCallId() const { return m_callId; }
     tgvoip::VoIPController    *getCallData();
+    // tgcalls-lite: parallel engine, held alongside (not yet instead of) VoIPController -- see
+    // call.cpp's getCallProtocol() comment for why the switch-over itself hasn't happened yet.
+    // Created in activateCall() once a call reaches callStateReady, same as m_callData.
+    void                       setCallEngine(std::unique_ptr<tgcalls_lite::CallEngine> engine);
+    tgcalls_lite::CallEngine  *getCallEngine();
     void                       removeActiveCall();
     // createCall is async: hasActiveCall() only turns true once callStatePending arrives, so two
     // dials fired in the same tick (e.g. the dialer sending both a resolved "id<n>" and the raw
@@ -504,6 +518,7 @@ private:
 
     // Voice call data
     std::unique_ptr<tgvoip::VoIPController> m_callData;
+    std::unique_ptr<tgcalls_lite::CallEngine> m_callEngine;
     int32_t                                 m_callId;
     bool                                    m_callInitiating = false;
     std::string                             m_callDialedAddress;

@@ -152,22 +152,40 @@ func (handler *Handler) eventHandler(rawEvt interface{}) {
 			handler.prune_devices(*cli.Store.ID)
 		}
 	case *events.CallOffer:
+		// webOS: post a "call log" style bubble (📞/📹 Incoming call) instead of the old
+		// "WhatsApp Web does not support calls" caveat text — real calls are already handled
+		// in-plugin via meowcaller/the Phone app (see call.go). Use the WhatsApp CallID as the
+		// message id so CallTerminate below can flip this same bubble to "Missed call" via the
+		// existing edit-in-place mechanism (purple_handle_message_edit) if it never answers.
 		bcm := evt.BasicCallMeta
 		chat := handler.lidToPn(bcm.From, "handling call offer")
 		sender := handler.lidToPn(bcm.CallCreator, "handling call offer")
-		text := "This contact is trying to call you, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), false, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil, "", "", "")
+		text := callBubbleText(bcm.CallID, false)
+		id := bcm.CallID
+		purple_display_text_message(handler.account, chat.ToNonAD().String(), false, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, &id, "", "", "")
 	case *events.CallOfferNotice:
 		// same as CallOffer, but is a group
 		bcm := evt.BasicCallMeta
 		chat := handler.lidToPn(bcm.From, "handling call offer notice")
 		sender := handler.lidToPn(bcm.CallCreator, "handling call offer notice")
-		text := "This contact is trying to make you notice a call, but WhatsApp Web does not support calls."
-		purple_display_text_message(handler.account, chat.ToNonAD().String(), true, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, nil, "", "", "")
+		text := "📞 Incoming call"
+		if evt.Media == "video" {
+			text = "📹 Incoming video call"
+		}
+		id := bcm.CallID
+		purple_display_text_message(handler.account, chat.ToNonAD().String(), true, false, sender.ToNonAD().String(), nil, bcm.Timestamp, text, &id, "", "", "")
 	case *events.CallRelayLatency:
 		// related to calls. ignore silently.
 	case *events.CallTerminate:
-		// related to calls. ignore silently.
+		// webOS: if the call never reached "active" (answered) before it ended, flip the
+		// "Incoming call" bubble posted above to "Missed call" — mirrors what the real WhatsApp
+		// app shows in the chat. calls/callMu are call.go's shared meowcaller call-state map,
+		// keyed by the same WhatsApp CallID. Defaults to "missed" (answered=false) when the
+		// call was never tracked there at all — correct for group-call notices, which this
+		// plugin can't answer regardless.
+		if !callWasAnswered(evt.CallID) {
+			purple_handle_message_edit(handler.account, evt.CallID, callBubbleText(evt.CallID, true))
+		}
 	//case *events.JoinedGroup:
 	// TODO
 	// received when being added to a group directly

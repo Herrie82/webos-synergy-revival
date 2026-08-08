@@ -76,6 +76,11 @@ type callInfo struct {
 	incomingVideoState string
 	cause              string
 	mic                *micSource
+	// everActive latches true the first time this call reaches "active" (peer accepted) and is
+	// never cleared — state itself gets overwritten to "disconnected" on end (see setCallState),
+	// so callWasAnswered needs this separately to tell "answered then hung up" apart from "never
+	// answered" once the call has ended.
+	everActive bool
 }
 
 var (
@@ -335,6 +340,9 @@ func setCallState(id, state, cause string) {
 	callMu.Lock()
 	if ci, ok := calls[id]; ok {
 		ci.state = state
+		if state == "active" {
+			ci.everActive = true
+		}
 		if cause != "" {
 			ci.cause = cause
 		}
@@ -357,6 +365,39 @@ func dropCall(id string) {
 	delete(calls, id)
 	callMu.Unlock()
 	emitCallState()
+}
+
+// callWasAnswered reports whether the call ever reached "active" (peer accepted) at any point in
+// its lifetime. Used by handler.go's CallTerminate handling to decide whether to flip a chat
+// bubble from "Incoming call" to "Missed call". Defaults to false (missed) for a call ID call.go
+// never tracked at all — correct for group-call notices, which this plugin can't answer anyway.
+func callWasAnswered(id string) bool {
+	callMu.Lock()
+	defer callMu.Unlock()
+	ci, ok := calls[id]
+	return ok && ci.everActive
+}
+
+// callBubbleText returns the "call log" style chat bubble text for a call, keyed by whether
+// call.go has this call tracked as a video call (see callInfo.c.IsVideo()). Defaults to the
+// audio phrasing when the call isn't tracked here at all (e.g. a group-call notice).
+func callBubbleText(id string, missed bool) string {
+	video := false
+	callMu.Lock()
+	if ci, ok := calls[id]; ok && ci.c != nil {
+		video = ci.c.IsVideo()
+	}
+	callMu.Unlock()
+	switch {
+	case missed && video:
+		return "📹 Missed video call"
+	case missed:
+		return "📞 Missed call"
+	case video:
+		return "📹 Incoming video call"
+	default:
+		return "📞 Incoming call"
+	}
 }
 
 // attachMedia connects a call's mic source and speaker sink, and opens the ALSA

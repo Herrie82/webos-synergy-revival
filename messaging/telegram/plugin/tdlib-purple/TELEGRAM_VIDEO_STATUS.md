@@ -7,7 +7,7 @@ Placed a real Telegram video call (TouchPad -> phone, `luna-send dial {"address"
 connects (`activateCall`, audio both directions confirmed), `clonk session open` /
 `videoCaptureStart` / `videoPlayerStart` all return `{"returnValue":true}`. The peer's phone shows
 only its own self-view — no incoming video from the TouchPad ever arrives. This is a **first-time
-test** for Telegram specifically (not a regression) — `skypekit.cpp` is proven working end-to-end
+test** for Telegram specifically (not a regression) — `voipkit.cpp` is proven working end-to-end
 for WhatsApp (`WHATSAPP_VIDEO_STATUS.md` Parts 19-21, human-confirmed real video both directions).
 
 ## What's confirmed working
@@ -36,7 +36,7 @@ when correlating socket ownership.
 gate — reverse-engineered for WhatsApp in `WHATSAPP_VIDEO_STATUS.md` Part 17:
 
 1. Loop calling `Sid::AVServer::Connect("/tmp/vidrtp_from_skypekit_key", isServer=true, 10000)`
-   until something connects **inbound**. This is `skypekit.cpp`'s Thread B's job (client-connects
+   until something connects **inbound**. This is `voipkit.cpp`'s Thread B's job (client-connects
    to this same path).
 2. **Only once phase 1 succeeds**: `Sid::AVTransportWrapper::Connect("/tmp/vidrtp_to_skypekit_key",
    isServer=false, 500)` — the outbound dial into *our* Thread A's listening socket.
@@ -47,10 +47,10 @@ ownership) genuinely **is** listening on `vidrtp_from_skypekit_key` (phase 1 set
 is bound (confirmed via `/proc/net/unix`) but never gets an incoming connection either — consistent
 with phase 2 never being reached.
 
-**The actual bug**: `skypekit.cpp`'s Thread B never even attempts the `connect()` syscall.
+**The actual bug**: `voipkit.cpp`'s Thread B never even attempts the `connect()` syscall.
 Confirmed via `strace -f -p <transport_pid> -e trace=connect,socket` attached live during an active
 call — zero `connect()` calls toward any `AF_UNIX`/`vidrtp` path across ~90s of observation, despite
-Thread B supposedly retrying in its own loop. `tg-call:` (skypekit.cpp's own log prefix) has **never
+Thread B supposedly retrying in its own loop. `tg-call:` (voipkit.cpp's own log prefix) has **never
 appeared once** in `/media/cryptofs/imstdout.log`'s full history (189919 lines checked) — neither
 Thread A's "accepted a connection" nor Thread B's "connected to mediaserver" ever fired, even from a
 guaranteed-fresh process (ruled out stale `g_running` state via a full transport restart + retest).
@@ -61,7 +61,7 @@ already-listening socket — never fires the syscall at all. Candidates not yet 
 - A blocking wait *before* the connect call that never releases (would show as a `futex_wait_queue_me`
   thread in `/proc/PID/task/*/wchan` — several threads were in that state during the observation
   window, plausible candidates, not individually identified).
-- Something in `skypekit_video_start()`'s "wait for thread A to start" barrier logic
+- Something in `voipkit_video_start()`'s "wait for thread A to start" barrier logic
   (`pthread_cond_wait` on `g_start_cv`) not actually releasing before thread B's `pthread_create` is
   reached, if thread A's own broadcast doesn't fire for some Telegram-specific reason (thread A's
   *own* broadcast happens before its main retry loop, so this seems unlikely but wasn't directly
@@ -74,13 +74,13 @@ already-listening socket — never fires the syscall at all. Candidates not yet 
   which call it's blocked in.
 - Consider adding a temporary `fprintf` right at the top of `thread_b_main()` (before the
   `avtw_connect` loop even starts) to confirm whether the thread body is entered at all, vs. stuck
-  in `skypekit_video_start()`'s own thread-A-started barrier before `pthread_create(&g_thread_b,...)`
+  in `voipkit_video_start()`'s own thread-A-started barrier before `pthread_create(&g_thread_b,...)`
   is ever reached.
 - Worth checking whether this reproduces for **Teams** too — tonight's Teams architecture pivot
   (see the "teams calling: move H.264/skypekit video bridge into the plugin process" commit) put
-  `skypekit.cpp` in-process for Teams as well, using the exact same Thread A/B mechanism. Teams'
+  `voipkit.cpp` in-process for Teams as well, using the exact same Thread A/B mechanism. Teams'
   own test tonight only confirmed the *new* relay-socket layer (`teams_media` <-> plugin) works —
-  it never separately confirmed `skypekit.cpp`'s own Thread A/B against mediaserver, so it may hit
+  it never separately confirmed `voipkit.cpp`'s own Thread A/B against mediaserver, so it may hit
   this exact same bug. Re-check with the same `--gst-debug=4` + `strace` recipe above before
   assuming Teams' outgoing video is any further along than Telegram's.
 
@@ -100,6 +100,6 @@ out WhatsApp/Teams both being idle at the time). Not confirmed as related to the
 above, but worth keeping in mind: **all three plugins (WhatsApp, Telegram, Teams) hardcode the
 identical socket paths** (`/tmp/vidrtp_to_skypekit_key` / `/tmp/vidrtp_from_skypekit_key`), and all
 three can be loaded into the same `imlibpurpletransport` process simultaneously. If two plugins ever
-have `skypekit_video_start()` active at the same time, only one can realistically hold the real,
+have `voipkit_video_start()` active at the same time, only one can realistically hold the real,
 functioning listener — worth a real test (two simultaneous video calls, different protocols) once
 the Thread B issue above is resolved.

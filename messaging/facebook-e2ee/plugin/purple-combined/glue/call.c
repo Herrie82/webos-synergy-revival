@@ -17,7 +17,7 @@
 // C -> Go exports (from libwhatsmeow.h): gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
 
 #include <glib.h>
-#include <lunaservice.h>
+#include "webos-ls2-compat.h"   /* legacy split-bus API on either luna-service2 */
 #include <alsa/asoundlib.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -44,7 +44,7 @@
 #define WA_AEC_DELAY_MS 179
 
 #include "libwhatsmeow.h" // go-generated: gowhatsapp_go_call_dial/_answer/_hangup/_hangup_all
-#include "skypekit.h"     // native SkypeKit RTP bridge (see WHATSAPP_VIDEO_STATUS.md "hook it
+#include "voipkit.h"     // native SkypeKit RTP bridge (see WHATSAPP_VIDEO_STATUS.md "hook it
                           // up properly" plan) — capture/playback socket threads
 
 static LSPalmService *g_psh = NULL;
@@ -96,9 +96,9 @@ static void reply(LSHandle *sh, LSMessage *msg, const char *payload) {
  * See messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 1-18) for the full
  * reverse-engineering writeup this is built against: the LS2 call sequence, the native
  * firmware caps-negotiation bug and its argument-shift workaround (Part 16), the SkypeKit
- * RTP socket ordering dependency (Part 17), and the wire format (Part 18) that glue/skypekit.cpp
+ * RTP socket ordering dependency (Part 17), and the wire format (Part 18) that glue/voipkit.cpp
  * implements. Session *creation* was always confirmed working; this deepens clonk_open/
- * clonk_close to actually bring up capture+playback and the skypekit.cpp socket bridge. */
+ * clonk_close to actually bring up capture+playback and the voipkit.cpp socket bridge. */
 static char g_clonk_uri[256] = {0};
 // Set synchronously the moment clonk_open() issues its LSCallOneReply, cleared once the
 // reply lands (clonk_open_reply, success or failure) or clonk_close() tears the session
@@ -198,7 +198,7 @@ static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *
 	clonk_diag_log("clonk_video_capture_start_reply: %s", LSMessageGetPayload(msg));
 	// Thread A (capture->peer) must be bound+listening before videoPlayerStart triggers
 	// mediaserver's RunVideoHost() -- see WHATSAPP_VIDEO_STATUS.md Part 17 and skypekit.h.
-	skypekit_video_start();
+	voipkit_video_start();
 	// PREVIOUSLY just a blind 400ms g_timeout_add before firing videoPlayerStart, on the theory
 	// that the "resolution not set on capsfilter" WARN was benign and only needed the capture
 	// side's own state-change handling a moment to finish. Disproven by a real --gst-debug=6
@@ -215,8 +215,8 @@ static bool clonk_video_capture_start_reply(LSHandle *sh, LSMessage *msg, void *
 	// wait for Thread A to already be listening, then complete its OWN connect-retry loop (up to
 	// 500ms per attempt) before mediaserver's clonkvhsrc has anything to actually read -- a fixed
 	// 400ms delay could not reliably outlast that. Block here for a real "Thread B connected"
-	// signal instead of guessing a delay (see skypekit_video_wait_thread_b's own comment).
-	if (!skypekit_video_wait_thread_b(3000)) {
+	// signal instead of guessing a delay (see voipkit_video_wait_thread_b's own comment).
+	if (!voipkit_video_wait_thread_b(3000)) {
 		fprintf(stderr, "wa-call: skypekit thread B did not connect within 3s, "
 		                "firing videoPlayerStart anyway\n");
 	}
@@ -268,7 +268,7 @@ static bool clonk_video_player_start_reply(LSHandle *sh, LSMessage *msg, void *c
 // needing Android to answer a call each time. Triggered via:
 //   luna-send -n 1 palm://com.palm.whatsapp.call/testInjectVideo '{"delayMs":"500"}'
 // delayMs (optional, default 0) is how long AFTER videoPlayerStart's own LS2 reply to wait
-// before the first skypekit_video_receive_frame() call -- the whole point of this harness
+// before the first voipkit_video_receive_frame() call -- the whole point of this harness
 // is to let that delay be swept without a rebuild, to test whether the native
 // busMsg_STATE_CHANGED bug (tearing clonk_video_play down within ~1s of construction,
 // before ClonkSession's internal "VPlay active" flag is set -- see tonight's disassembly)
@@ -344,7 +344,7 @@ static int g_test_stream_frame_idx = 0;
 
 static gboolean test_inject_frame_tick(gpointer data) {
 	(void)data;
-	skypekit_video_receive_frame(TEST_IDR_FRAME, sizeof(TEST_IDR_FRAME));
+	voipkit_video_receive_frame(TEST_IDR_FRAME, sizeof(TEST_IDR_FRAME));
 	return TRUE; // keep repeating every 200ms until the test session is closed
 }
 
@@ -354,7 +354,7 @@ static gboolean test_inject_stream_tick(gpointer data) {
 	int idx = g_test_stream_frame_idx;
 	const unsigned char *frame = TEST_STREAM_DATA + TEST_FRAME_OFFSETS[idx];
 	unsigned int size = TEST_FRAME_SIZES[idx];
-	skypekit_video_receive_frame(frame, size);
+	voipkit_video_receive_frame(frame, size);
 	g_test_stream_frame_idx = (idx + 1) % TEST_STREAM_NUM_FRAMES;
 	unsigned int next_delta = TEST_FRAME_DELTA_MS[g_test_stream_frame_idx];
 	if (next_delta < 1) next_delta = 1;
@@ -431,6 +431,23 @@ static bool clonk_keyframe_start_reply(LSHandle *sh, LSMessage *msg, void *ctx) 
 	// "incoming video flickers/doesn't display" symptom. Rebuild playback the same way the
 	// first-time-open path does (clonk_video_capture_start_reply): give the capture side's own
 	// state-change handling a moment to finish, then fire videoPlayerStart.
+	//
+	// Also mirror clonk_video_capture_start_reply's voipkit_video_start()/wait_thread_b() here.
+	// Since videoCaptureStop/Start tears down and rebuilds mediaserver's WHOLE clonk session
+	// (see above), the SkypeKit RTP sockets Thread A/B are bridging (/tmp/vidrtp_{to,from}_
+	// skypekit_key) get replaced by a fresh pair too -- but voipkit_video_stop() in
+	// clonk_keyframe_stop_reply already tore our OLD Thread A/B down, so this call is NOT a
+	// no-op (g_running is false) and genuinely reconnects them to the NEW sockets. Without this,
+	// Thread A/B stayed latched onto the now-dead old sockets, and Thread B's blocking native
+	// send call (send_access_unit -> wr_call_lst) sat stuck for tens of seconds until some
+	// underlying socket-level timeout eventually kicked it loose and its own reconnect loop
+	// found the new listener -- exactly matching the observed "incoming video freezes for
+	// ~30s, then recovers on its own" symptom on every keyframe-restart cycle after the first.
+	voipkit_video_start();
+	if (!voipkit_video_wait_thread_b(3000)) {
+		fprintf(stderr, "wa-call: keyframe-restart: skypekit thread B did not reconnect within "
+		                "3s, firing videoPlayerStart anyway\n");
+	}
 	g_timeout_add(400, fire_video_player_start, NULL);
 	return true;
 }
@@ -438,6 +455,10 @@ static bool clonk_keyframe_stop_reply(LSHandle *sh, LSMessage *msg, void *ctx) {
 	(void)sh; (void)ctx;
 	fprintf(stderr, "wa-call: clonk keyframe-restart videoCaptureStop: %s\n", LSMessageGetPayload(msg));
 	clonk_diag_log("clonk_keyframe_stop_reply: %s", LSMessageGetPayload(msg));
+	// Tear our own bridge threads down here, BEFORE requesting the new capture session -- see
+	// clonk_keyframe_start_reply's comment for why they'd otherwise be left stuck on the old,
+	// about-to-be-replaced RTP sockets.
+	voipkit_video_stop();
 	clonk_uri_call("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonk_keyframe_start_reply);
 	return true;
 }
@@ -571,7 +592,7 @@ static void clonk_close(void) {
 		return;
 	}
 	clonk_diag_log("clonk_close: tearing down session %s", g_clonk_uri);
-	skypekit_video_stop(); // stop our own socket threads before telling mediaserver to stop
+	voipkit_video_stop(); // stop our own socket threads before telling mediaserver to stop
 	clonk_uri_call_ctx("videoPlayerStop", "{\"args\":[]}", clonk_stop_reply, "videoPlayerStop");
 	clonk_uri_call_ctx("videoCaptureStop", "{\"args\":[]}", clonk_stop_reply, "videoCaptureStop");
 	g_clonk_uri[0] = 0;
@@ -933,8 +954,18 @@ static bool m_dial(LSHandle *sh, LSMessage *msg, void *ctx) {
 	int video = json_true(p, "video") ? 1 : 0;
 	char *id = gowhatsapp_go_call_dial(addr, video); // Go-malloc'd C string
 	char out[256];
-	snprintf(out, sizeof out, "{\"returnValue\":%s,\"id\":\"%s\"}",
-	         (id && id[0]) ? "true" : "false", id ? id : "");
+	// gowhatsapp_go_call_dial only ever returns "" when mcClient is still nil (WhatsApp
+	// calling not yet attached to a connected session -- see call.go). The already-
+	// dialing/active dedup case returns "ok" (a truthy, non-empty placeholder id -- the
+	// real call id, once known, flows to the UI via the callStateQuery subscription
+	// instead), so an empty id here unambiguously means "not ready yet". Give it a real
+	// errorText instead of leaving the caller with returnValue:false and nothing to show.
+	if (id && id[0]) {
+		snprintf(out, sizeof out, "{\"returnValue\":true,\"id\":\"%s\"}", id);
+	} else {
+		snprintf(out, sizeof out,
+		         "{\"returnValue\":false,\"errorText\":\"WhatsApp is still connecting -- try again in a moment\"}");
+	}
 	if (id) free(id);
 	reply(sh, msg, out);
 	return true;

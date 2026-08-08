@@ -1,4 +1,4 @@
-// skypekit.cpp — native bridge between mediaserver's local SkypeKit RTP sockets and
+// voipkit.cpp — native bridge between mediaserver's local SkypeKit RTP sockets and
 // meowcaller's Call.SendVideo/ReceiveVideo. See skypekit.h and
 // messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the full
 // reverse-engineering trail this is built from.
@@ -19,7 +19,7 @@
 //     reassembles access units via h264_rtp.c, and hands complete ones to Go.
 //   Thread B ("peer->display"): connects as a client to /tmp/vidrtp_from_skypekit_key (its mere
 //     connection is what unlocks Thread A's dial per Part 17), and on each access unit Go hands
-//     it via skypekit_video_receive_frame, sends it to mediaserver as-is (no RTP framing --
+//     it via voipkit_video_receive_frame, sends it to mediaserver as-is (no RTP framing --
 //     RtpPacketReceived's real handler, despite the name, is a dumb pass-through straight into
 //     the H.264 decoder; see the comment on send_access_unit below) via a real RtpPacketReceived
 //     call, exactly as skypekit_send_test.cpp proved for one canned payload.
@@ -34,7 +34,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "skypekit.h"
+#include "voipkit.h"
 #include "h264_rtp.h"
 
 extern "C" {
@@ -148,8 +148,8 @@ static unsigned char *g_pending_data = nullptr;
 static unsigned int g_pending_len = 0;
 static int g_pending_ready = 0;
 
-// Diagnostic counters (see skypekit_video_receive_frame / send_access_unit) -- reset in
-// skypekit_video_start, summarized in skypekit_video_stop.
+// Diagnostic counters (see voipkit_video_receive_frame / send_access_unit) -- reset in
+// voipkit_video_start, summarized in voipkit_video_stop.
 static unsigned g_recv_count = 0;
 static unsigned g_recv_dropped_not_running = 0;
 static unsigned g_recv_overwritten = 0;
@@ -271,7 +271,7 @@ static void *thread_a_main(void *) {
 // (`application/x-rtp, clock-rate=90000, payload=96, encoding-name=H264`, confirmed via `strings`
 // on the real libpalmgstskype.so) dictate the payload type and clock rate used here.
 //
-// send_access_unit sends the RAW Annex-B access unit (exactly as skypekit_video_receive_frame
+// send_access_unit sends the RAW Annex-B access unit (exactly as voipkit_video_receive_frame
 // received it), with NO RTP header and NO RFC 6184 fragmentation. Decompiling the real 305
 // firmware end to end (VideoHost::RtpPacketReceived -> gst_skype_video_rtp_submit ->
 // gst_skype_rtp_src_write -> its internal queue -> gst_skype_rtp_src_create -> palm_video-
@@ -399,7 +399,7 @@ static void *thread_b_main(void *) {
 			// never pthread_cancel'd (unlike thread A) precisely because cancelling a thread
 			// blocked in cond_wait/cond_timedwait re-locks the mutex as part of POSIX's
 			// cancellation cleanup, and without a matching pthread_cleanup_push/pop that mutex
-			// stays locked forever once the thread exits — deadlocking skypekit_video_stop()'s
+			// stays locked forever once the thread exits — deadlocking voipkit_video_stop()'s
 			// own later lock of it (hit exactly this live during development). Every blocking
 			// call thread B makes is naturally bounded, so checking g_running between them is
 			// enough for clean shutdown without cancellation at all.
@@ -433,8 +433,8 @@ static void *thread_b_main(void *) {
 
 // ---------------- public entry points ----------------
 
-void skypekit_video_start(void) {
-	skypekit_diag_log("skypekit_video_start ENTRY g_running=%d", g_running);
+void voipkit_video_start(void) {
+	skypekit_diag_log("voipkit_video_start ENTRY g_running=%d", g_running);
 	if (g_running) return;
 	g_running = 1;
 	g_thread_a_started = 0;
@@ -443,7 +443,7 @@ void skypekit_video_start(void) {
 	g_recv_count = 0;
 	g_recv_dropped_not_running = 0;
 	g_recv_overwritten = 0;
-	skypekit_diag_log("skypekit_video_start");
+	skypekit_diag_log("voipkit_video_start");
 	pthread_create(&g_thread_a, nullptr, thread_a_main, nullptr);
 
 	// Best-effort ordering guarantee (Part 17): wait for thread A to at least start running
@@ -476,7 +476,7 @@ void skypekit_video_start(void) {
 // near-instant bind+listen, Thread B must wait for Thread A to already be listening and then
 // complete its own connect-retry loop (up to 500ms per attempt), which a fixed short delay
 // before videoPlayerStart cannot reliably outlast.
-int skypekit_video_wait_thread_b(int timeoutMs) {
+int voipkit_video_wait_thread_b(int timeoutMs) {
 	struct timespec deadline;
 	deadline.tv_sec = time(nullptr) + (timeoutMs / 1000);
 	deadline.tv_nsec = (long)(timeoutMs % 1000) * 1000000L;
@@ -486,12 +486,12 @@ int skypekit_video_wait_thread_b(int timeoutMs) {
 	}
 	int connected = g_thread_b_connected;
 	pthread_mutex_unlock(&g_start_mx);
-	skypekit_diag_log("skypekit_video_wait_thread_b(%d) -> connected=%d", timeoutMs, connected);
+	skypekit_diag_log("voipkit_video_wait_thread_b(%d) -> connected=%d", timeoutMs, connected);
 	return connected;
 }
 
-void skypekit_video_stop(void) {
-	skypekit_diag_log("skypekit_video_stop ENTRY g_running=%d recv accepted=%u "
+void voipkit_video_stop(void) {
+	skypekit_diag_log("voipkit_video_stop ENTRY g_running=%d recv accepted=%u "
 	                   "dropped_not_running=%u overwritten=%u sent=%u", g_running, g_recv_count,
 	                   g_recv_dropped_not_running, g_recv_overwritten, g_au_sent_count);
 	if (!g_running) return;
@@ -523,12 +523,12 @@ void skypekit_video_stop(void) {
 	pthread_mutex_unlock(&g_pending_mx);
 }
 
-void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int len) {
+void voipkit_video_receive_frame(const unsigned char *access_unit, unsigned int len) {
 	if (!g_running || !access_unit || len == 0) {
 		if (!g_running && access_unit && len > 0) {
 			g_recv_dropped_not_running++;
 			if (g_recv_dropped_not_running <= 5 || g_recv_dropped_not_running % 30 == 0) {
-				skypekit_diag_log("skypekit_video_receive_frame DROPPED (bridge not running) "
+				skypekit_diag_log("voipkit_video_receive_frame DROPPED (bridge not running) "
 				                   "#%u len=%u", g_recv_dropped_not_running, len);
 			}
 		}
@@ -536,7 +536,7 @@ void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int
 	}
 	g_recv_count++;
 	if (g_recv_count <= 5 || g_recv_count % 30 == 0) {
-		skypekit_diag_log("skypekit_video_receive_frame accepted #%u len=%u", g_recv_count, len);
+		skypekit_diag_log("voipkit_video_receive_frame accepted #%u len=%u", g_recv_count, len);
 	}
 	unsigned char *copy = (unsigned char *)malloc(len);
 	if (!copy) return;

@@ -1553,6 +1553,8 @@ void VoIPController::SendInit(){
 			flags|=INIT_FLAG_VIDEO_SEND_SUPPORTED;
 		if(dataSavingMode)
 			flags|=INIT_FLAG_DATA_SAVING_ENABLED;
+		LOGE("DIAG PKT_INIT send: flags=0x%x connectionMaxLayer=%d enableVideoSend=%d enableVideoReceive=%d",
+		     flags, connectionMaxLayer, (int)config.enableVideoSend, (int)config.enableVideoReceive);
 		out.WriteInt32(flags);
 		if(connectionMaxLayer<74){
 			out.WriteByte(2); // audio codecs count
@@ -2313,6 +2315,9 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
 			return;
 		}
 		uint32_t flags=(uint32_t) in.ReadInt32();
+		LOGE("DIAG PKT_INIT recv: flags=0x%x (VIDEO_RECV=%d VIDEO_SEND=%d) receivedInit=%d ourEnableVideoSend=%d ourEnableVideoReceive=%d",
+		     flags, (flags & INIT_FLAG_VIDEO_RECV_SUPPORTED)!=0, (flags & INIT_FLAG_VIDEO_SEND_SUPPORTED)!=0,
+		     (int)receivedInit, (int)config.enableVideoSend, (int)config.enableVideoReceive);
 		if(!receivedInit){
 			if(flags & INIT_FLAG_DATA_SAVING_ENABLED){
 				dataSavingRequestedByPeer=true;

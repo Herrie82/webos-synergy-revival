@@ -1,18 +1,18 @@
-#include "skypekit-tgvoip.h"
-#include "skypekit.h"
+#include "voipkit-tgvoip.h"
+#include "voipkit.h"
 
-// skypekit.cpp's frame-out callback is a plain C function pointer (no captured state, since
+// voipkit.cpp's frame-out callback is a plain C function pointer (no captured state, since
 // Thread A calls it from a raw pthread with no C++ closure context) — route it through a
-// single static instance pointer. Only one call (and therefore one SkypeKitVideoSource) is
+// single static instance pointer. Only one call (and therefore one VoipKitVideoSource) is
 // ever active at a time in this plugin, matching the rest of its calling code's assumptions.
-static SkypeKitVideoSource *g_active_source = nullptr;
+static VoipKitVideoSource *g_active_source = nullptr;
 
 static void on_frame_out(const unsigned char *data, unsigned int len) {
 	if (!g_active_source) return;
 	g_active_source->DeliverFrame(data, len);
 }
 
-void SkypeKitVideoSource::DeliverFrame(const unsigned char *data, unsigned int len) {
+void VoipKitVideoSource::DeliverFrame(const unsigned char *data, unsigned int len) {
 	tgvoip::Buffer buf(len);
 	if (len > 0) buf.CopyFrom(data, 0, len);
 	// flags=0, rotation=0: mediaserver's own camera source has a fixed physical mounting
@@ -21,43 +21,43 @@ void SkypeKitVideoSource::DeliverFrame(const unsigned char *data, unsigned int l
 	if (callback) callback(buf, 0, 0);
 }
 
-SkypeKitVideoSource::SkypeKitVideoSource(std::function<void()> requestKeyframeCb)
+VoipKitVideoSource::VoipKitVideoSource(std::function<void()> requestKeyframeCb)
     : requestKeyframeCb_(std::move(requestKeyframeCb)) {
 	g_active_source = this;
-	skypekit_set_frame_out_callback(on_frame_out);
+	voipkit_set_frame_out_callback(on_frame_out);
 }
 
-SkypeKitVideoSource::~SkypeKitVideoSource() {
+VoipKitVideoSource::~VoipKitVideoSource() {
 	if (g_active_source == this) g_active_source = nullptr;
 }
 
 // Thread lifecycle is owned by callLunaOpenClonk()/callLunaCloseClonk() (see skypekit-tgvoip.h)
 // -- VoIPController calls Start()/Stop() at a time that doesn't line up with the clonk LS2
 // sequencing this bridge needs, so these are deliberately no-ops.
-void SkypeKitVideoSource::Start() {}
-void SkypeKitVideoSource::Stop() {}
+void VoipKitVideoSource::Start() {}
+void VoipKitVideoSource::Stop() {}
 
-void SkypeKitVideoSource::Reset(uint32_t, int) {}
+void VoipKitVideoSource::Reset(uint32_t, int) {}
 
-void SkypeKitVideoSource::RequestKeyFrame() {
+void VoipKitVideoSource::RequestKeyFrame() {
 	if (requestKeyframeCb_) requestKeyframeCb_();
 }
 
-void SkypeKitVideoSource::SetBitrate(uint32_t) {
+void VoipKitVideoSource::SetBitrate(uint32_t) {
 	// Not wired: the clonk capture pipeline is started with a fixed bitrate (see
 	// callLunaOpenClonk's videoCaptureStart args). Revisit if VoIPController's own bandwidth
 	// estimation needs to actually throttle the native encoder mid-call.
 }
 
-SkypeKitVideoRenderer::SkypeKitVideoRenderer() {}
-SkypeKitVideoRenderer::~SkypeKitVideoRenderer() {}
+VoipKitVideoRenderer::VoipKitVideoRenderer() {}
+VoipKitVideoRenderer::~VoipKitVideoRenderer() {}
 
-void SkypeKitVideoRenderer::Reset(uint32_t, unsigned int, unsigned int, std::vector<tgvoip::Buffer> &) {}
+void VoipKitVideoRenderer::Reset(uint32_t, unsigned int, unsigned int, std::vector<tgvoip::Buffer> &) {}
 
-void SkypeKitVideoRenderer::DecodeAndDisplay(tgvoip::Buffer frame, uint32_t) {
-	skypekit_video_receive_frame(*frame, (unsigned int)frame.Length());
+void VoipKitVideoRenderer::DecodeAndDisplay(tgvoip::Buffer frame, uint32_t) {
+	voipkit_video_receive_frame(*frame, (unsigned int)frame.Length());
 }
 
-void SkypeKitVideoRenderer::SetStreamEnabled(bool) {}
-void SkypeKitVideoRenderer::SetRotation(uint16_t) {}
-void SkypeKitVideoRenderer::SetStreamPaused(bool) {}
+void VoipKitVideoRenderer::SetStreamEnabled(bool) {}
+void VoipKitVideoRenderer::SetRotation(uint16_t) {}
+void VoipKitVideoRenderer::SetStreamPaused(bool) {}

@@ -37,7 +37,7 @@ std::vector<uint32_t> VideoSource::GetAvailableEncoders(){
 	return VideoToolboxEncoderSource::GetAvailableEncoders();
 #else
 	// webOS: real H.264 encode happens natively via mediaserver's clonk pipeline, bridged in
-	// by SkypeKitVideoSource (see skypekit-tgvoip.cpp) -- this platform was never given its own
+	// by VoipKitVideoSource (see voipkit-tgvoip.cpp) -- this platform was never given its own
 	// VideoSource subclass upstream, so without this branch SetupOutgoingVideoStream() always
 	// finds zero codecs in common and our own PKT_INIT always advertises zero encoders.
 	return std::vector<uint32_t>{CODEC_AVC};

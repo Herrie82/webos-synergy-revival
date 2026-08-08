@@ -20,6 +20,7 @@ set(NoBundledLottie FALSE CACHE BOOL "Do not use bundled rlottie library")
 set(NoLottie FALSE CACHE BOOL "Disable animated sticker conversion")
 set(NoTranslations FALSE CACHE BOOL "Disable translation support")
 set(NoVoip FALSE CACHE BOOL "Disable voice call support")
+set(NoTgcallsLite FALSE CACHE BOOL "Disable tgcalls-lite (ICE/DTLS-SRTP video calling engine)")
 set(tgvoip_INCLUDE_DIRS "" CACHE STRING "Path to libtgvoip headers")
 set(tgvoip_LIBRARIES "tgvoip" CACHE STRING "tgvoip library to link against")
 set(API_ID 94575 CACHE STRING "API id")
@@ -35,9 +36,20 @@ if (NOT NoPkgConfig)
     endif (NOT NoWebp)
     pkg_get_variable(PURPLE_PLUGIN_DIR purple plugindir)
     pkg_get_variable(PURPLE_DATA_DIR purple datarootdir)
+    if (NOT NoTgcallsLite)
+        # tgcalls-lite's own dependencies -- all already staged/proven cross-building on this
+        # toolchain for Atlas's in-browser WebRTC support (see plugin/tgcalls-lite/ for the engine
+        # itself and its spike/ tests, all passing under qemu-arm-static before this was wired in
+        # here). NOT Google's own libwebrtc/Bazel build -- see plugin/tgcalls-lite/reference/ for
+        # why that's a from-scratch reimplementation instead of a vendor-and-build.
+        pkg_check_modules(TgcallsLite REQUIRED nice libsrtp2 openssl json-glib-1.0)
+    endif (NOT NoTgcallsLite)
 endif (NOT NoPkgConfig)
 
 link_directories(${Purple_LIBRARY_DIRS})
+if (NOT NoTgcallsLite)
+    link_directories(${TgcallsLite_LIBRARY_DIRS})
+endif (NOT NoTgcallsLite)
 
 if (NOT NoWebp)
     if ("${libwebp_LIBRARIES}" STREQUAL "")
@@ -73,6 +85,19 @@ add_library(telegram-tdlib SHARED
     h264_rtp.c
 )
 
+if (NOT NoTgcallsLite)
+    target_sources(telegram-tdlib PRIVATE
+        ../tgcalls-lite/signaling_message.cpp
+        ../tgcalls-lite/crypto_helper.cpp
+        ../tgcalls-lite/encrypted_connection.cpp
+        ../tgcalls-lite/ice_session.cpp
+        ../tgcalls-lite/dtls_transport.cpp
+        ../tgcalls-lite/srtp_session.cpp
+        ../tgcalls-lite/media_session.cpp
+        ../tgcalls-lite/call_engine.cpp
+    )
+endif (NOT NoTgcallsLite)
+
 # libpurple uses the deprecated glib-type `GParameter` and the deprecated glib-macro `G_CONST_RETURN`, which
 # spams the console with useless warnings that we can do nothing about.
 target_compile_definitions(telegram-tdlib PRIVATE GLIB_DISABLE_DEPRECATION_WARNINGS)
@@ -94,7 +119,10 @@ if (NOT NoWebp)
     target_link_libraries(telegram-tdlib PRIVATE ${libwebp_LIBRARIES} ${libpng_LIBRARIES})
 endif (NOT NoWebp)
 
-set_property(TARGET telegram-tdlib PROPERTY CXX_STANDARD 14)
+# Bumped 14 -> 17: tgcalls-lite (plugin/tgcalls-lite/) uses std::optional and other C++17 features.
+# C++17 is a superset of the C++14 subset the rest of this codebase was written against, so this
+# shouldn't change how any existing file compiles.
+set_property(TARGET telegram-tdlib PROPERTY CXX_STANDARD 17)
 
 set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(fmt)
@@ -129,6 +157,11 @@ if (NOT lunaservice_INCLUDE_DIRS STREQUAL "")
     target_include_directories(telegram-tdlib SYSTEM PRIVATE ${lunaservice_INCLUDE_DIRS})
 endif (NOT lunaservice_INCLUDE_DIRS STREQUAL "")
 target_link_libraries(telegram-tdlib PRIVATE ${lunaservice_LIBRARIES})
+if (NOT NoTgcallsLite)
+    target_include_directories(telegram-tdlib SYSTEM PRIVATE ${TgcallsLite_INCLUDE_DIRS})
+    target_link_libraries(telegram-tdlib PRIVATE ${TgcallsLite_LIBRARIES})
+endif (NOT NoTgcallsLite)
+
 if (NOT NoVoip)
     target_link_libraries(telegram-tdlib PRIVATE ${tgvoip_LIBRARIES})
     if (tgvoip_NO_DSP)

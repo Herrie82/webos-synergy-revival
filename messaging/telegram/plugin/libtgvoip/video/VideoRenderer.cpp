@@ -18,7 +18,7 @@ std::vector<uint32_t> tgvoip::video::VideoRenderer::GetAvailableDecoders(){
 	return SampleBufferDisplayLayerRenderer::GetAvailableDecoders();
 #else
 	// webOS: real H.264 decode happens natively via mediaserver's clonk pipeline, bridged in by
-	// SkypeKitVideoRenderer (see skypekit-tgvoip.cpp). Without this branch, our own outgoing
+	// VoipKitVideoRenderer (see voipkit-tgvoip.cpp). Without this branch, our own outgoing
 	// PKT_INIT declares zero decoders, so the peer's client has no reason to ever send us video.
 	return std::vector<uint32_t>{CODEC_AVC};
 #endif

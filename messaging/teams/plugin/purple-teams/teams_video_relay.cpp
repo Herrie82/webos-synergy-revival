@@ -1,11 +1,11 @@
-// teams_video_relay.cpp — see teams_video_relay.h. Connects skypekit.cpp's callback-based H.264
+// teams_video_relay.cpp — see teams_video_relay.h. Connects voipkit.cpp's callback-based H.264
 // bridge (this process, has LS2/clonk access) to teams_media's raw-RTP relay socket (a separate
 // subprocess, owns the actual SRTP/ICE network transport). We build/parse the 12-byte RTP header
 // ourselves here (h264_depacketizer_feed/h264_packetize work on the payload only) since this is now
 // the ONLY place in the whole call path that needs to know both "this is an RTP packet" and "this
 // is an H.264 access unit" at once.
 
-#include "skypekit.h"
+#include "voipkit.h"
 #include "h264_rtp.h"
 #include "teams_video_relay.h"
 
@@ -108,7 +108,7 @@ static void *reader_main(void *)
 		int marker = (pkt[1] & 0x80) ? 1 : 0;
 		const unsigned char *au = nullptr; size_t au_len = 0;
 		if (h264_depacketizer_feed(&g_rx_depkt, pkt + 12, framelen - 12, marker, &au, &au_len))
-			skypekit_video_receive_frame(au, (unsigned int)au_len);
+			voipkit_video_receive_frame(au, (unsigned int)au_len);
 	}
 	fprintf(stderr, "tm-call: video relay reader exiting\n");
 	return nullptr;
@@ -128,11 +128,11 @@ extern "C" int teams_video_relay_connect(void)
 	 * tm_apply_answer() fires, triggered by the SAME mediaAnswer event that also kicks off this
 	 * whole clonk video chain in the plugin process, with no synchronization between the two
 	 * processes. CAPTURED LIVE: "video relay connect() failed (is teams_media up?)" still fired on
-	 * real test calls even after skypekit_video_wait_thread_b() was added (that only orders the
+	 * real test calls even after voipkit_video_wait_thread_b() was added (that only orders the
 	 * plugin<->mediaserver bridge, not this separate plugin<->teams_media one) - meaning every
 	 * outgoing video frame silently had nowhere to go for the whole call. Retry briefly instead of
 	 * giving up on the first attempt; a short blocking retry here is consistent with this same
-	 * call chain already blocking up to 3s in skypekit_video_wait_thread_b() right after this. */
+	 * call chain already blocking up to 3s in voipkit_video_wait_thread_b() right after this. */
 	int fd = -1;
 	for (int attempt = 0; attempt < 20; attempt++) {
 		fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -151,7 +151,7 @@ extern "C" int teams_video_relay_connect(void)
 	g_tx_ts   = (uint32_t)random();
 	g_tx_ssrc = (uint32_t)random();
 	h264_depacketizer_init(&g_rx_depkt);
-	skypekit_set_frame_out_callback(on_frame_out);
+	voipkit_set_frame_out_callback(on_frame_out);
 
 	g_running = 1;
 	if (pthread_create(&g_reader_thread, nullptr, reader_main, nullptr) != 0) {

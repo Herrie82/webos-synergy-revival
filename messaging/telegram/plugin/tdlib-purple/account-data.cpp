@@ -1036,9 +1036,25 @@ tgvoip::VoIPController *TdAccountData::getCallData()
     return m_callData.get();
 }
 
+#ifndef NoTgcallsLite
+void TdAccountData::setCallEngine(std::unique_ptr<tgcalls_lite::CallEngine> engine)
+{
+    m_callEngine = std::move(engine);
+}
+
+tgcalls_lite::CallEngine *TdAccountData::getCallEngine()
+{
+    return m_callEngine.get();
+}
+#else
+void TdAccountData::setCallEngine(std::unique_ptr<tgcalls_lite::CallEngine>) {}
+tgcalls_lite::CallEngine *TdAccountData::getCallEngine() { return nullptr; }
+#endif
+
 void TdAccountData::removeActiveCall()
 {
     m_callData.reset();
+    m_callEngine.reset();
     m_callId = 0;
     m_callInitiating = false;   // failed/ended: allow a fresh dial
     m_callDialedAddress.clear();

@@ -1,16 +1,16 @@
-// skypekit.cpp — native bridge between mediaserver's local SkypeKit RTP sockets and the network
+// voipkit.cpp — native bridge between mediaserver's local SkypeKit RTP sockets and the network
 // peer's RTP stream. Lives in the main plugin process (libteams-personal.so); teams_video_relay.cpp
-// drives this via skypekit_set_frame_out_callback / skypekit_video_receive_frame, and itself
+// drives this via voipkit_set_frame_out_callback / voipkit_video_receive_frame, and itself
 // shuttles the RTP-framed H.264 access units across one more hop (a UNIX relay socket) to/from the
 // teams_media subprocess, which owns the actual SRTP/ICE network transport (see teams_media.c's
 // top-of-file comment for why the network I/O and the clonk bridge can't live in the same process).
 // See skypekit.h and messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the
 // full reverse-engineering trail this is built from.
 //
-// Adapted verbatim from messaging/telegram/plugin/tdlib-purple/skypekit.cpp (itself adapted from
-// messaging/facebook-e2ee/plugin/purple-combined/glue/skypekit.cpp) — identical thread logic;
+// Adapted verbatim from messaging/telegram/plugin/tdlib-purple/voipkit.cpp (itself adapted from
+// messaging/facebook-e2ee/plugin/purple-combined/glue/voipkit.cpp) — identical thread logic;
 // Thread A delivers decoded access units via a settable callback
-// (skypekit_set_frame_out_callback) rather than a protocol-specific export, so this file has no
+// (voipkit_set_frame_out_callback) rather than a protocol-specific export, so this file has no
 // dependency on any particular calling protocol's media stack.
 //
 // Links directly against the real, extracted libpalmgstskype.so (no public SDK headers exist
@@ -29,7 +29,7 @@
 //     reassembles access units via h264_rtp.c, and hands complete ones to the registered callback.
 //   Thread B ("peer->display"): connects as a client to /tmp/vidrtp_from_skypekit_key (its mere
 //     connection is what unlocks Thread A's dial per Part 17), and on each access unit handed to
-//     it via skypekit_video_receive_frame, RTP-packetizes it (h264_rtp.c, with our own local
+//     it via voipkit_video_receive_frame, RTP-packetizes it (h264_rtp.c, with our own local
 //     seq/timestamp/SSRC state) and sends each resulting packet as a real RtpPacketReceived
 //     call, exactly as skypekit_send_test.cpp proved for one canned payload.
 
@@ -41,7 +41,7 @@
 #include <ctime>
 #include <unistd.h>
 
-#include "skypekit.h"
+#include "voipkit.h"
 #include "h264_rtp.h"
 
 // ---------------- SkypeKit bindings (see skypekit_send_test.cpp / skypekit_decode_test.cpp
@@ -129,9 +129,9 @@ static pthread_t g_thread_a, g_thread_b;
 static volatile int g_running = 0;
 static volatile int g_thread_a_started = 0; // set the moment thread A enters, before it blocks
 // Set once Thread B's own avtw_connect() to mediaserver's /tmp/vidrtp_from_skypekit_key actually
-// succeeds (not just once the thread starts). PORTED FROM WHATSAPP'S skypekit.cpp (found+fixed
-// 2026-08-05): this codebase's copy was missing both this flag and skypekit_video_wait_thread_b()
-// below, so teams_call_luna.c fired videoPlayerStart immediately after skypekit_video_start()
+// succeeds (not just once the thread starts). PORTED FROM WHATSAPP'S voipkit.cpp (found+fixed
+// 2026-08-05): this codebase's copy was missing both this flag and voipkit_video_wait_thread_b()
+// below, so teams_call_luna.c fired videoPlayerStart immediately after voipkit_video_start()
 // with no wait at all. CAPTURED LIVE: mediaserver's RunVideoHost() (triggered by videoPlayerStart)
 // does a SINGLE, non-retried 500ms-timeout outbound dial to reach Thread A once its own inbound
 // side (what Thread B connects to) is satisfied - miss that one window and no video frame we
@@ -146,7 +146,7 @@ static pthread_cond_t g_start_cv = PTHREAD_COND_INITIALIZER;
 
 static void (*g_frame_out_cb)(const unsigned char *, unsigned int) = nullptr;
 
-void skypekit_set_frame_out_callback(void (*cb)(const unsigned char *, unsigned int)) {
+void voipkit_set_frame_out_callback(void (*cb)(const unsigned char *, unsigned int)) {
 	g_frame_out_cb = cb;
 }
 
@@ -328,7 +328,7 @@ static void *thread_b_main(void *) {
 			// never pthread_cancel'd (unlike thread A) precisely because cancelling a thread
 			// blocked in cond_wait/cond_timedwait re-locks the mutex as part of POSIX's
 			// cancellation cleanup, and without a matching pthread_cleanup_push/pop that mutex
-			// stays locked forever once the thread exits — deadlocking skypekit_video_stop()'s
+			// stays locked forever once the thread exits — deadlocking voipkit_video_stop()'s
 			// own later lock of it (hit this live during WhatsApp's bridge development). Every
 			// blocking call thread B makes is naturally bounded, so checking g_running between
 			// them is enough for clean shutdown without cancellation at all.
@@ -364,7 +364,7 @@ static void *thread_b_main(void *) {
 
 // ---------------- public entry points ----------------
 
-void skypekit_video_start(void) {
+void voipkit_video_start(void) {
 	if (g_running) return;
 	g_running = 1;
 	g_thread_a_started = 0;
@@ -396,12 +396,12 @@ void skypekit_video_start(void) {
 // Blocks until Thread B's own connect to mediaserver's /tmp/vidrtp_from_skypekit_key actually
 // succeeds, up to timeoutMs. Returns nonzero if connected, zero on timeout (the caller logs and
 // proceeds anyway rather than hanging the mainloop indefinitely - a best-effort ordering
-// guarantee, not a hard requirement, matching skypekit_video_start()'s own Thread A wait
+// guarantee, not a hard requirement, matching voipkit_video_start()'s own Thread A wait
 // philosophy above). PORTED FROM WHATSAPP - see g_thread_b_connected's comment for why this
 // exists: unlike Thread A's near-instant bind+listen, Thread B must wait for Thread A to already
 // be listening and then complete its own connect-retry loop (up to 500ms per attempt), which a
 // fixed short delay before videoPlayerStart cannot reliably outlast.
-int skypekit_video_wait_thread_b(int timeoutMs) {
+int voipkit_video_wait_thread_b(int timeoutMs) {
 	struct timespec deadline;
 	deadline.tv_sec = time(nullptr) + (timeoutMs / 1000);
 	deadline.tv_nsec = (long)(timeoutMs % 1000) * 1000000L;
@@ -414,7 +414,7 @@ int skypekit_video_wait_thread_b(int timeoutMs) {
 	return connected;
 }
 
-void skypekit_video_stop(void) {
+void voipkit_video_stop(void) {
 	if (!g_running) return;
 	g_running = 0;
 
@@ -444,7 +444,7 @@ void skypekit_video_stop(void) {
 	pthread_mutex_unlock(&g_pending_mx);
 }
 
-void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int len) {
+void voipkit_video_receive_frame(const unsigned char *access_unit, unsigned int len) {
 	if (!g_running || !access_unit || len == 0) return;
 	unsigned char *copy = (unsigned char *)malloc(len);
 	if (!copy) return;

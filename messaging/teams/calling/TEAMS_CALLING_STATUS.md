@@ -5,7 +5,7 @@
 Picked up from the 08-01 checkpoint (MediaError-410 fixed, video SDP shape matches a real capture).
 Five real, evidenced fixes this session, plus one still-open gap.
 
-### 1. Video RTP wire-format bug (`skypekit.cpp`) — same class of bug already fixed in
+### 1. Video RTP wire-format bug (`voipkit.cpp`) — same class of bug already fixed in
 WhatsApp/Telegram this marathon, ported over: `kRtpPacketReceivedCmdId` was `20`, should be `19`
 (ProcessCall's real dispatch key, traced via VideoHost's ELF-relocation vtable — see
 `messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md` Part 36 for the full trace), and

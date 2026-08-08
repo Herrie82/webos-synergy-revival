@@ -284,6 +284,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         break;
     };
 
+    case td::td_api::updateNewCallSignalingData::ID: {
+        auto &signalingUpdate = static_cast<td::td_api::updateNewCallSignalingData &>(update);
+        updateCallSignalingData(signalingUpdate.call_id_, signalingUpdate.data_, m_data);
+        break;
+    };
+
     case td::td_api::updateMessageInteractionInfo::ID: {
         // webOS reactions: Telegram reports reactions as an aggregated per-emoji summary (not
         // per-sender events). Push the whole summary to the transport, which REPLACES this message's
@@ -2597,7 +2603,7 @@ void PurpleTdClient::voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api
         if (!initiateCall(user.id_, video, m_data, m_transceiver))
             // Deduped: the resolved-id dial for this same contact is already ringing. Clear this
             // raw-number card (keyed by its own +E.164 address) so the double-dial collapses to one.
-            callLunaPushState("disconnected", phone.c_str(), NULL, true, "normal");
+            callLunaPushState("disconnected", phone.c_str(), NULL, true, "normal", video);
         return;
     }
 
@@ -2605,7 +2611,7 @@ void PurpleTdClient::voiceCallPhoneLookupResponse(uint64_t requestId, td::td_api
     // instead of hanging forever.
     purple_debug_misc(config::pluginId, "voice call: phone %s not resolvable on Telegram: %s\n",
                       phone.c_str(), getDisplayedError(object).c_str());
-    callLunaPushState("disconnected", phone.c_str(), NULL, true, "error");
+    callLunaPushState("disconnected", phone.c_str(), NULL, true, "error", video);
 }
 
 bool PurpleTdClient::terminateCall(PurpleConversation *conv)

@@ -5,7 +5,7 @@
 
 #include "teams_call_luna.h"
 #include "teams_calling.h"
-#include "skypekit.h"
+#include "voipkit.h"
 #include "teams_video_relay.h"
 
 #include "webos-ls2-compat.h"   /* legacy split-bus API on either luna-service2 */
@@ -394,9 +394,9 @@ teams_call_luna_set_audio(gboolean active)
 /* --------------------------------------------------------------- video (clonk bridge) */
 /* Native SkypeKit H.264 video bridge, ported from Telegram's call-luna.cpp clonk chain (see that
  * file + messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md Parts 1-21 for the full
- * reverse-engineering trail this mirrors) - skypekit.cpp/h264_rtp.c/teams_video_relay.cpp now link
+ * reverse-engineering trail this mirrors) - voipkit.cpp/h264_rtp.c/teams_video_relay.cpp now link
  * directly into THIS process (libteams-personal.so), same as Telegram, so the sequencing is
- * identical to Telegram's: skypekit_video_start() blocks, teams_video_relay_connect() hooks it up
+ * identical to Telegram's: voipkit_video_start() blocks, teams_video_relay_connect() hooks it up
  * to teams_media's raw-RTP relay socket, then videoPlayerStart fires immediately after (Thread A is
  * now bound+listening - WHATSAPP_VIDEO_STATUS.md Part 17: mediaserver won't dial the outbound
  * socket until the inbound one has an accepted peer). The network RTP/SRTP/ICE transport itself
@@ -426,11 +426,11 @@ clonk_capture_start_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 {
 	(void) sh; (void) ctx;
 	teams_call_log("clonk videoCaptureStart: %s", LSMessageGetPayload(msg));
-	skypekit_video_start();
+	voipkit_video_start();
 	if (!teams_video_relay_connect())
 		teams_call_log("video relay connect failed (is teams_media up?) - continuing anyway");
 	/* MUST wait for Thread B to actually connect to mediaserver before firing videoPlayerStart -
-	 * see skypekit_video_wait_thread_b()'s comment (WHATSAPP_VIDEO_STATUS.md Part 17). This file
+	 * see voipkit_video_wait_thread_b()'s comment (WHATSAPP_VIDEO_STATUS.md Part 17). This file
 	 * was missing this call entirely (found+fixed 2026-08-05): mediaserver's RunVideoHost() only
 	 * gets ONE non-retried attempt to dial our capture thread, and without this wait that attempt
 	 * routinely lands before Thread B has finished connecting - the call proceeds looking totally
@@ -438,7 +438,7 @@ clonk_capture_start_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 	 * but silently sends zero outgoing video for the rest of the call. Confirmed via a live
 	 * packet capture: Android's video correctly reached webOS, but webOS sent nothing back, on a
 	 * call where SDP/ICE/modalities had already been verified fully correct. */
-	if (!skypekit_video_wait_thread_b(3000))
+	if (!voipkit_video_wait_thread_b(3000))
 		teams_call_log("skypekit thread B did not connect within 3s, firing videoPlayerStart anyway");
 	clonk_uri_call("videoPlayerStart", "{\"args\":[320,240]}", clonk_player_start_reply_cb, NULL);
 	return TRUE;
@@ -487,7 +487,7 @@ clonk_open_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 	return TRUE;
 }
 
-/* Opens a clonk session and drives it through videoCaptureStart -> skypekit_video_start() ->
+/* Opens a clonk session and drives it through videoCaptureStart -> voipkit_video_start() ->
  * videoPlayerStart. Call once per video call, from on_video_active_changed below. */
 static void
 teams_call_luna_open_clonk(void)
@@ -521,7 +521,7 @@ teams_call_luna_close_clonk(void)
 {
 	if (!g_clonkUri) { g_videoActive = FALSE; return; }
 	teams_video_relay_disconnect(); /* stop relaying to teams_media before telling mediaserver to stop */
-	skypekit_video_stop();
+	voipkit_video_stop();
 	clonk_uri_call("videoPlayerStop", "{\"args\":[]}", clonk_stop_reply_cb, (void *) "videoPlayerStop");
 	clonk_uri_call("videoCaptureStop", "{\"args\":[]}", clonk_stop_reply_cb, (void *) "videoCaptureStop");
 	g_free(g_clonkUri); g_clonkUri = NULL;
@@ -542,7 +542,7 @@ clonk_keyframe_stop_reply_cb(LSHandle *sh, LSMessage *msg, void *ctx)
 	(void) sh; (void) ctx;
 	teams_call_log("clonk keyframe-restart videoCaptureStop: %s", LSMessageGetPayload(msg));
 	/* Thread A/B and the clonk session itself stay up throughout - only the capture pipeline
-	 * restarts, so no skypekit_video_start()/videoPlayerStart here. */
+	 * restarts, so no voipkit_video_start()/videoPlayerStart here. */
 	clonk_uri_call("videoCaptureStart", "{\"args\":[320,320,240,400000]}", clonk_keyframe_start_reply_cb, NULL);
 	return TRUE;
 }

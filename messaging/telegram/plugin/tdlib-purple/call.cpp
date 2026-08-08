@@ -7,8 +7,9 @@
 #include "purple-info.h"
 #include "td-client.h"
 #include "call-luna.h"
-#include "skypekit-tgvoip.h"
+#include "voipkit-tgvoip.h"
 #include <glib.h>
+#include <array>
 
 static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
 {
@@ -17,12 +18,20 @@ static td::td_api::object_ptr<td::td_api::callProtocol> getCallProtocol()
     protocol->udp_reflector_ = true;
     protocol->min_layer_     = 65;
     protocol->max_layer_     = 92;
-    // library_versions_ deliberately left empty: declaring our vendored libtgvoip fork's own
-    // version string ("2.5") here made the peer's real client reject the call outright as an
-    // outdated client ("please update Telegram") instead of helping video negotiate -- confirmed
-    // live (every call, incoming and outgoing, started dropping immediately). Telegram's server
-    // apparently checks this against a real, current release list, not just "is it non-empty".
-    // Reverted; calls work fine with this unset (audio negotiates without it).
+    // library_versions_ deliberately left empty. Two things tried and REVERTED here, both worse
+    // than empty:
+    //  - Our vendored libtgvoip's own "2.5" string: peer's real client rejected the call outright
+    //    as outdated ("please update Telegram") -- not a real libtgvoip release.
+    //  - "2.7.7" (a real, confirmed-embedded-in-current-official-APK version string, the last
+    //    public grishka/libtgvoip release): the call no longer gets rejected, but the peer never
+    //    sends us a single PKT_INIT at all (confirmed via VoIPController.cpp's DIAG logging --
+    //    zero "recv" lines for two full test calls, versus reliably receiving flags=0x0 PKT_INITs
+    //    with this field empty). Declaring a real version apparently steers the peer's client onto
+    //    a different call-setup path (likely newer tgcalls V2/WebRTC-style signaling) that this
+    //    legacy VoIPController can't speak at all -- worse than the video-only gap empty leaves us
+    //    with, since it silently breaks audio too (peer's own UI hangs on "Exchanging encryption
+    //    keys" waiting for a media connection that never arrives). Left empty: audio negotiates
+    //    reliably; video remains unavailable pending a real fix for this call-path steering.
     return protocol;
 }
 
@@ -105,6 +114,9 @@ static std::string getPurpleUserName(UserId userId, TdAccountData &account)
 // Guards the SetVideoSource() retry timer below; file-scope so deactivateCall() can cancel it
 // on hangup (a static local inside activateCall would be unreachable from there).
 static guint g_videoSourceRetryId = 0;
+// Drives CallEngine::tick() (DTLS retransmission timers) while a call is active; same
+// file-scope-for-deactivateCall reasoning as g_videoSourceRetryId above.
+static guint g_callEngineTickId = 0;
 
 static bool activateCall(const td::td_api::call &call, const std::string &buddyName,
                          TdAccountData &account, TdTransceiver &transceiver)
@@ -144,7 +156,7 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     config.enableNS  = true;
     config.enableAGC = true;
     // Native SkypeKit/clonk video bridge (WHATSAPP_VIDEO_STATUS.md) -- see the
-    // SkypeKitVideoSource/SkypeKitVideoRenderer wiring below, right after SetConfig.
+    // VoipKitVideoSource/VoipKitVideoRenderer wiring below, right after SetConfig.
     config.enableVideoSend    = call.is_video_;
     config.enableVideoReceive = call.is_video_;
     // DIAG: libtgvoip writes NOTHING to the system log, so an unestablished media path (peer stuck on
@@ -154,21 +166,21 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     voip->SetConfig(config);
 
     // Video: open the clonk session BEFORE attaching source/renderer -- callLunaOpenClonk()
-    // drives videoCaptureStart -> skypekit_video_start() -> videoPlayerStart synchronously
+    // drives videoCaptureStart -> voipkit_video_start() -> videoPlayerStart synchronously
     // enough (fire-and-forget over LS2, but the ordering within it is what matters -- see
     // skypekit.h) that by the time real frames need to flow, both sockets are ready.
     // Static: only one call is ever active at a time (same assumption as the rest of this
     // file); the objects are cheap and simply reused/reattached across calls.
-    static SkypeKitVideoSource *videoSource = nullptr;
-    static SkypeKitVideoRenderer *videoRenderer = nullptr;
+    static VoipKitVideoSource *videoSource = nullptr;
+    static VoipKitVideoRenderer *videoRenderer = nullptr;
     if (g_videoSourceRetryId) {
         g_source_remove(g_videoSourceRetryId);
         g_videoSourceRetryId = 0;
     }
     if (call.is_video_) {
         callLunaOpenClonk();
-        if (!videoSource) videoSource = new SkypeKitVideoSource(callLunaRequestKeyframe);
-        if (!videoRenderer) videoRenderer = new SkypeKitVideoRenderer();
+        if (!videoSource) videoSource = new VoipKitVideoSource(callLunaRequestKeyframe);
+        if (!videoRenderer) videoRenderer = new VoipKitVideoRenderer();
         voip->SetVideoRenderer(videoRenderer);
         // VoIPController::SetVideoSource() requires its own outgoing video Stream object to
         // already exist, but that object is only created reactively -- deep inside
@@ -221,6 +233,50 @@ static bool activateCall(const td::td_api::call &call, const std::string &buddyN
     voip->Connect();
     callLunaSetCallAudio(true);   // enable audiod phone scenario -> voip/voipsource carry real audio
 
+#ifndef NoTgcallsLite
+    // tgcalls-lite: built and proven end-to-end (signaling codec + AES framing + ICE + DTLS-SRTP +
+    // RTP, see plugin/tgcalls-lite/spike/call_engine_e2e_smoke.cpp) but NOT YET the active call
+    // path -- getCallProtocol() above still deliberately leaves library_versions_ empty, so real
+    // peers never negotiate onto V2 signaling and TDLib will never actually fire
+    // updateNewCallSignalingData for a real call. Created here anyway so the real production
+    // call path exercises construction/wiring now, ahead of the actual switch-over (which also
+    // needs: NegotiateChannelsMessage codec negotiation, and routing real Opus/H.264 RTP through
+    // this engine instead of libtgvoip/skypekit's current paths -- see call_engine.h/.cpp).
+    {
+        // EncryptedConnection::EncryptedConnection reads 256 bytes unconditionally -- don't hand it
+        // `key` above (sized to state.encryption_key_.length()+1, not guaranteed to be 256): build
+        // an explicitly-sized, zero-padded 256-byte buffer instead so a shorter-than-expected key
+        // (shouldn't happen per Telegram's call encryption spec, but cheap to guard) can't read
+        // past this buffer's end.
+        std::array<uint8_t, 256> tgcallsKey{};
+        memcpy(tgcallsKey.data(), state.encryption_key_.data(),
+               std::min(state.encryption_key_.size(), tgcallsKey.size()));
+        auto callEngine = std::make_unique<tgcalls_lite::CallEngine>(
+            g_main_context_default(), tgcallsKey.data(), call.is_outgoing_, call.is_video_);
+        TdTransceiver *transceiverPtr = &transceiver;
+        int32_t callIdForSignaling = call.id_;
+        callEngine->onOutgoingSignalingData = [transceiverPtr, callIdForSignaling](const std::vector<uint8_t> &data) {
+            auto req = td::td_api::make_object<td::td_api::sendCallSignalingData>();
+            req->call_id_ = callIdForSignaling;
+            req->data_.assign(data.begin(), data.end());
+            transceiverPtr->sendQuery(std::move(req), nullptr);
+        };
+        callEngine->onMediaReady = []() {
+            tgcLog("tgcalls-lite: CallEngine media session reached Ready (infrastructure only -- not yet carrying real audio/video)");
+        };
+        callEngine->start();
+        account.setCallEngine(std::move(callEngine));
+
+        if (g_callEngineTickId) g_source_remove(g_callEngineTickId);
+        TdAccountData *accountPtr = &account;
+        g_callEngineTickId = g_timeout_add(500, +[](gpointer data) -> gboolean {
+            auto *acc = static_cast<TdAccountData *>(data);
+            if (auto *engine = acc->getCallEngine()) engine->tick();
+            return G_SOURCE_CONTINUE;
+        }, accountPtr);
+    }
+#endif
+
     if (!buddyName.empty()) {
         // For an outgoing call, "type /hangup to terminate" has already been shown when the call
         // was initiated
@@ -248,6 +304,29 @@ static void deactivateCall(TdAccountData &account)
     tgvoip::VoIPController *voip = account.getCallData();
     if (voip)
         voip->Stop();
+#endif
+#ifndef NoTgcallsLite
+    if (g_callEngineTickId) {
+        g_source_remove(g_callEngineTickId);
+        g_callEngineTickId = 0;
+    }
+    // account.removeActiveCall() (called by updateCall's disconnected/hangingUp handling) resets
+    // account's own m_callEngine; nothing else to tear down here explicitly.
+#endif
+}
+
+void updateCallSignalingData(int32_t callId, const std::string &data, TdAccountData &account)
+{
+#ifndef NoTgcallsLite
+    if (callId != account.getActiveCallId()) {
+        tgcLog("updateCallSignalingData: ignoring signaling data for call %d, active call is %d",
+               callId, account.getActiveCallId());
+        return;
+    }
+    tgcalls_lite::CallEngine *engine = account.getCallEngine();
+    if (!engine) return; // not yet using tgcalls-lite for this call (or it's the fallback libtgvoip path)
+    std::vector<uint8_t> bytes(data.begin(), data.end());
+    engine->handleIncomingSignalingData(bytes);
 #endif
 }
 
@@ -306,7 +385,8 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             // webOS: ring the stock Phone app instead of a pidgin accept/reject dialog. The user
             // answers via com.palm.telegram.call/answer -> callBridgeAnswer -> acceptCurrentCall.
             callLunaPushState("incoming", buddyName.c_str(),
-                              account.getDisplayName(getUserId(call)).c_str(), false, NULL);
+                              account.getDisplayName(getUserId(call)).c_str(), false, NULL,
+                              call.is_video_);
         } else if (call.id_ != account.getActiveCallId()) {
             if (!buddyName.empty())
                 showMessageTextIm(account, buddyName.c_str(), NULL,
@@ -323,7 +403,8 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             // state string STATES.DIALING == "dialing" (not "outgoing"); send that so the call
             // card shows "Connecting..." while the outgoing call is pending, same as WhatsApp.
             callLunaPushState("dialing", peerAddr.c_str(),
-                              account.getDisplayName(getUserId(call)).c_str(), true, NULL);
+                              account.getDisplayName(getUserId(call)).c_str(), true, NULL,
+                              call.is_video_);
         } else if (call.id_ != account.getActiveCallId()) {
             // This would happen if there was no active call when sending createCall, but there is one
             // a millisecond later when asynchronous response is received. Possible if two calls are
@@ -336,7 +417,8 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             account.removeActiveCall();
         } else {
             callLunaPushState("active", peerAddr.c_str(),
-                              account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, NULL);
+                              account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, NULL,
+                              call.is_video_);
         }
     }
     else if ( ((call.state_->get_id() == td::td_api::callStateHangingUp::ID) ||
@@ -355,7 +437,8 @@ void updateCall(const td::td_api::call &call, TdAccountData &account, TdTranscei
             cause = "error";
         }
         callLunaPushState("disconnected", peerAddr.c_str(),
-                          account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, cause);
+                          account.getDisplayName(getUserId(call)).c_str(), call.is_outgoing_, cause,
+                          call.is_video_);
         if (call.state_->get_id() == td::td_api::callStateError::ID) {
             const td::td_api::callStateError &error = static_cast<const td::td_api::callStateError &>(*call.state_);
             notifyCallError(error, buddyName, account);
