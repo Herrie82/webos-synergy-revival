@@ -46,7 +46,10 @@ command -v bison >/dev/null           || MISSING="$MISSING bison"
 pkg-config --exists purple 2>/dev/null || MISSING="$MISSING libpurple-dev"
 [ -e /usr/include/leveldb/db.h ]      || MISSING="$MISSING libleveldb-dev"
 pkg-config --exists icu-uc 2>/dev/null || MISSING="$MISSING libicu-dev"
-[ -e /usr/include/gmp.h ]             || MISSING="$MISSING libgmp-dev"
+have_gmp_h() { echo '#include <gmp.h>' | gcc -E - >/dev/null 2>&1; }
+have_gmp_h                            || MISSING="$MISSING libgmp-dev"
+pkg-config --exists opus 2>/dev/null   || MISSING="$MISSING libopus-dev"
+pkg-config --exists ogg 2>/dev/null    || MISSING="$MISSING libogg-dev"
 if [ -n "$MISSING" ]; then
   echo "!! missing build prerequisites:$MISSING"
   echo "   sudo apt install$MISSING"
@@ -90,9 +93,25 @@ fi
 # CMAKE_MODULE_PATH: cmake-modules-webos installs into the system cmake dir (needs root), so
 # point at the patched copy in place instead -- `include(webOS/webOS)` resolves from here.
 # CMAKE_POLICY_VERSION_MINIMUM: these trees predate CMake 4's minimum-version floor.
+# WEBOS_INSTALL_ROOT is what actually decides where webos_build_* installs; the webOS modules
+# derive every WEBOS_INSTALL_* path from it and ignore CMAKE_INSTALL_PREFIX, so without this
+# the install step tries to write /usr/local/webos and needs root.
+# RelWithDebInfo, not Debug: luna-service2's transport_message.h declares its accessors with a
+# bare C99 `inline`, which emits no out-of-line definition, so at -O0 every call is an
+# undefined reference at link time. Upstream builds -O2, where they all inline away. These are
+# dependencies, not the code under test -- only the transport itself needs -O0 and ASan -- and
+# -g keeps them symbolised in sanitizer stack traces.
+# The linker flags put the staging tree on the search path. Without -rpath-link the transitive
+# dependencies of our own shared libraries cannot be resolved when linking against them:
+# libpbnjson_c.so correctly records NEEDED liburiparser.so.1, but ld still has to find that
+# file to link a consumer, and it lives in the staging prefix rather than a system directory.
+# Via the environment, not $CM: that variable is deliberately word-split when passed to cmake,
+# so a -D value containing spaces would be torn into separate arguments. CMake seeds
+# CMAKE_EXE_LINKER_FLAGS from LDFLAGS when it first creates the cache.
+export LDFLAGS="-L$ST/lib -L$ST/usr/lib -Wl,-rpath-link,$ST/lib -Wl,-rpath-link,$ST/usr/lib"
 CM="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_MODULE_PATH=$CMW
-    -DCMAKE_INSTALL_PREFIX=$ST -DCMAKE_PREFIX_PATH=$ST -DCMAKE_BUILD_TYPE=Debug
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+    -DCMAKE_INSTALL_PREFIX=$ST -DCMAKE_PREFIX_PATH=$ST -DWEBOS_INSTALL_ROOT=$ST
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
 SAN="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
 
 stage() {  # stage <name> <src> <marker> [extra cmake args...]
@@ -136,7 +155,7 @@ stage yajl "$H/src/yajl" "$ST/lib/libyajl.so"
 #     compile under it, so CC pins -std=gnu17.
 #   - even then the parallel build has been seen to stop partway with objects missing and no
 #     compiler diagnostic. Unresolved; use the distro package.
-if [ -e /usr/include/gmp.h ]; then
+if have_gmp_h; then
   printf "== %-12s (system)\n" gmp
 elif [ ! -e "$ST/lib/libgmp.so" ] && [ ! -e "$ST/lib/libgmp.a" ]; then
   printf "== %-12s " gmp
@@ -158,6 +177,14 @@ elif [ ! -e "$ST/lib/libgmp.so" ] && [ ! -e "$ST/lib/libgmp.a" ]; then
   else echo "FAILED -- see $L/gmp.log"; tail -8 "$L/gmp.log"; exit 1; fi
 fi
 
+# 2c. libtidy (sanitize.cpp). Built from the tidy-html5 tree the ARM build already carries, so
+# no root is needed. src/sanitize.cpp includes <buffio.h>, the pre-5.x spelling, which the
+# compat shim in test/fuzz/compat redirects to <tidybuffio.h>.
+TIDY_SRC=${TIDY_SRC:-$REPO/build-output/tidy-arm/tidy-html5}
+if [ ! -e "$ST/include/tidy.h" ] && [ -d "$TIDY_SRC" ]; then
+  stage tidy "$TIDY_SRC" "$ST/include/tidy.h" -DBUILD_SHARED_LIB=OFF
+fi
+
 # 3. pbnjson (luna-service2 + PmLogLib dependency)
 # Also built from a copy: gperf_generate() uses add_custom_command's SOURCE/TARGET/OUTPUTS
 # signature, which CMake 4 removed. Rewritten to the OUTPUT form; add_library already lists the
@@ -165,6 +192,12 @@ fi
 PBN=$H/src/libpbnjson
 if [ ! -e "$PBN/CMakeLists.txt" ]; then
   rm -rf "$PBN"; cp -r "$AUDIOD/libpbnjson" "$PBN"
+  # Drop %pic from the gperf inputs. It makes gperf emit a stringpool, so wordlist[].name has
+  # to be an integer offset -- but these files declare `char const *name` and gperf >= 3.1
+  # stopped reconciling the two, so the generated table fails to compile with -Wint-conversion.
+  # %pic is only a relocation-size optimisation; without it the emitted table matches the
+  # declared struct exactly.
+  sed -i '/^%pic$/d' "$PBN"/src/pbnjson_c/validation/*.gperf
   python3 - "$PBN/src/pbnjson_c/validation/CMakeLists.txt" <<'PY'
 import sys
 p = sys.argv[1]
@@ -240,22 +273,80 @@ PY
 fi
 stage pbnjson "$PBN" "$ST/usr/lib/libpbnjson_c.so"
 
-# 4. PmLogLib (luna-service2 + db8 dependency)                               [UNVERIFIED]
-stage PmLogLib "$AUDIOD/PmLogLib" "$ST/usr/lib/libPmLogLib.so"
+# 4. PmLogLib (luna-service2 + db8 dependency)
+# Built from a copy for one fix: the install(DIRECTORY include/public/) rule writes to
+# DESTINATION @WEBOS_INSTALL_INCLUDEDIR@ -- configure_file placeholder syntax, which CMake does
+# not expand in a CMakeLists. The headers land in a directory literally named
+# "@WEBOS_INSTALL_INCLUDEDIR@" instead of include/, so PmLogLib.h installs (it goes through
+# webos_configure_header_files, which uses the variable properly) while PmLogMsg.h, which
+# PmLogLib.h includes, does not -- and luna-service2 then fails to compile against it.
+PMLOG=$H/src/PmLogLib
+if [ ! -e "$PMLOG/CMakeLists.txt" ]; then
+  rm -rf "$PMLOG"; cp -r "$AUDIOD/PmLogLib" "$PMLOG"
+  sed -i 's|@WEBOS_INSTALL_INCLUDEDIR@|${WEBOS_INSTALL_INCLUDEDIR}|g' "$PMLOG/CMakeLists.txt"
+fi
+stage PmLogLib "$PMLOG" "$ST/usr/include/PmLogMsg.h"
 
-# 5. luna-service2 (db8 + transport dependency)                              [UNVERIFIED]
+# 5. luna-service2 (db8 + transport dependency)
 # Ships desktop_hub.sh and valgrind.supp -- upstream supported desktop runs, which is what
 # lets the sanitized transport actually talk to a bus.
-stage luna-service2 "$DEPS/luna-service2" "$ST/usr/lib/libluna-service2.so"
+#
+# Built from a copy carrying its own webOS/ modules dir: _webos_check_init_version() reads the
+# version marker from ${CMAKE_SOURCE_DIR}/webOS/webOS.cmake, falling back to the INSTALLED
+# ${CMAKE_ROOT}/Modules copy. Neither exists here -- the modules are used from
+# CMAKE_MODULE_PATH, which that check ignores -- so it reads nothing and reports the marker as
+# missing. Dropping the patched modules into the copy satisfies it without installing as root.
+LS2SRC=$H/src/luna-service2
+if [ ! -e "$LS2SRC/CMakeLists.txt" ]; then
+  rm -rf "$LS2SRC"; cp -r "$DEPS/luna-service2" "$LS2SRC"
+  cp -r "$CMW/webOS" "$LS2SRC/webOS"
+fi
+#
+# -fgnu89-inline: transport_message.h declares its accessors with a bare C99 `inline`, which
+# emits no out-of-line definition, so any call the compiler declines to inline is an undefined
+# reference at link time. Upstream got away with it at -O2; gcc 15 does not inline all of them
+# even there, so this does not depend on the optimiser at all -- under GNU89 semantics `inline`
+# emits an external definition and every call site resolves.
+stage luna-service2 "$LS2SRC" "$ST/usr/lib/libluna-service2.so" \
+      -DCMAKE_C_FLAGS=-fgnu89-inline
 
 # 6. db8 -> libmojocore / libmojodb / libmojoluna                            [UNVERIFIED]
 # Uses its own Makefile.Ubuntu (PLATFORM=linux-x86), not CMake. Must be the initial
 # openwebos/db8 tree: the newer db8 under build-deps has an incompatible ABI (see build.sh).
+# ARCH_CFLAGS is overridden rather than extended: build/Makefile.inc hardcodes -Wall
+# -Wconversion -Werror and appends ARCH_CFLAGS last, so this is the only hook that can land a
+# -Wno-error after it. Modern gcc rejects the tree over two-phase name lookup (MojDestroy used
+# before its template is declared), which -Werror turns into a hard failure.
+# Built from a copy so the ARM/device tree keeps its own objects, and staged by hand because
+# db8's makefile has no install target.
 if [ ! -e "$ST/usr/lib/libmojocore.so" ]; then
   printf "== %-12s " db8
-  if ( cd "$DEPS/db8-openwebos-initial" \
-       && make -f Makefile.Ubuntu LUNA_STAGING="$ST/usr" -j"$(nproc)" ) > "$L/db8.log" 2>&1
-  then echo ok
+  DB8SRC=$H/src/db8
+  [ -d "$DB8SRC" ] || cp -r "$DEPS/db8-openwebos-initial" "$DB8SRC"
+  # -fpermissive as well as -Wno-error: MojRefCountInternal.h calls MojDestroy before the
+  # template is declared, which modern C++ rejects outright ("no declarations found by
+  # argument-dependent lookup at the point of instantiation") rather than merely warning about.
+  # build.sh passes -fpermissive to the device transport build for the same reason.
+  # luna-service2 installs its headers under include/luna-service2/, but MojLunaDefs.h includes
+  # <lunaservice.h> unqualified, so that directory has to be on the include path directly.
+  DB8_ARCH_CFLAGS="-I$ST/usr/include -I$ST/usr/include/luna-service2 -I$ST/include -DMOJ_LINUX $(pkg-config --cflags glib-2.0) -fno-strict-aliasing -Wno-error -fpermissive"
+  # This db8 predates the luna-service2 rename and links -llunaservice; 3.9.5 installs
+  # libluna-service2.so. The device build carries a stub under the old name for the same reason.
+  [ -e "$ST/usr/lib/liblunaservice.so" ] || \
+      ln -sf libluna-service2.so "$ST/usr/lib/liblunaservice.so"
+  # Only the three libraries the transport links. The default target also builds mojodb-luna
+  # (the db8 daemon) and the test binaries, and mojodb-luna does not compile against leveldb
+  # 1.23 -- src/db-luna/MojDbLevelEngine.cpp uses the 2012 API (Status::Ok(), implicit Status
+  # conversions). Running the transport against a real db8 will need that ported; building and
+  # instrumenting it does not.
+  if ( cd "$DB8SRC" && make -f Makefile.Ubuntu LUNA_STAGING="$ST/usr" \
+         ARCH_CFLAGS="$DB8_ARCH_CFLAGS" -j"$(nproc)" \
+         libmojocore libmojodb libmojoluna ) > "$L/db8.log" 2>&1
+  then
+    mkdir -p "$ST/usr/lib"
+    find "$DB8SRC" -maxdepth 2 -name "libmoj*.so*" -exec cp -a {} "$ST/usr/lib/" \;
+    [ -e "$ST/usr/lib/libmojocore.so" ] || { echo "FAILED -- built but no libmojocore.so"; exit 1; }
+    echo ok
   else echo "FAILED -- see $L/db8.log"; tail -8 "$L/db8.log"; exit 1; fi
 fi
 
@@ -270,7 +361,7 @@ INCLUDES="-I$IMLIB_REPO/inc -I$DEPS/db8-openwebos-initial/inc
   -I$DEPS/luna-service2/include/public -I$DEPS/luna-service2/include/public/luna-service2
   -I$ST/usr/include -I$ST/include
   -I$IMLIB_REPO/test/fuzz/compat
-  $(pkg-config --cflags glib-2.0 gio-2.0 gio-unix-2.0 purple)"
+  $(pkg-config --cflags glib-2.0 gio-2.0 gio-unix-2.0 purple opus ogg)"
 
 OBJS=""; FAILED=0
 for f in "$IMLIB_REPO"/src/*.cpp; do
@@ -285,8 +376,9 @@ done
 # Word splitting on the flag vars and pkg-config output is intended here.
 # shellcheck disable=SC2086,SC2046
 g++ $CXXFLAGS $OBJS -o "$OUT" \
-  -L"$ST/usr/lib" -L"$ST/lib" -lmojocore -lmojodb -lmojoluna -lluna-service2 \
-  $(pkg-config --libs glib-2.0 gio-2.0 gio-unix-2.0 purple) -ltidy -lrt -lpthread
+  -L"$ST/usr/lib" -L"$ST/lib" -Wl,-rpath,"$ST/usr/lib" -Wl,-rpath,"$ST/lib" \
+  -lmojocore -lmojodb -lmojoluna -lluna-service2 \
+  $(pkg-config --libs glib-2.0 gio-2.0 gio-unix-2.0 purple opus ogg) -ltidy -lrt -lpthread
 
 echo
 echo "built: $OUT"
