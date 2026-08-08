@@ -80,7 +80,7 @@ echo "== 4b. WhatsApp calling: grant com.palm.whatsapp.call in the imlibpurple r
 # com.palm.whatsapp.call bus name — same as telegram.call/signal.call. A separate role file does NOT
 # work; the name must be in imtransport's own role. The RESIDENT transport registers that name itself,
 # so no DBus activation .service is needed for it (see the neuter below).
-IMROLES="$PKG/../imlibpurpleservice/imlibpurpleservice/files/ls2/roles"
+IMROLES="${IMLIB_REPO:-/home/herrie/Documents/GitHub/imlibpurpleservice}/files/ls2/roles"
 nr "mount -o remount,rw /dev/mapper/store-root / || true"
 novacom put "file:///usr/share/ls2/roles/prv/com.palm.imlibpurple.json" < "$IMROLES/prv/com.palm.imlibpurple.json"
 novacom put "file:///usr/share/ls2/roles/pub/com.palm.imlibpurple.json" < "$IMROLES/pub/com.palm.imlibpurple.json"

@@ -145,7 +145,7 @@ packaging/
     wpe-glibc loader patch, SSL override, PmLog semaphore self-heal, or ALSA preload. The attached
     device had already been hand-patched to `Exec=/var/imwrap.sh ...`, but that fix had never been
     captured anywhere in this repo. Now shipped as a real file
-    (`messaging/imlibpurpleservice/imlibpurpleservice/files/dbus-1/system-services/com.palm.imlibpurple.service`)
+    (`files/dbus-1/system-services/com.palm.imlibpurple.service` in the imlibpurpleservice repo)
     and installed the same backup-then-overwrite way as `libpurple.so`.
   - The four calling `.service` files (`com.palm.{whatsapp,teams,signal,telegram}.call.service`) —
     needed so `ls-hubd` knows the bus name exists for *inbound* call routing, even though the

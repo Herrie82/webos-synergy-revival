@@ -1,18 +1,26 @@
 #!/bin/bash
 # Cross-compile imlibpurpleservice -> imlibpurpletransport (ARM webOS 3.0.5).
-# Authoritative build: everything lives in this monorepo (webos-synergy-revival). The old
-# ~/webos/teams-port tree is GONE - do not use it. Hand-rolled build (upstream CMakeLists targets
-# modern OSE; ignored). Host-side only.
+# Authoritative build: the build deps live in this monorepo (webos-synergy-revival), but the
+# transport SOURCE now lives in the standalone shared repo (Herrie82/imlibpurpleservice, branch
+# herrie/synergy-revival) - it used to be vendored here under messaging/imlibpurpleservice/
+# imlibpurpleservice/ and was moved out so it can be shared/upstreamed. Override IMLIB_REPO if
+# your checkout is elsewhere. The old ~/webos/teams-port tree is GONE - do not use it.
+# Hand-rolled build (upstream CMakeLists targets modern OSE; ignored). Host-side only.
 set -e
 
 REPO=/home/herrie/Documents/GitHub/webos-synergy-revival
+IMLIB_REPO=${IMLIB_REPO:-/home/herrie/Documents/GitHub/imlibpurpleservice}
 TC=/home/herrie/x-tools/arm-unknown-linux-gnueabi-gcc125/bin/arm-unknown-linux-gnueabi-
 CXX=${TC}g++
 READELF=${TC}readelf
 STRIP=${TC}strip
 
-SRC=$REPO/messaging/imlibpurpleservice/imlibpurpleservice   # transport source (this repo)
+SRC=$IMLIB_REPO                                              # transport source (shared repo)
 BUILD=$REPO/messaging/imlibpurpleservice/build-arm           # build dir (gitignored)
+
+[ -d "$SRC/src" ] || { echo "!! transport source not found at $SRC"; \
+  echo "   clone https://github.com/Herrie82/imlibpurpleservice.git (branch herrie/synergy-revival)"; \
+  echo "   or set IMLIB_REPO=/path/to/imlibpurpleservice"; exit 1; }
 OBJ=$BUILD/obj
 OUT=$BUILD/imlibpurpletransport
 mkdir -p "$OBJ"

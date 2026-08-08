@@ -53,7 +53,7 @@ against the upstart-managed resident daemon, and — because all four connectors
 directly, skipping the PmLog semaphore self-heal, SSLFIX, and log redirection `imwrap.sh` provides)
 — the losing instance in that race could be a fully-alive, fully-logged-in, permanently
 unresponsive ghost process for hours. Full writeup, fix, and verification steps:
-`messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md` ("Dual-instance
+`files/var/README-device-launch.md` in the imlibpurpleservice repo ("Dual-instance
 launch race"). Two-part fix: route all four `.call.service` files through `imwrap.sh`; add a
 `mkdir`-based singleton lock in `imwrap.sh` itself. Both deployed and verified live (single clean
 process tree + clean single registration sequence, confirmed after this fix by killing the

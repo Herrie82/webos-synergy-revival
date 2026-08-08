@@ -37,8 +37,8 @@ cp libwhatsmeow.so /usr/lib/purple/libwhatsmeow.so     # (device path of the prp
 # 2. Let imtransport own the new bus name: com.palm.whatsapp.call must be in the imlibpurple
 #    role's allowedNames+permissions (same as telegram.call/signal.call). A SEPARATE role file
 #    does NOT work — LS2 keys the role by exeName, so the grant lives in imtransport's own role.
-cp ../imlibpurpleservice/imlibpurpleservice/files/ls2/roles/prv/com.palm.imlibpurple.json /usr/share/ls2/roles/prv/
-cp ../imlibpurpleservice/imlibpurpleservice/files/ls2/roles/pub/com.palm.imlibpurple.json /usr/share/ls2/roles/pub/
+cp "$IMLIB_REPO"/files/ls2/roles/prv/com.palm.imlibpurple.json /usr/share/ls2/roles/prv/
+cp "$IMLIB_REPO"/files/ls2/roles/pub/com.palm.imlibpurple.json /usr/share/ls2/roles/pub/
 cp dbus-1/system-services/com.palm.whatsapp.call.service /usr/share/dbus-1/system-services/
 # NB: ls-hubd loads roles at BOOT — reboot (or restart the LS2 hub) after changing a role file.
 # 3. account manifest with the re-pointed PHONE implementation

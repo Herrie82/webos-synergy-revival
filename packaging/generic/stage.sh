@@ -37,7 +37,10 @@ source "$REPO/packaging/lib/common.sh"
 DS_OUT="$STAGE/media/cryptofs/synergy-revival/device-setup"
 
 echo "== generic: imlibpurpleservice =="
-IM="$REPO/messaging/imlibpurpleservice/imlibpurpleservice"
+# Transport source lives in the standalone shared repo (Herrie82/imlibpurpleservice @
+# herrie/synergy-revival), not vendored here any more - override IMLIB_REPO for a different checkout.
+IM="${IMLIB_REPO:-/home/herrie/Documents/GitHub/imlibpurpleservice}"
+[ -d "$IM/files" ] || { echo "!! imlibpurpleservice source not found at $IM (set IMLIB_REPO)"; exit 1; }
 stage_root_file "$REPO/messaging/imlibpurpleservice/build-arm/imlibpurpletransport" /usr/bin/imlibpurpletransport
 # /var is its own small (~60MB), always-writable partition (confirmed distinct from root even
 # when root is read-only), but that only sidesteps the READ-ONLY-ROOT problem -- it does NOT make
@@ -79,7 +82,7 @@ stage_root_file "$IM/files/ls2/roles/pub/com.palm.imlibpurple.json" /usr/share/l
 # postinst script is invisible to ipkg's ownership tracking; only data.tar.gz's own manifest is
 # policed). The app-side patches.js half (part 2) lives in the core-apps repo's
 # com.palm.app.contacts checkout, not here — see
-# messaging/imlibpurpleservice/imlibpurpleservice/files/var/README-device-launch.md
+# files/var/README-device-launch.md in the imlibpurpleservice repo
 stage_root_file "$IM/files/etc/palm/db/kinds/com.palm.person" /etc/palm/db/kinds/com.palm.person
 
 # com.palm.imlibpurple.service: stock ships this pointed straight at the raw transport binary
