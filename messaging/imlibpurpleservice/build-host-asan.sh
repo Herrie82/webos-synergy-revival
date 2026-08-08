@@ -376,9 +376,18 @@ done
 # Word splitting on the flag vars and pkg-config output is intended here.
 # shellcheck disable=SC2086,SC2046
 g++ $CXXFLAGS $OBJS -o "$OUT" \
-  -L"$ST/usr/lib" -L"$ST/lib" -Wl,-rpath,"$ST/usr/lib" -Wl,-rpath,"$ST/lib" \
+  -L"$ST/usr/lib" -L"$ST/lib" \
+  -Wl,--disable-new-dtags -Wl,-rpath,"$ST/usr/lib" -Wl,-rpath,"$ST/lib" \
   -lmojocore -lmojodb -lmojoluna -lluna-service2 \
-  $(pkg-config --libs glib-2.0 gio-2.0 gio-unix-2.0 purple opus ogg) -ltidy -lrt -lpthread
+  $(pkg-config --libs glib-2.0 gio-2.0 gio-unix-2.0 purple opus ogg icu-uc icu-i18n) \
+  -ltidy -lrt -lpthread
+# ICU is needed here, at the consumer, because libmojodb.so leaves ucol_* unresolved: db8's
+# makefile links ICU_LIBS := -licuuc -licutu, and the collation entry points live in
+# libicui18n, not the icutu test-utility library.
+#
+# --disable-new-dtags emits RPATH rather than RUNPATH. RUNPATH applies only to the binary's own
+# DT_NEEDED entries, not to its dependencies' dependencies, so libluna-service2.so could not
+# find libpbnjson_c.so.2 in the staging prefix. RPATH is inherited down the chain.
 
 echo
 echo "built: $OUT"
