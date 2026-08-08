@@ -12,5 +12,5 @@
     "noWindow": true,
     "uiRevision": 2,
     "keywords": ["Signal", "IM"],
-    "requiredPermissions": ["accounts.query", "accounts.manage", "connectionmanager.read"]
+    "requiredPermissions": ["accountsservice.management", "accountsservice.operation", "imlibpurple-service.operation", "networkconnection.query"]
 }

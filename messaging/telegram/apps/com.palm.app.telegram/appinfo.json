@@ -12,5 +12,5 @@
     "noWindow": true,
     "uiRevision": 2,
     "keywords": ["Telegram", "IM"],
-    "requiredPermissions": ["accounts.query", "accounts.manage", "connectionmanager.read"]
+    "requiredPermissions": ["accountsservice.management", "accountsservice.operation", "networkconnection.query"]
 }
