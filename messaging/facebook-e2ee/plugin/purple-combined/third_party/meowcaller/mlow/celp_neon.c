@@ -1,3 +1,5 @@
+//go:build arm && cgo
+
 // NEON-accelerated coarse CELP DSP kernels (webOS device build). These are the self-contained
 // dot-product / FIR loops the encoder runs many times per frame; compiled with -mfpu=neon
 // -ftree-vectorize -ffast-math the inner contiguous loops auto-vectorize. Only the COARSE functions

@@ -1,3 +1,5 @@
+//go:build arm && cgo
+
 // NEON-accelerated mixed-radix FFT for the MLow encoder's hot path.
 //
 // A straight port of the Go fftRec (same recursion, same twiddle convention W[m]=exp(sign*2pi*i*m/n)
