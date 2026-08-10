@@ -1,6 +1,6 @@
 // voipkit.cpp — native bridge between mediaserver's local SkypeKit RTP sockets and
 // libtgvoip's VoIPController (via voipkit-tgvoip.cpp's VideoSource/VideoRenderer adapters).
-// See skypekit.h and messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the
+// See voipkit.h and messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the
 // full reverse-engineering trail this is built from.
 //
 // Adapted from messaging/facebook-e2ee/plugin/purple-combined/glue/voipkit.cpp — identical
@@ -140,7 +140,7 @@ void voipkit_set_frame_out_callback(void (*cb)(const unsigned char *, unsigned i
 }
 
 // Thread B's pending-frame handoff: caller overwrites, thread B drains. Live video wants the
-// latest frame, not a backlog (see skypekit.h).
+// latest frame, not a backlog (see voipkit.h).
 static pthread_mutex_t g_pending_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_pending_cv = PTHREAD_COND_INITIALIZER;
 static unsigned char *g_pending_data = nullptr;
@@ -386,7 +386,7 @@ void voipkit_video_start(void) {
 	pthread_create(&g_thread_b, nullptr, thread_b_main, nullptr);
 }
 
-// See skypekit.h's comment on why this exists: unlike Thread A's near-instant bind+listen,
+// See voipkit.h's comment on why this exists: unlike Thread A's near-instant bind+listen,
 // Thread B must wait for Thread A to already be listening and then complete its own
 // connect-retry loop (up to 500ms per attempt), which a fixed short delay before videoPlayerStart
 // cannot reliably outlast -- confirmed via WhatsApp's identical bridge (glue/voipkit.cpp), where
@@ -443,7 +443,7 @@ void voipkit_video_receive_frame(const unsigned char *access_unit, unsigned int 
 	memcpy(copy, access_unit, len);
 
 	pthread_mutex_lock(&g_pending_mx);
-	free(g_pending_data); // drop any not-yet-sent previous frame — see skypekit.h
+	free(g_pending_data); // drop any not-yet-sent previous frame — see voipkit.h
 	g_pending_data = copy;
 	g_pending_len = len;
 	g_pending_ready = 1;

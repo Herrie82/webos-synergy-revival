@@ -14,12 +14,12 @@ package main
 // subscription, and the audiod PCM routing.
 //
 // C  -> Go (exported): gowhatsapp_go_call_dial / _answer / _hangup / _hangup_all,
-//                      gowhatsapp_call_video_frame_out(data,len) (glue/skypekit.cpp, Thread A ->
+//                      gowhatsapp_call_video_frame_out(data,len) (glue/voipkit.cpp, Thread A ->
 //                      Call.SendVideoWithDuration — see WHATSAPP_VIDEO_STATUS.md "hook it up
 //                      properly" plan)
 // Go -> C (glue/call.c): gowhatsapp_call_on_state(json), gowhatsapp_call_on_speaker(pcm,n),
 //                        gowhatsapp_call_audio_active(on), gowhatsapp_call_read_mic(out,n)
-// Go -> C (glue/skypekit.cpp): skypekit_video_receive_frame(data,len) — Call.ReceiveVideo's
+// Go -> C (glue/voipkit.cpp): voipkit_video_receive_frame(data,len) — Call.ReceiveVideo's
 //                        sink (attachMedia) forwards each peer access unit here.
 
 /*
@@ -31,8 +31,8 @@ extern void gowhatsapp_call_audio_active(int on);            // open/close ALSA 
 extern int  gowhatsapp_call_read_mic(float *out, int n);    // Go pulls mic PCM from the C ring
 extern void gowhatsapp_call_video_active(int on);            // open/note-close the clonk session (videoURI)
 extern void gowhatsapp_call_request_keyframe(void);           // stop+restart capture -> fresh IDR
-// Implemented in glue/skypekit.cpp:
-extern void skypekit_video_receive_frame(const unsigned char *access_unit, unsigned int len);
+// Implemented in glue/voipkit.cpp:
+extern void voipkit_video_receive_frame(const unsigned char *access_unit, unsigned int len);
 */
 import "C"
 
@@ -297,7 +297,7 @@ func wireCall(mcCall *meowcaller.Call, origin string, address string) *callInfo 
 		callMu.Unlock()
 		// Same fix as gowhatsapp_go_call_dial/answer: the peer's video turning on (or
 		// being active from the initial offer, before changeMedia is ever called) must
-		// also open the local clonk session, or skypekit_video_receive_frame silently
+		// also open the local clonk session, or voipkit_video_receive_frame silently
 		// drops every frame because Thread B never started.
 		on := 0
 		if anyVideo {
@@ -416,15 +416,15 @@ func attachMedia(ci *callInfo) {
 		}
 		C.gowhatsapp_call_on_speaker((*C.float)(unsafe.Pointer(&frame[0])), C.int(len(frame)))
 	}))
-	// Peer's decoded H.264 (Annex-B access units) -> glue/skypekit.cpp's Thread B, which
+	// Peer's decoded H.264 (Annex-B access units) -> glue/voipkit.cpp's Thread B, which
 	// RTP-packetizes and delivers them to mediaserver's native video player. Safe to attach
-	// unconditionally like Receive above: with no video active yet, skypekit_video_receive_frame
-	// just no-ops (the bridge threads aren't running -- see skypekit.h).
+	// unconditionally like Receive above: with no video active yet, voipkit_video_receive_frame
+	// just no-ops (the bridge threads aren't running -- see voipkit.h).
 	ci.c.ReceiveVideo(meowcaller.VideoSinkFunc(func(accessUnit []byte) {
 		if len(accessUnit) == 0 {
 			return
 		}
-		C.skypekit_video_receive_frame((*C.uchar)(unsafe.Pointer(&accessUnit[0])), C.uint(len(accessUnit)))
+		C.voipkit_video_receive_frame((*C.uchar)(unsafe.Pointer(&accessUnit[0])), C.uint(len(accessUnit)))
 	}))
 }
 
@@ -434,10 +434,10 @@ func handleIncoming(mcCall *meowcaller.Call) {
 	emitCallState() // ring the UI
 }
 
-// gowhatsapp_call_video_frame_out — called from glue/skypekit.cpp's Thread A (a native
+// gowhatsapp_call_video_frame_out — called from glue/voipkit.cpp's Thread A (a native
 // pthread, NOT the luna-service mainloop the rest of this section's exports assume) with one
 // complete access unit reassembled from mediaserver's own camera capture pipeline. There's no
-// call-id at this layer (skypekit.cpp has no notion of "which call" -- see skypekit.h), so this
+// call-id at this layer (voipkit.cpp has no notion of "which call" -- see voipkit.h), so this
 // routes to whichever call is currently live, mirroring the same single-live-call fallback
 // gowhatsapp_go_call_changemedia already uses elsewhere in this file.
 //
@@ -537,9 +537,9 @@ func gowhatsapp_go_call_dial(cAddr *C.char, video C.int) *C.char {
 			// never starting its video encoder despite the user turning their camera on.
 			//
 			// gowhatsapp_call_video_active(1) is what actually opens the local clonk
-			// session (videoCaptureStart/videoPlayerStart/skypekit_video_start) -- without
+			// session (videoCaptureStart/videoPlayerStart/voipkit_video_start) -- without
 			// it Thread B never starts, so the peer's video would be silently dropped by
-			// skypekit_video_receive_frame's own g_running guard even though signaling and
+			// voipkit_video_receive_frame's own g_running guard even though signaling and
 			// the relay bridge work fine. Previously only changeMedia (the Phone app's
 			// mid-call video toggle) called this, so a call placed with video from the
 			// start never displayed anything locally.
@@ -628,9 +628,9 @@ func gowhatsapp_go_call_answer(cID *C.char, video C.int) C.int {
 			// that is the same redundant/premature extra signal as StartVideo() was in dial().
 			ci.outgoingVid = true
 			// gowhatsapp_call_video_active(1) is what actually opens the local clonk session
-			// (videoCaptureStart/videoPlayerStart/skypekit_video_start) -- without it Thread B
+			// (videoCaptureStart/videoPlayerStart/voipkit_video_start) -- without it Thread B
 			// never starts, so the peer's video would be silently dropped by
-			// skypekit_video_receive_frame's own g_running guard even though signaling and the
+			// voipkit_video_receive_frame's own g_running guard even though signaling and the
 			// relay bridge work fine.
 			C.gowhatsapp_call_video_active(C.int(1))
 		}

@@ -1,4 +1,4 @@
-// skypekit_stub.c -- stand-in for voipkit.cpp on targets without libpalmgstskype.so.
+// voipkit_none.c -- stand-in for voipkit.cpp on targets without libpalmgstskype.so.
 //
 // The real bridge (voipkit.cpp) binds directly to libpalmgstskype.so, SkypeKit's native RTP
 // transport, which ships as a gstreamer-0.10 plugin in the legacy webOS 3.0.5 firmware. LuneOS

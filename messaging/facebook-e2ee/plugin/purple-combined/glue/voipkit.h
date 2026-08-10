@@ -1,4 +1,4 @@
-// skypekit.h — C entry points for the native SkypeKit video bridge (glue/voipkit.cpp).
+// voipkit.h — C entry points for the native SkypeKit video bridge (glue/voipkit.cpp).
 //
 // Bridges mediaserver's local SkypeKit RTP sockets (the /tmp/vidrtp_{to,from}_skypekit_key
 // abstract Unix sockets — see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md Parts 10-18)

@@ -4,7 +4,7 @@
 // shuttles the RTP-framed H.264 access units across one more hop (a UNIX relay socket) to/from the
 // teams_media subprocess, which owns the actual SRTP/ICE network transport (see teams_media.c's
 // top-of-file comment for why the network I/O and the clonk bridge can't live in the same process).
-// See skypekit.h and messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the
+// See voipkit.h and messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md (Parts 10-18) for the
 // full reverse-engineering trail this is built from.
 //
 // Adapted verbatim from messaging/telegram/plugin/tdlib-purple/voipkit.cpp (itself adapted from
@@ -151,7 +151,7 @@ void voipkit_set_frame_out_callback(void (*cb)(const unsigned char *, unsigned i
 }
 
 // Thread B's pending-frame handoff: caller overwrites, thread B drains. Live video wants the
-// latest frame, not a backlog (see skypekit.h).
+// latest frame, not a backlog (see voipkit.h).
 static pthread_mutex_t g_pending_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_pending_cv = PTHREAD_COND_INITIALIZER;
 static unsigned char *g_pending_data = nullptr;
@@ -451,7 +451,7 @@ void voipkit_video_receive_frame(const unsigned char *access_unit, unsigned int 
 	memcpy(copy, access_unit, len);
 
 	pthread_mutex_lock(&g_pending_mx);
-	free(g_pending_data); // drop any not-yet-sent previous frame — see skypekit.h
+	free(g_pending_data); // drop any not-yet-sent previous frame — see voipkit.h
 	g_pending_data = copy;
 	g_pending_len = len;
 	g_pending_ready = 1;

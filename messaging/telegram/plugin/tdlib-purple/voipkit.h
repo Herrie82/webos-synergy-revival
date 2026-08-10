@@ -1,4 +1,4 @@
-// skypekit.h — C entry points for the native SkypeKit video bridge (voipkit.cpp).
+// voipkit.h — C entry points for the native SkypeKit video bridge (voipkit.cpp).
 //
 // Bridges mediaserver's local SkypeKit RTP sockets (the /tmp/vidrtp_{to,from}_skypekit_key
 // abstract Unix sockets — see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md Parts 10-18)
@@ -6,7 +6,7 @@
 // voipkit-tgvoip.cpp. Called from call-luna.cpp's callLunaOpenClonk/callLunaCloseClonk (see
 // that file for the LS2 videoCaptureStart/videoPlayerStart sequencing this depends on).
 //
-// Adapted from messaging/facebook-e2ee/plugin/purple-combined/glue/skypekit.h — the only
+// Adapted from messaging/facebook-e2ee/plugin/purple-combined/glue/voipkit.h — the only
 // difference from that version is that Thread A's decoded access units are delivered via a
 // settable callback here instead of a hardcoded Go export (this plugin is pure C++, no cgo).
 #ifndef VOIPKIT_H

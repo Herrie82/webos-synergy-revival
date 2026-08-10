@@ -1,4 +1,4 @@
-// skypekit.h — C entry points for the native SkypeKit video bridge (voipkit.cpp).
+// voipkit.h — C entry points for the native SkypeKit video bridge (voipkit.cpp).
 //
 // Bridges mediaserver's local SkypeKit RTP sockets (the /tmp/vidrtp_{to,from}_skypekit_key
 // abstract Unix sockets — see messaging/whatsapp/calling/WHATSAPP_VIDEO_STATUS.md Parts 10-18)
@@ -11,7 +11,7 @@
 // teams_media's runtime environment can't satisfy this file's libpalmgstskype.so dependency chain
 // (see teams_media.c's top-of-file comment for the full glibc/libstdc++ ABI conflict rationale).
 //
-// Adapted verbatim from messaging/telegram/plugin/tdlib-purple/skypekit.h — Thread A's decoded
+// Adapted verbatim from messaging/telegram/plugin/tdlib-purple/voipkit.h — Thread A's decoded
 // access units are delivered via a settable callback here instead of a protocol-specific export,
 // so this header has no dependency on any particular calling protocol's media stack.
 #ifndef VOIPKIT_H
