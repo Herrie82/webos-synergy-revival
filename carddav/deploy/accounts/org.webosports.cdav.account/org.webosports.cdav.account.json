@@ -23,6 +23,7 @@
 		"com.palm.app.contacts",
 		"com.palm.app.calendar",
 		"com.palm.app.messaging",
+		"org.webosports.app.messaging",
 		"com.palm.app.email"
 	],
 	"writePermissions": [
@@ -34,6 +35,7 @@
 		"com.palm.app.contacts",
 		"com.palm.app.calendar",
 		"com.palm.app.messaging",
+		"org.webosports.app.messaging",
 		"com.palm.app.email"
 	],
 	"capabilityProviders": [

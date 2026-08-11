@@ -15,6 +15,7 @@
     "readPermissions": [
         "com.palm.imlibpurple",
         "com.palm.app.messaging",
+        "org.webosports.app.messaging",
         "com.palm.app.contacts",
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
@@ -27,6 +28,7 @@
         "com.palm.service.contacts",
         "com.palm.service.contacts.linker",
         "com.palm.app.messaging",
+        "org.webosports.app.messaging",
         "com.palm.app.whatsapp",
         "com.palm.whatsapp",
         "com.palm.app.phone"

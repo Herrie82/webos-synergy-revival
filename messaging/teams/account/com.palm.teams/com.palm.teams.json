@@ -16,6 +16,7 @@
         "readPermissions": [
             "com.palm.imlibpurple",
             "com.palm.app.messaging",
+            "org.webosports.app.messaging",
             "com.palm.app.contacts",
             "com.palm.service.contacts",
             "com.palm.service.contacts.linker",
@@ -24,6 +25,7 @@
         "writePermissions": [
             "com.palm.app.contacts",
             "com.palm.app.messaging",
+            "org.webosports.app.messaging",
             "com.palm.app.teams"
         ],
         "capabilityProviders": [
