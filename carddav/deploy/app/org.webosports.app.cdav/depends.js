@@ -3,6 +3,7 @@
  * directory; all our pages sit at the app root, so one depends.js registers every
  * kind and each page just instantiates the one it needs. */
 enyo.depends(
+	"source/oauthWindow.js",
 	"source/urlschemes.js",
 	"source/CDavApp.js",
 	"source/GenericSetup.js",

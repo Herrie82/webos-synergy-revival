@@ -28,8 +28,12 @@
 // Swap enyo.BasicWebView's plugin mime to application/x-atlas-browser so it routes to
 // BrowserServer-atlas (WPE, modern WebKit/TLS). actionData("oauthRedirect") (fired by the engine
 // for native-scheme redirects) is routed up the owner chain to the validator's engineOAuthRedirect.
+// Only applies where the NPAPI plugin exists (legacy webOS). LuneOS has no plugin to re-point and
+// hosts the sign-in page in a window.open()ed WAM window instead — see oauthWindow.js and
+// startEmbeddedAuth() below.
 (function () {
 	function patch() {
+		if (window.OAuthWindow && !window.OAuthWindow.hasPluginWebView()) { return true; }
 		if (!(window.enyo && enyo.BasicWebView && enyo.BasicWebView.prototype)) { return false; }
 		if (enyo.BasicWebView.prototype.__atlasPatched) { return true; }
 		enyo.BasicWebView.prototype.__atlasPatched = true;
@@ -161,6 +165,26 @@ enyo.kind({
 		this.$.entryView.hide();
 		this.$.oauthBox.show();
 		this.$.oauthStatus.setContent("Loading sign-in…");
+
+		// No NPAPI plugin (LuneOS): host the sign-in page in its own WAM window. Cloud
+		// redirect_uris are ordinary http/https URLs, so OAuthWindow captures the result by
+		// reading the popup's location once it reaches redirectPrefix — the same match
+		// checkOAuthRedirect() makes for the embedded WebView's navigation events.
+		if (window.OAuthWindow && !window.OAuthWindow.hasPluginWebView()) {
+			this.$.oauthStatus.setContent("Sign in in the window that just opened. " +
+				"You'll be returned here automatically.");
+			var lune = this;
+			this._oauthWindow = window.OAuthWindow.open({
+				url: this._authUrl,
+				name: "cloudSignIn",
+				redirectPrefix: this.redirectPrefix,
+				timeoutMs: 240000,
+				onRedirect: function (url) { lune.checkOAuthRedirect(url); },
+				onError: function (msg) { lune.abortOAuth(msg); }
+			});
+			return;
+		}
+
 		if (!this.$.oauthWeb) {
 			this.$.oauthBox.createComponent({
 				name: "oauthWeb", kind: "WebView", width: "100%", height: "600px",
@@ -291,6 +315,12 @@ enyo.kind({
 	destroyOAuthWeb: function () {
 		this.clearOAuthLoadTimer();
 		this._oauthLoaded = false;
+		// LuneOS path: drop the sign-in window and its listeners/timers. Safe to call twice —
+		// OAuthWindow already tore itself down if it was the one that captured the redirect.
+		if (this._oauthWindow) {
+			try { this._oauthWindow.close(); } catch (e0) {}
+			this._oauthWindow = null;
+		}
 		if (this.$.oauthWeb) {
 			try { this.$.oauthWeb.callBrowserAdapter("disconnectBrowserServer", []); } catch (e) {}
 			try { this.$.oauthWeb.destroy(); } catch (e2) {}

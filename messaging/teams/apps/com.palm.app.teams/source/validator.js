@@ -34,8 +34,12 @@
 // fires actionData("oauthRedirect", url) on the WebView instance; we walk the owner chain to
 // the Validator's engineOAuthRedirect and redeem the ?code= there. (Same embed + atlas-simple
 // viewport the Discord captcha uses; reusable across every OAuth2 account UI.)
+// This only means anything where the NPAPI plugin exists (legacy webOS). LuneOS has no plugin to
+// re-point, and hosts the sign-in page in a window.open()ed WAM window instead — see
+// oauthWindow.js and performBrowserSignIn() below.
 (function () {
     function patch() {
+        if (window.OAuthWindow && !window.OAuthWindow.hasPluginWebView()) { return true; }
         if (!(window.enyo && enyo.BasicWebView && enyo.BasicWebView.prototype)) { return false; }
         if (enyo.BasicWebView.prototype.__atlasPatched) { return true; }
         enyo.BasicWebView.prototype.__atlasPatched = true;
@@ -257,6 +261,39 @@ enyo.kind({
         this.$.entryView.hide();
         this.$.oauthBox.show();
         this.$.oauthStatus.setContent("Loading Microsoft sign-in…");
+
+        // No NPAPI plugin (LuneOS): host the sign-in page in its own WAM window. The redirect is
+        // msauth.com.microsoft.teams://auth?code=..., a scheme the engine can't load — it aborts
+        // that navigation, and WAM hands us the URL as a 'webOSExternalProtocol' event, which
+        // OAuthWindow turns back into the same engineOAuthRedirect() call the Atlas embed makes.
+        if (window.OAuthWindow && !window.OAuthWindow.hasPluginWebView()) {
+            this.$.oauthStatus.setContent("Sign in to Microsoft in the window that just opened. " +
+                "You'll be returned here automatically.");
+            var lune = this;
+            this._oauthWindow = window.OAuthWindow.open({
+                url: this._authUrl,
+                name: "teamsSignIn",
+                // Match on the native redirect so an intermediate navigation can't be mistaken
+                // for the result.
+                redirectPrefix: this.OAUTH_REDIRECT,
+                timeoutMs: 240000,
+                onRedirect: function (url) {
+                    // engineOAuthRedirect() only acts on a URL carrying code=, which is right for
+                    // the Atlas embed (it keeps getting intermediate navigations). Here the window
+                    // is already gone by the time we're called, so a denial would just hang —
+                    // report it instead.
+                    if (url.indexOf("code=") < 0) {
+                        lune.abortOAuth("Microsoft didn't return an authorization code. " +
+                            "Please try again, or use 'Use device code instead'.");
+                        return;
+                    }
+                    lune.engineOAuthRedirect(url);
+                },
+                onError: function (msg) { lune.abortOAuth(msg); }
+            });
+            return;
+        }
+
         if (!this.$.oauthWeb) {
             this.$.oauthBox.createComponent({
                 name: "oauthWeb", kind: "WebView", width: "100%", height: "600px",
@@ -373,6 +410,12 @@ enyo.kind({
     destroyOAuthWeb: function() {
         this.clearOAuthLoadTimer();
         this._oauthLoaded = false;
+        // LuneOS path: drop the sign-in window and its listeners/timers. Safe to call twice —
+        // OAuthWindow already tore itself down if it was the one that captured the redirect.
+        if (this._oauthWindow) {
+            try { this._oauthWindow.close(); } catch (e0) {}
+            this._oauthWindow = null;
+        }
         if (this.$.oauthWeb) {
             // Release the WPE WebProcess so it doesn't leak past the validator's short life.
             try { this.$.oauthWeb.callBrowserAdapter("disconnectBrowserServer", []); } catch (e) {}

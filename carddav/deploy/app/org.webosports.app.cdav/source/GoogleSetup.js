@@ -89,6 +89,24 @@ enyo.kind({
 			url += "&login_hint=" + encodeURIComponent(this.params.account.credentials.user);
 		}
 
+		// No NPAPI plugin (LuneOS): the WebView control cannot render, so host the consent page in
+		// its own WAM window. Framing would not work for Google — it answers the authorize URL
+		// with X-Frame-Options: DENY — but a window.open()ed window is top-level, so the header
+		// does not apply. OAuthWindow reads the popup's location and hands back the localhost
+		// redirect, the same string handleUrl() already parses.
+		if (window.OAuthWindow && !window.OAuthWindow.hasPluginWebView()) {
+			console.error("CDAV-Google: opening auth url in a sign-in window");
+			var self = this;
+			this._oauthWindow = window.OAuthWindow.open({
+				url: url,
+				name: "cdavGoogleSignIn",
+				redirectPrefix: GOOGLE.REDIRECT_URI,
+				onRedirect: function (redirected) { self.handleUrl(redirected); },
+				onError: function (msg) { self.showError(msg); }
+			});
+			return;
+		}
+
 		console.error("CDAV-Google: loading auth url");
 		this.$.webView.setUrl(url);
 	},
