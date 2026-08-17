@@ -23,10 +23,10 @@ SERVICES_ROOT="usr/palm/services"
 # one shared path: ipkg's file-ownership tracking is by exact path REGARDLESS of whether the file
 # still physically exists after postinst deletes it (confirmed live: installing dropbox after
 # generic failed with "wants to install .../rootfs-overwrite/.symlinks, but that file is already
-# provided by package org.webosports.synergy.generic", even though generic's own postinst had
+# provided by package com.palm.synergy.generic", even though generic's own postinst had
 # already deleted its copy of that same literal path).
 #
-# Deliberately PKG_ID (org.webosports.synergy.teams), not the short connector $NAME (teams): the
+# Deliberately PKG_ID (com.palm.synergy.teams), not the short connector $NAME (teams): the
 # corresponding postinst derives its OWN pkg id from how it was invoked ($0) and must look up
 # EXACTLY its own staged subdirectory here, not just "whichever one happens to exist" -- unsafe if
 # more than one package's staged data is ever present at once (flagged as a real risk: the old

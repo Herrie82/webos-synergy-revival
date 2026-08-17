@@ -1,7 +1,7 @@
 # Packaging
 
 Turns this repo's connectors into real, installable webOS `.ipk` packages: **one per connector**,
-plus one shared **`org.webosports.synergy.generic`** package for the infrastructure every
+plus one shared **`com.palm.synergy.generic`** package for the infrastructure every
 connector depends on. Everything is versioned **0.9.0**.
 
 ## Install
@@ -14,13 +14,13 @@ actually be wired up.
 
 Install order:
 
-1. **`org.webosports.synergy.generic`** first, always — every other package needs it
+1. **`com.palm.synergy.generic`** first, always — every other package needs it
    (`imlibpurpleservice`, the shared libpurple engine, `_cloudcore`, QuickOffice/Photos/DocViewer
    integration, and the `device-setup/*` device fixes).
-2. Any connector package(s) you want (`org.webosports.synergy.dropbox`, `.teams`, `.telegram`, …).
+2. Any connector package(s) you want (`com.palm.synergy.dropbox`, `.teams`, `.telegram`, …).
    `org.webosports.cdav` (CardDAV/CalDAV) is fully self-contained and has no dependency on generic.
 
-Connector `control` files deliberately do **not** carry a formal `Depends: org.webosports.synergy.generic`
+Connector `control` files deliberately do **not** carry a formal `Depends: com.palm.synergy.generic`
 line — confirmed live that WebOSQuickInstall/Preware refuse the install client-side ("Unable to
 install", no trace of the attempt ever reaching the device's own `ApplicationInstallerUtility`/`ipkg`)
 when they can't verify a declared dependency against their own subscribed feed, which a side-loaded,
@@ -46,7 +46,7 @@ connector's own `build-*.sh` / `BUILD-LOG.md`).
 Verify a built package:
 
 ```sh
-ar t packaging/out/org.webosports.synergy.dropbox_0.9.0_all.ipk    # debian-binary control.tar.gz data.tar.gz
+ar t packaging/out/com.palm.synergy.dropbox_0.9.0_all.ipk    # debian-binary control.tar.gz data.tar.gz
 tar -xzOf <(ar p packaging/out/…ipk control.tar.gz) ./control       # Package/Version/Depends/Description
 tar -tzf <(ar p packaging/out/…ipk data.tar.gz)                     # staged file list
 ```

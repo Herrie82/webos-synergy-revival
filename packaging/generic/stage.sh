@@ -75,15 +75,13 @@ stage_root_file "$IM/files/etc/palm/tempdb/kinds/com.palm.imbuddystatus.libpurpl
 stage_root_dir "$IM/files/etc/palm/activities/com.palm.imlibpurple" /etc/palm/activities/com.palm.imlibpurple
 stage_root_file "$IM/files/ls2/roles/prv/com.palm.imlibpurple.json" /usr/share/ls2/roles/prv/com.palm.imlibpurple.json
 stage_root_file "$IM/files/ls2/roles/pub/com.palm.imlibpurple.json" /usr/share/ls2/roles/pub/com.palm.imlibpurple.json
-# contacts search-by-service, part 1: the patched com.palm.person kind (adds ims.type to
-# searchProperty). This one IS stock-owned (com.palm.service.contacts.linker) AND we genuinely
-# need our patched content in it -- same problem as libpurple.so, same fix: stage it in the
-# neutral overwrite dir so postinst backs up stock's copy before writing ours (a raw `cp` in a
-# postinst script is invisible to ipkg's ownership tracking; only data.tar.gz's own manifest is
-# policed). The app-side patches.js half (part 2) lives in the core-apps repo's
-# com.palm.app.contacts checkout, not here — see
-# files/var/README-device-launch.md in the imlibpurpleservice repo
-stage_root_file "$IM/files/etc/palm/db/kinds/com.palm.person" /etc/palm/db/kinds/com.palm.person
+# contacts search-by-service, part 1 (the patched com.palm.person kind, adds ims.type to
+# searchProperty) USED to be staged from here -- the imlibpurpleservice repo dropped its copy
+# ("Drop com.palm.person: the kind belongs to app-services", commit 2ee1c41-adjacent) and it
+# hasn't reappeared in app-services' own packaging/ yet either (checked: no stage_root_file for it
+# there), so this is a real cross-repo gap right now, not something this session's rename/LS2 work
+# should try to relocate blind. Left staging it out (source no longer exists) rather than hard-
+# failing generic's build; TODO follow up on where com.palm.person's patched kind should ship from.
 
 # com.palm.imlibpurple.service: stock ships this pointed straight at the raw transport binary
 # (Exec=/usr/bin/imlibpurpletransport), which bypasses imwrap.sh entirely -- no wpe-glibc loader
