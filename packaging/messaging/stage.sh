@@ -44,12 +44,16 @@ case "$NAME" in
     # exist" and inbound calls fail. New name (stock never had Teams calling), no backup needed.
     stage_root_file "$M/teams/calling/dbus-1/system-services/com.palm.teams.call.service" \
       "/usr/share/dbus-1/system-services/com.palm.teams.call.service"
-    # Calling also needs its own LS2 role (grants imlibpurpletransport the com.palm.teams.call bus
-    # name) -- confirmed this source file existed but was never staged by this packaging tree at
-    # all (same class of gap as the cloud connectors' missing roles). pub-only in source, no prv
-    # counterpart exists to ship.
-    stage_root_file "$M/teams/calling/ls2/roles/pub/com.palm.teams.call.json" \
-      "/usr/share/ls2/roles/pub/com.palm.teams.call.json"
+    # Deliberately NOT staging messaging/teams/calling/ls2/roles/pub/com.palm.teams.call.json --
+    # confirmed live this actively BREAKS registration rather than fixing anything. LS2 roles are
+    # keyed by exeName, and generic's own com.palm.imlibpurple.json role (imlibpurpleservice repo)
+    # ALREADY declares one combined role for exeName /usr/bin/imlibpurpletransport that grants
+    # com.palm.imlibpurple + teams/telegram/signal/whatsapp.call all together. Staging this
+    # standalone per-connector file (same exeName, only one of those names) collides with that
+    # combined role instead of extending it -- reported live as "ls-hubd: ... does not have
+    # permission to register name: com.palm.signal.call" (and teams/telegram too, same cause).
+    # This messaging/teams/calling/ls2/... source file looks like a stale artifact from before the
+    # role got consolidated into imlibpurpleservice's own file; leave it in source, don't stage it.
     ;;
 
   telegram)
@@ -67,9 +71,7 @@ case "$NAME" in
     # Calling (inbound routing) -- see the teams case above for why this file is needed.
     stage_root_file "$M/telegram/calling/dbus-1/system-services/com.palm.telegram.call.service" \
       "/usr/share/dbus-1/system-services/com.palm.telegram.call.service"
-    # Calling LS2 role -- see the teams case above for why this was missing entirely.
-    stage_root_file "$M/telegram/calling/ls2/roles/pub/com.palm.telegram.call.json" \
-      "/usr/share/ls2/roles/pub/com.palm.telegram.call.json"
+    # Deliberately NOT staging the LS2 role -- see the teams case above.
     ;;
 
   signal)
@@ -85,9 +87,7 @@ case "$NAME" in
     # Calling (inbound routing) -- see the teams case above for why this file is needed.
     stage_root_file "$M/signal/calling/dbus-1/system-services/com.palm.signal.call.service" \
       "/usr/share/dbus-1/system-services/com.palm.signal.call.service"
-    # Calling LS2 role -- see the teams case above for why this was missing entirely.
-    stage_root_file "$M/signal/calling/ls2/roles/pub/com.palm.signal.call.json" \
-      "/usr/share/ls2/roles/pub/com.palm.signal.call.json"
+    # Deliberately NOT staging the LS2 role -- see the teams case above.
     ;;
 
   discord)
