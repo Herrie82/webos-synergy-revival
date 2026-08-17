@@ -37,6 +37,21 @@ stage_account "$ACC_SRC" "$TEMPLATE_ID"
 bump_version "$STAGE/$(overwrite_rel)/$ACCOUNTS_ROOT/$TEMPLATE_ID/$TEMPLATE_ID.json" 2>/dev/null || true
 stage_service "$SVC_SRC" "$SVC_ID"
 
+# LS2 role: cloud services communicate over the luna bus (services.json declares "public": true
+# commands) -- without a role file granting it, sign-in fails "not permitted". Confirmed live this
+# packaging tree was never shipping ANY cloud connector's role at all (not Mega-specific -- every
+# one of the 12 was missing it; some may have appeared to work anyway if their very first call
+# happened to be reached through an already-permitted caller's session). exeName is "js":
+# jsservicelauncher (which runs "engine": "node" services too, despite the name) registers on the
+# bus as "js", matching every other jsservicelauncher-based service's role file (confirmed against
+# both stock roles and carddav's own org.webosports.service.cdav.json role).
+OV_REL="$(overwrite_rel)"
+for kind in pub prv; do
+  mkdir -p "$STAGE/$OV_REL/usr/share/ls2/roles/$kind"
+  printf '{"role": {"allowedNames": ["%s"], "type": "regular", "exeName": "js"}, "permissions": [{"inbound": ["*"], "outbound": ["*"], "service": "%s"}]}' \
+    "$SVC_ID" "$SVC_ID" > "$STAGE/$OV_REL/usr/share/ls2/roles/$kind/$SVC_ID.json"
+done
+
 if [ -d "$D/apps" ]; then
   for app in "$D/apps"/*/; do
     [ -d "$app" ] || continue
