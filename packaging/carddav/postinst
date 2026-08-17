@@ -17,19 +17,6 @@ case "$0" in
   *) PKGID="" ;;
 esac
 
-OV=""
-if [ -n "$PKGID" ]; then
-  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
-    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
-  done
-fi
-# Fallback (should never trigger -- kept only in case PKGID derivation ever fails for an
-# invocation pattern this session didn't see): old "first match" behavior.
-if [ -z "$OV" ]; then
-  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
-    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
-  done
-fi
 BAK=/media/cryptofs/synergy-stock-backup
 
 mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
@@ -44,6 +31,13 @@ mount -o remount,rw / 2>/dev/null
 # Manager. ipkg's own native extraction does this, before any postinst runs, so there's no
 # manifest to check - just detect and merge the doubled tree back into place. A DIRECT
 # (non-offline-root) ipkg install never creates this, so this is a no-op there.
+#
+# MUST run before $OV is computed below, not after: confirmed live elsewhere in this family
+# (cloud/postinst) this was the actual cause of "staged dir not found - install produced
+# nothing" for connectors with a dedicated companion app. $OV's lookup checks the doubled path
+# too, so it can find and record $OV pointing INSIDE .../apps/media/cryptofs/... -- if this merge
+# then runs afterward, it physically moves (and deletes) that exact directory out from under the
+# already-computed $OV string, leaving it pointing at nothing.
 fix_doubled_apps_prefix() {
   local doubled="/media/cryptofs/apps/media/cryptofs"
   [ -d "$doubled" ] || return 0
@@ -72,6 +66,20 @@ fix_doubled_var_prefix() {
   rm -rf "$doubled"
 }
 fix_doubled_var_prefix
+
+OV=""
+if [ -n "$PKGID" ]; then
+  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
+    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
+  done
+fi
+# Fallback (should never trigger -- kept only in case PKGID derivation ever fails for an
+# invocation pattern this session didn't see): old "first match" behavior.
+if [ -z "$OV" ]; then
+  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+  done
+fi
 
 # The service/ls2-roles/dbus-activation/db8-kinds/permissions/account-templates all land on real
 # root-fs paths, which stock webOS boots read-only -- ipkg extracts data.tar.gz itself, before

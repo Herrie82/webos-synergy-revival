@@ -23,19 +23,12 @@ case "$0" in
   *) PKGID="" ;;
 esac
 
-OV=""
-if [ -n "$PKGID" ]; then
-  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
-    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
-  done
-fi
-# Fallback (should never trigger given the above -- kept only in case PKGID derivation ever fails
-# for an invocation pattern this session didn't see): old "first match" behavior.
-if [ -z "$OV" ]; then
-  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
-    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
-  done
-fi
+# $OV itself is NOT computed here -- see the fix_doubled_apps_prefix/fix_doubled_var_prefix calls
+# further down, which MUST run first: confirmed live elsewhere in this family (cloud/postinst)
+# that computing $OV before those fixes run can find it pointing INSIDE the doubled
+# .../apps/media/cryptofs/... path, which the fix then physically moves (and deletes) out from
+# under the already-computed string, leaving it pointing at nothing by the time
+# apply_rootfs_overwrite actually uses it. OV is set right before that call instead.
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
@@ -249,6 +242,23 @@ fix_doubled_var_prefix() {
   rm -rf "$doubled"
 }
 fix_doubled_var_prefix
+
+# NOW it's safe to compute $OV -- both doubled-path fixes above have already run, so it can only
+# ever be found at its real, final location. See the comment near PKGID's derivation for why this
+# was moved down here instead of running immediately after PKGID.
+OV=""
+if [ -n "$PKGID" ]; then
+  for _ov_base in /media/cryptofs/synergy-revival/rootfs-overwrite /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite; do
+    [ -d "$_ov_base/$PKGID" ] && OV="$_ov_base/$PKGID" && break
+  done
+fi
+# Fallback (should never trigger given the above -- kept only in case PKGID derivation ever fails
+# for an invocation pattern this session didn't see): old "first match" behavior.
+if [ -z "$OV" ]; then
+  for _ov_d in /media/cryptofs/synergy-revival/rootfs-overwrite/*/ /media/cryptofs/apps/media/cryptofs/synergy-revival/rootfs-overwrite/*/; do
+    [ -d "$_ov_d" ] && OV="${_ov_d%/}" && break
+  done
+fi
 
 # Stop the transport BEFORE any of the overwrite/bind-mount work below touches libpurple.so,
 # purple-2/, or synergy-runtime -- confirmed live (see packaging/messaging/postinst's matching
