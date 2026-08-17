@@ -2,7 +2,7 @@
 
 Turns this repo's connectors into real, installable webOS `.ipk` packages: **one per connector**,
 plus one shared **`com.palm.synergy.generic`** package for the infrastructure every
-connector depends on. Everything is versioned **0.9.0**.
+connector depends on. Everything is versioned **0.9.3**.
 
 ## Install
 
@@ -46,7 +46,7 @@ connector's own `build-*.sh` / `BUILD-LOG.md`).
 Verify a built package:
 
 ```sh
-ar t packaging/out/com.palm.synergy.dropbox_0.9.0_all.ipk    # debian-binary control.tar.gz data.tar.gz
+ar t packaging/out/com.palm.synergy.dropbox_0.9.3_all.ipk    # debian-binary control.tar.gz data.tar.gz
 tar -xzOf <(ar p packaging/out/…ipk control.tar.gz) ./control       # Package/Version/Depends/Description
 tar -tzf <(ar p packaging/out/…ipk data.tar.gz)                     # staged file list
 ```

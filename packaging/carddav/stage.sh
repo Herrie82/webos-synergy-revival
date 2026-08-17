@@ -67,7 +67,11 @@ if [ -d "$DEPLOY/app/$APPID" ]; then
   # placeholder). Inject it at package-build time the same way deploy-cdav.sh does at deploy time.
   GSECRET="${CDAV_GOOGLE_CLIENT_SECRET:-}"
   if [ -z "$GSECRET" ]; then
-    GJSON=$(ls "$HOME"/Downloads/client_secret_*apps.googleusercontent.com.json 2>/dev/null | head -1)
+    # `|| true`: under set -e -o pipefail (from common.sh), ls finding no match makes this whole
+    # pipeline non-zero and silently kills the entire build right here -- confirmed live, no error
+    # printed at all, just the script stopping dead -- instead of reaching the informative "no
+    # client_secret found" fallback message below.
+    GJSON=$(ls "$HOME"/Downloads/client_secret_*apps.googleusercontent.com.json 2>/dev/null | head -1) || true
     [ -n "$GJSON" ] && GSECRET=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['web']['client_secret'])" "$GJSON" 2>/dev/null)
   fi
   if [ -n "$GSECRET" ]; then

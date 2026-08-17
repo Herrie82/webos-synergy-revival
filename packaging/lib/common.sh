@@ -180,10 +180,14 @@ stage_backend_plugin_as() {
 }
 
 # bump_version <file>
-# Rewrites a top-level "version": "x.y.z" field to 0.9.0 in a staged copy of a json file (does
-# not touch the source repo file).
+# Rewrites a top-level "version": "x.y.z" field to $PKG_VERSION in a staged copy of a json file
+# (does not touch the source repo file). Reads $PKG_VERSION dynamically (every caller has already
+# sourced its own control.env by the time this runs) rather than a hardcoded version string --
+# used to hardcode "0.9.0" literally, which meant a version bump required hunting down every call
+# site's staged appinfo.json by hand instead of just editing each control.env once.
 bump_version() {
   local f="$1"
   [ -f "$f" ] || return 0
-  sed -i 's/"version"[[:space:]]*:[[:space:]]*"[^"]*"/"version": "0.9.0"/' "$f"
+  : "${PKG_VERSION:?PKG_VERSION must be set (source this package control.env) before calling bump_version}"
+  sed -i "s/\"version\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"version\": \"$PKG_VERSION\"/" "$f"
 }
