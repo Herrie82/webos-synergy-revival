@@ -4,7 +4,7 @@
 #   - the shared libpurple 2.14 + ssl-openssl engine, overwriting the real stock
 #     /usr/lib(+/purple-2) -- see packaging/README.md "why /usr/lib now"
 #   - _cloudcore + com.palm.app.cloud-auth (shared by every cloud connector)
-#   - quickoffice-integration / photos-integration / docviewer app
+#   - quickoffice-integration / photos-integration (com.palm.app.docviewer deliberately excluded)
 #   - device-setup/* fixes (payload files only; the patch/copy logic lives in postinst)
 #
 # Usage: stage.sh <stage-dir>
@@ -202,12 +202,12 @@ stage_root_dir "$REPO/cloud/cloudcore/service/_cloudcore" "/$SERVICES_ROOT/_clou
 stage_app "$REPO/cloud/cloudcore/auth/com.palm.app.cloud-auth" com.palm.app.cloud-auth
 bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.cloud-auth/appinfo.json"
 
-echo "== generic: QuickOffice / Photos / DocViewer integration payloads (applied by postinst) =="
+echo "== generic: QuickOffice / Photos integration payloads (applied by postinst) =="
 mkdir -p "$DS_OUT/quickoffice-integration" "$DS_OUT/photos-integration"
 cp -r "$REPO/quickoffice-integration/." "$DS_OUT/quickoffice-integration/"
 cp -r "$REPO/photos-integration/." "$DS_OUT/photos-integration/"
-stage_app "$REPO/docviewer/com.palm.app.docviewer" com.palm.app.docviewer
-bump_version "$STAGE/$(overwrite_rel)/$APP_ROOT/com.palm.app.docviewer/appinfo.json"
+# com.palm.app.docviewer deliberately NOT staged/packaged -- source stays in the repo, just
+# excluded from what generic ships.
 
 echo "== generic: device-setup/* fixes (payloads staged; postinst applies them) =="
 mkdir -p "$DS_OUT"

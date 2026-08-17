@@ -15,7 +15,7 @@ actually be wired up.
 Install order:
 
 1. **`com.palm.synergy.generic`** first, always — every other package needs it
-   (`imlibpurpleservice`, the shared libpurple engine, `_cloudcore`, QuickOffice/Photos/DocViewer
+   (`imlibpurpleservice`, the shared libpurple engine, `_cloudcore`, QuickOffice/Photos
    integration, and the `device-setup/*` device fixes).
 2. Any connector package(s) you want (`com.palm.synergy.dropbox`, `.teams`, `.telegram`, …).
    `org.webosports.cdav` (CardDAV/CalDAV) is fully self-contained and has no dependency on generic.
@@ -164,7 +164,7 @@ packaging/
   connector's `sources.json` loads cloudcore code via a relative `../_cloudcore/...` path, so it
   must land as a sibling of every `/usr/palm/services/com.palm.service.<x>/` dir; the OAuth webview
   app is likewise shared across connectors.
-- **QuickOffice / Photos / DocViewer integration** and **`device-setup/*` fixes** — device-wide
+- **QuickOffice / Photos integration** and **`device-setup/*` fixes** — device-wide
   patches/add-ons unrelated to any one connector (gstreamer codecs, chatthreader/contacts patches,
   BT audio routing, the Thai font fallback, the retired-Skype/AOL/Yahoo! cleanup, etc). Each fix's
   own `device-setup/<name>/install*.sh` was the source of truth for what `generic/postinst`
