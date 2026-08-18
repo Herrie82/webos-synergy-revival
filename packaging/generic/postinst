@@ -676,6 +676,10 @@ if [ -d "$DS/photos-integration" ]; then
 fi
 
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# ls-hubd only scans /usr/share/dbus-1/system-services/*.service (and the LS2 role dirs) at its
+# OWN startup, not on every filesystem change -- see packaging/cloud/postinst's matching comment.
+# generic ships com.palm.imlibpurple.service + its LS2 roles fresh on a first install.
+ls-control scan-services 2>/dev/null
 # Deliberately NOT remounting root back to read-only here: ipkg writes ITS OWN bookkeeping
 # (status db, file lists under /usr/lib/ipkg/{status,info}) AFTER postinst returns, and that
 # write also needs root writable. Remounting ro from inside postinst races ipkg's own

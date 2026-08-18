@@ -177,6 +177,10 @@ fi
 
 stop imtransport 2>/dev/null
 luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# ls-hubd only scans /usr/share/dbus-1/system-services/*.service at its OWN startup, not on every
+# filesystem change -- see packaging/cloud/postinst's matching comment. Calling connectors
+# (teams/telegram/signal/whatsapp) each ship a NEW com.palm.<x>.call.service file here.
+ls-control scan-services 2>/dev/null
 for p in $(pidof accounts.js 2>/dev/null); do kill "$p" 2>/dev/null; done
 start imtransport 2>/dev/null
 echo "[synergy-messaging] installed. Settings > Accounts > Add Account to finish setup."
