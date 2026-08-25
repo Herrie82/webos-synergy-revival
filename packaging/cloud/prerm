@@ -4,6 +4,11 @@
 # per-file removal doesn't know about them: by the time postinst finished, they were no longer
 # part of this package's own tracked data.tar.gz contents).
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-cloud] $*"; }
 
@@ -39,6 +44,11 @@ if [ -f "$APPLIED" ]; then
 fi
 
 start imtransport 2>/dev/null
-luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# Backgrounded -- this script runs inside LunaSysMgr's own request handling for the removal, so a
+# synchronous `-n 1` wait here is a circular wait with no timeout: confirmed live (GH issue #6) as
+# exactly this line, in a prerm, hanging both the install/remove chain and the whole UI
+# indefinitely ("Downloading/Updating" never clears) until the blocked luna-send was killed by
+# hand. The rescan is only a nudge; nothing below depends on it having completed.
+( luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 log "removal complete."
 exit 0

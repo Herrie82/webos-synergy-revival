@@ -3,6 +3,11 @@
 # postinst patched (from the .orig/.b4* backups it made). Leaves user data (messages, contacts,
 # db8 records) alone. Best-effort: every step logs and continues on failure.
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 log() { echo "[synergy-generic] $*"; }
 # Derived the same way as postinst (direct /usr/lib/ipkg/info/<pkg-id>.prerm, or Preware/WebOS
 # Quick Install's offline-root .../pmPreRemove.script) -- see postinst's matching comment for why

@@ -4,6 +4,11 @@
 # kinds/permissions this package registered are left inert, matching the generic package's
 # convention — only a reflash fully clears those).
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 SVCID=org.webosports.service.cdav
 APPID=org.webosports.app.cdav
 
@@ -19,6 +24,9 @@ rm -f /var/provision-cdav-db.sh
 # Deliberately NOT remounting root back to read-only here -- see packaging/generic/prerm.
 
 ls-control scan-services 2>/dev/null
-luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# Backgrounded -- this script runs inside LunaSysMgr's own request handling for the removal; see
+# packaging/cloud/prerm's matching comment (GH issue #6) for the circular-wait deadlock this
+# avoids. The rescan is only a nudge; nothing below depends on it having completed.
+( luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 echo "[cdav] removal complete."
 exit 0

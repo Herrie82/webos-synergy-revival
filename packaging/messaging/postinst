@@ -10,6 +10,11 @@
 # remount root rw, so they're staged on cryptofs instead (stage_account/stage_root_file in
 # packaging/lib/common.sh) and copied into place here.
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 
 # Derive our own package id from how this script was invoked: either the direct-install path
 # (/usr/lib/ipkg/info/<pkg-id>.postinst, confirmed live) or the Preware/WebOS Quick Install
@@ -176,7 +181,11 @@ if ! apply_rootfs_overwrite; then
 fi
 
 stop imtransport 2>/dev/null
-luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# Backgrounded, not `-n 1` awaited synchronously: this script runs INSIDE LunaSysMgr's own
+# request handling for the install, so a synchronous wait here is a circular wait with no timeout
+# -- confirmed live elsewhere in this family (packaging/generic/postinst, GH issue #6): the
+# install chain and the whole UI hang indefinitely. The rescan is only a nudge.
+( luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 # ls-hubd only scans /usr/share/dbus-1/system-services/*.service at its OWN startup, not on every
 # filesystem change -- see packaging/cloud/postinst's matching comment. Calling connectors
 # (teams/telegram/signal/whatsapp) each ship a NEW com.palm.<x>.call.service file here.

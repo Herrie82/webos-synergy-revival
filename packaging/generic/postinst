@@ -5,6 +5,11 @@
 # continues rather than aborting the whole install (best-effort, matches how these were
 # originally applied by hand over novacom).
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 DS=/media/cryptofs/synergy-revival/device-setup
 
 # Derive our own package id from how this script was invoked: either the direct-install path
@@ -31,6 +36,28 @@ esac
 # apply_rootfs_overwrite actually uses it. OV is set right before that call instead.
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
+
+# nudge_kill <pattern> -- kill every process whose /proc/<pid>/cmdline matches <pattern>, EXCEPT
+# this script's own installer chain. An unqualified sweep (grep cmdline, kill on match) also
+# matches whatever ran THIS script whenever <pattern> is a substring of the package's own id or
+# ipk path -- ApplicationInstallerUtility, ipkg, and pmPostInstall.script all carry it on their
+# cmdline too. Confirmed live for a different package in this family (com.palm.service.
+# contacts.linker, whose own id contains its sweep pattern): the package installs correctly, then
+# the installer is SIGTERM'd mid-postinst, webOS reports FAILED_IPKG_INSTALL, and Preware aborts
+# the rest of the batch even though nothing actually failed. Not exploitable by generic's own id
+# today, but this is the shared sweep shape flagged for the whole family -- guard it here too.
+# NUDGE_PROC_ROOT/NUDGE_KILL_CMD are only ever overridden by tests/test-nudge-kill.sh.
+nudge_kill() {
+  local pattern="$1" procroot="${NUDGE_PROC_ROOT:-/proc}" p pid
+  for p in "$procroot"/[0-9]*; do
+    [ -f "$p/cmdline" ] || continue
+    pid="${p##*/}"
+    [ "$pid" = "$$" ] && continue
+    grep -qa -e pmPostInstall -e pmPreRemove -e ApplicationInstallerUtility -e /usr/lib/ipkg/ -e '\.ipk' "$p/cmdline" 2>/dev/null && continue
+    grep -qa "$pattern" "$p/cmdline" 2>/dev/null && "${NUDGE_KILL_CMD:-kill}" "$pid" 2>/dev/null
+  done
+  return 0
+}
 
 # APPLIED is a *persistent* manifest that outlives $OV (which gets wiped below), scoped by the
 # same PKGID so it doesn't accumulate every OTHER connector's entries -- otherwise every
@@ -311,7 +338,12 @@ chmod 755 /var/imwrap.sh /var/imdaemon.sh /var/provision-im-db.sh /var/provision
   /var/provision-person-search.sh 2>/dev/null
 /var/provision-im-db.sh
 /var/provision-person-search.sh
-luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# Backgrounded, not `-n 1` awaited synchronously: this script runs INSIDE LunaSysMgr's own
+# request handling for the install (it's the process that owes applicationManager's reply), so a
+# synchronous wait here is a circular wait with no timeout -- confirmed live: the install chain
+# and the whole UI hang indefinitely, "Downloading/Updating" never clears, until someone kills the
+# luna-send by hand. The rescan is only a nudge; nothing below depends on it having completed.
+( luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 
 log "starting imtransport upstart job..."
 start imtransport 2>/dev/null
@@ -628,7 +660,7 @@ if [ -f "$DS/whatsapp-e164-normalization/migrate-ondevice.sh" ]; then
   if [ -f "$PLG/utils.js.b4whatsappnorm" ]; then
     cp "$PLG/utils.js.b4whatsappnorm" "$PLG/utils.js" 2>/dev/null
   fi
-  for p in /proc/[0-9]*; do grep -qa "contacts.linker" "$p/cmdline" 2>/dev/null && kill "${p##*/}" 2>/dev/null; done
+  nudge_kill "contacts.linker"
 fi
 
 # patch_in <dir> <patch-file> -- BusyBox's `patch` does NOT support `-d` at all (confirmed on a
@@ -675,7 +707,9 @@ if [ -d "$DS/photos-integration" ]; then
   fi
 fi
 
-luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
+# Backgrounded -- see the matching comment near the first rescan call above (deadlocks the
+# installer/UI if awaited synchronously from inside this script).
+( luna-send -n 1 luna://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 # ls-hubd only scans /usr/share/dbus-1/system-services/*.service (and the LS2 role dirs) at its
 # OWN startup, not on every filesystem change -- see packaging/cloud/postinst's matching comment.
 # generic ships com.palm.imlibpurple.service + its LS2 roles fresh on a first install.

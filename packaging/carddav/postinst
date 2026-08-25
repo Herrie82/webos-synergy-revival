@@ -3,6 +3,11 @@
 # cdav-postinstall.sh (the extraction step is now ipkg's data.tar.gz unpack; everything after
 # that is unchanged).
 set +e
+# Anchor at / -- the App Installer runs pm*Install/Remove scripts with cwd set to the package's
+# app directory, which install/removal steps can delete out from under us; GNU tar (and anything
+# else calling getcwd()) then fails even on unrelated work. Confirmed live in the core-apps repo
+# (GH issue #4); defensive here since this family never operates on its own cwd today.
+cd /
 SVCID=org.webosports.service.cdav
 APPID=org.webosports.app.cdav
 
@@ -130,9 +135,14 @@ echo "[cdav] rescanning luna-service2 roles..."
 ls-control scan-services 2>/dev/null || echo "   (ls-control scan-services not available)"
 
 echo "[cdav] registering the setup app + reloading Accounts templates..."
-luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1
-luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$APPID'"}' >/dev/null 2>&1
-luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$SVCID'"}' >/dev/null 2>&1
+# All three backgrounded, not `-n 1` awaited synchronously: applicationManager and appinstaller
+# are both owned by LunaSysMgr, the same process that is running THIS script and blocking on its
+# exit -- a synchronous wait here is a circular wait with no timeout (confirmed live elsewhere in
+# this repo, GH issue #6: install/remove chain and the whole UI hang indefinitely until the
+# blocked luna-send is killed by hand). These are only nudges; nothing below depends on them.
+( luna-send -n 1 palm://com.palm.applicationManager/rescan '{}' >/dev/null 2>&1 & ) >/dev/null 2>&1
+( luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$APPID'"}' >/dev/null 2>&1 & ) >/dev/null 2>&1
+( luna-send -n 1 palm://com.palm.appinstaller/notifyAppInstalled '{"appId":"'$SVCID'"}' >/dev/null 2>&1 & ) >/dev/null 2>&1
 for p in $(ps 2>/dev/null | grep 'accounts.js' | grep -v grep | awk '{print $1}'); do kill "$p" 2>/dev/null; done
 sleep 2
 luna-send -n 1 palm://com.palm.service.accounts/listAccountTemplates '{}' >/dev/null 2>&1
