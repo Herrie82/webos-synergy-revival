@@ -37,6 +37,21 @@ esac
 BAK=/media/cryptofs/synergy-stock-backup
 log() { echo "[synergy-generic] $*"; }
 
+# atomic_cp <src> <dst> -- copy via a same-directory temp file + rename. Some destinations below
+# are live-mmap'd while this runs on a reinstall/upgrade (HeiT_nb.ttf by every FreeType user --
+# LunaSysMgr/WebAppMgr/BrowserServer included -- and the gst plugins by a mid-playback
+# media-pipeline). A direct `cp` truncates the live inode and rewrites it in place; a mapper
+# faulting a page during that window dies with SIGBUS (GH issue #8 -- same mechanism prerm's
+# restore() hit on the uninstall side). rename() keeps current mappers on the old inode. Also
+# skips the copy entirely when dst already has identical content, so a routine reinstall doesn't
+# churn the inode at all.
+atomic_cp() {
+  cmp -s "$1" "$2" 2>/dev/null && return 0
+  cp "$1" "$2.new.$$" 2>/dev/null && mv -f "$2.new.$$" "$2" 2>/dev/null && return 0
+  rm -f "$2.new.$$" 2>/dev/null
+  return 1
+}
+
 # nudge_kill <pattern> -- kill every process whose /proc/<pid>/cmdline matches <pattern>, EXCEPT
 # this script's own installer chain. An unqualified sweep (grep cmdline, kill on match) also
 # matches whatever ran THIS script whenever <pattern> is a substring of the package's own id or
@@ -409,26 +424,26 @@ fi
 if [ -f "$DS/fonts/NotoSansThai-Regular.ttf" ]; then
   log "fonts: installing Thai fallback into HeiT_nb.ttf slot..."
   [ -f /usr/share/fonts/HeiT_nb.ttf.orig ] || cp /usr/share/fonts/HeiT_nb.ttf /usr/share/fonts/HeiT_nb.ttf.orig 2>/dev/null
-  cp "$DS/fonts/NotoSansThai-Regular.ttf" /usr/share/fonts/HeiT_nb.ttf 2>/dev/null
+  atomic_cp "$DS/fonts/NotoSansThai-Regular.ttf" /usr/share/fonts/HeiT_nb.ttf
 fi
 
 # ---------------------------------------------------------------- device-setup: gst codecs
 if [ -d "$DS/gst-opus-codec/prebuilt" ]; then
   log "gst-opus-codec: installing opus/ogg gstreamer plugins..."
   cp -n /usr/lib/gstreamer-0.10/libgstogg.so /usr/lib/gstreamer-0.10/libgstogg.so.orig 2>/dev/null
-  cp "$DS/gst-opus-codec/prebuilt/libopus.so.0" /usr/lib/libopus.so.0 2>/dev/null
-  cp "$DS/gst-opus-codec/prebuilt/libgstopus.so" /usr/lib/gstreamer-0.10/libgstopus.so 2>/dev/null
-  cp "$DS/gst-opus-codec/prebuilt/libgstogg.so" /usr/lib/gstreamer-0.10/libgstogg.so 2>/dev/null
+  atomic_cp "$DS/gst-opus-codec/prebuilt/libopus.so.0" /usr/lib/libopus.so.0
+  atomic_cp "$DS/gst-opus-codec/prebuilt/libgstopus.so" /usr/lib/gstreamer-0.10/libgstopus.so
+  atomic_cp "$DS/gst-opus-codec/prebuilt/libgstogg.so" /usr/lib/gstreamer-0.10/libgstogg.so
   ( cd /usr/lib && ln -sf libopus.so.0 libopus.so; ldconfig 2>/dev/null )
 fi
 if [ -f "$DS/gst-plugins-base-audioresample/prebuilt/libgstaudioresample.so" ]; then
   log "gst-plugins-base-audioresample: installing audioresample element..."
-  cp "$DS/gst-plugins-base-audioresample/prebuilt/libgstaudioresample.so" /usr/lib/gstreamer-0.10/libgstaudioresample.so 2>/dev/null
+  atomic_cp "$DS/gst-plugins-base-audioresample/prebuilt/libgstaudioresample.so" /usr/lib/gstreamer-0.10/libgstaudioresample.so
 fi
 if [ -d "$DS/gst-video-codecs/prebuilt" ]; then
   log "gst-video-codecs: installing VP8/VP9/Matroska/Speex plugins..."
   for so in libgstvpx.so libgstmatroska.so libgstspeex.so; do
-    cp "$DS/gst-video-codecs/prebuilt/$so" "/usr/lib/gstreamer-0.10/$so" 2>/dev/null
+    atomic_cp "$DS/gst-video-codecs/prebuilt/$so" "/usr/lib/gstreamer-0.10/$so"
   done
 fi
 rm -f ~/.gstreamer-0.10/registry.*.bin /home/root/.gstreamer-0.10/registry.*.bin 2>/dev/null

@@ -26,7 +26,25 @@ mount -o remount,rw /dev/mapper/store-root / 2>/dev/null
 mount -o remount,rw / 2>/dev/null
 
 log "restoring patched stock files from backups..."
-restore() { [ -f "$1" ] && cp "$1" "$2" && log "  restored $2"; }
+# Copy the backup to a temp file NEXT TO the destination, then atomically mv (rename) it over --
+# the same pattern, for the same reason, as postinst's webkit-webm-mime step: several of these
+# destinations are live-mmap'd RIGHT NOW. libWebKitLuna.so is mapped by LunaSysMgr, WebAppMgr and
+# BrowserServer (and this script runs inside LunaSysMgr's own request handling); HeiT_nb.ttf by
+# every FreeType user. A plain `cp backup dest` truncates the live inode and rewrites it in
+# place, so any mapper faulting a page during the window (or past the truncation point) dies with
+# SIGBUS -- confirmed live (GH issue #8): removing/replacing generic SIGBUS-crashed WebAppMgr,
+# LunaSysMgr and BrowserServer in sequence, aborting Preware batch installs. rename() keeps every
+# current mapper on the old inode until it exits; only new opens see the restored file. Also
+# fixes restoring PmBtEngine while it runs: cp onto a running executable fails ETXTBSY, mv works.
+# The [ -e dst ] guard: the single .prewebm backup is aimed at BOTH candidate libWebKitLuna.so
+# paths below, but postinst only ever patched the one that existed -- blindly cp'ing CREATED a
+# spare 12.8MB copy at the other path on the tiny (559MB) root partition.
+restore() {
+  [ -f "$1" ] || return 0
+  [ -e "$2" ] || return 0
+  cp "$1" "$2.synergy-restore.$$" && mv -f "$2.synergy-restore.$$" "$2" && log "  restored $2"
+  rm -f "$2.synergy-restore.$$" 2>/dev/null
+}
 
 restore /usr/share/fonts/HeiT_nb.ttf.orig /usr/share/fonts/HeiT_nb.ttf
 restore /usr/bin/PmBtEngine.orig /usr/bin/PmBtEngine
@@ -136,8 +154,15 @@ rm -f /usr/sbin/bt-a2dp-fix.sh /etc/event.d/bt-a2dp-fix /usr/local/bin/db8-clean
 # /usr/lib/purple-2 and /usr/lib/synergy-runtime are BIND MOUNTS onto /media/cryptofs (see
 # postinst/imwrap.sh) -- unmount FIRST, or `rm -rf` here would recurse through the mount and
 # delete the real cryptofs-backed content instead of just the (by-then-empty) mountpoint dir.
-umount /usr/lib/purple-2 2>/dev/null
-umount /usr/lib/synergy-runtime 2>/dev/null
+# -l (lazy, MNT_DETACH; supported by this BusyBox): a PLAIN umount fails EBUSY if anything still
+# holds the mount (e.g. a transport that outlived the `stop` above), silently leaving the mount
+# in place, the rmdir below failing, and a stale mountpoint surviving the uninstall. MNT_DETACH
+# detaches the name immediately while keeping existing open files/mappings valid until their
+# holders exit, so it cannot hurt a straggler either. (Raised by GH issue #8; note the SIGBUS
+# crashes reported there came from the old in-place-cp restore() above, not from these lines --
+# a plain umount can never yank a mount that still has live mappings, it just fails.)
+umount -l /usr/lib/purple-2 2>/dev/null
+umount -l /usr/lib/synergy-runtime 2>/dev/null
 rmdir /usr/lib/purple-2 /usr/lib/synergy-runtime 2>/dev/null
 rm -rf /usr/palm/services/_cloudcore
 # /media/cryptofs/synergy-revival is SHARED across every synergy package (rootfs-overwrite/<pkg-id>
